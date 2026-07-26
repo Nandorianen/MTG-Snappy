@@ -19,6 +19,7 @@ from PySide6.QtGui import QKeySequence, QShortcut
 
 from side_nav import SideNav, TABS
 from tag_tree import TagTreePanel
+from deck_viewer import DeckViewerView
 from card_table import CardTableView
 from mock_data import get_inventory_cards, get_wishlist_cards
 
@@ -33,6 +34,7 @@ class MainWindow(QMainWindow):
         self.tag_panel = TagTreePanel()
         self.inventory_table = CardTableView(get_inventory_cards())
         self.wishlist_table = CardTableView(get_wishlist_cards())
+        self.deck_viewer = DeckViewerView()
 
         self.stack = QStackedWidget()
         # Order here defines the stack INDEX for each view; self._tab_indexes
@@ -41,7 +43,8 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.tag_panel)         # index 0
         self.stack.addWidget(self.inventory_table)    # index 1
         self.stack.addWidget(self.wishlist_table)      # index 2
-        self._tab_indexes = {"tags": 0, "inventory": 1, "wishlist": 2}
+        self.stack.addWidget(self.deck_viewer)          # index 3
+        self._tab_indexes = {"tags": 0, "inventory": 1, "wishlist": 2, "decks": 3}
 
         # --- Side nav ---
         self.side_nav = SideNav()

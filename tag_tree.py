@@ -1,34 +1,53 @@
 """
 tag_tree.py
 -----------
-The tag database browsing view (goal #5) -- still a visual stub, not wired
-to real filtering logic, since that needs the tag database we haven't built.
-Pulled out of main.py into its own module now that it's one of several
-top-level views switched via the side nav, rather than a permanently-docked
-side panel.
+The Tag Database tab. Now built on the SAME TreePane + CollapsibleSplitter
+as deck_viewer.py -- this is the payoff of building TreePane generically:
+this file is almost entirely just configuration (labels + seed data), not
+new logic. That directly satisfies goal #7 ("Tag Database pane should
+support all the Deck view UI functions").
 """
 
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QTreeWidget, QTreeWidgetItem
+from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel
+from PySide6.QtCore import Qt
+
+from tree_pane import TreePane
+from collapsible_pane import CollapsibleSplitter
+
+# Same tag hierarchy example as before, now living in a fully editable tree
+# instead of a static QTreeWidget -- rename/delete/drag/hotkeys all work on
+# it already, with no tag-specific code required.
+SEED_TAGS = [
+    {"name": "Removal", "is_folder": True, "children": [
+        {"name": "Destroy", "is_folder": False},
+        {"name": "Exile", "is_folder": False},
+    ]},
+    {"name": "Removal (Creature)", "is_folder": False},
+    {"name": "Removal (Enchantment)", "is_folder": False},
+]
 
 
 class TagTreePanel(QWidget):
     def __init__(self):
         super().__init__()
-        layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("Tag hierarchy (not yet wired to card filtering)"))
+        self.tree_pane = TreePane(leaf_label="Tag", folder_label="Tag Group",
+                                   initial_tree=SEED_TAGS)
+        self.tree_pane.item_selected.connect(self._on_selection_changed)
 
-        self.tree = QTreeWidget()
-        self.tree.setHeaderHidden(True)
-        layout.addWidget(self.tree)
+        self.content_area = QLabel("Select a tag to view cards with that tag.")
+        self.content_area.setAlignment(Qt.AlignCenter)
 
-        # A small hardcoded hierarchy just to prove the tree-with-subtags
-        # concept from goal #5 -- "Removal" has children "Destroy"/"Exile",
-        # while "Removal (Creature)" exists as its own separate branch, so a
-        # card can be filed under a subtag without necessarily rolling up to
-        # one single shared parent.
-        removal = QTreeWidgetItem(self.tree, ["Removal"])
-        QTreeWidgetItem(removal, ["Destroy"])
-        QTreeWidgetItem(removal, ["Exile"])
-        QTreeWidgetItem(self.tree, ["Removal (Creature)"])
-        QTreeWidgetItem(self.tree, ["Removal (Enchantment)"])
-        self.tree.expandAll()
+        self.splitter = CollapsibleSplitter(self.tree_pane, self.content_area)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.splitter)
+
+    def _on_selection_changed(self, node):
+        if node and not node["is_folder"]:
+            self.content_area.setText(
+                f'Cards tagged "{node["name"]}" would render here.\n\n'
+                "(Tag-based card filtering is a later feature -- goal #5.)"
+            )
+        else:
+            self.content_area.setText("Select a tag to view cards with that tag.")

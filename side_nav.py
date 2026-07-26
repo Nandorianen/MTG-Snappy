@@ -18,6 +18,7 @@ TABS = [
     ("tags", "Tag Database"),
     ("inventory", "Inventory"),
     ("wishlist", "Wishlist"),
+    ("decks", "Deck Viewer"),
 ]
 
 

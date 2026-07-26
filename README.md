@@ -1,9 +1,10 @@
-# MTG Local Database — Prototype (spreadsheet UI)
+# MTG Local Database — Prototype
 
 ## What this is
-A Deckbox-style layout: a narrow tab strip on the left (Tag Database /
-Inventory / Wishlist) driving a central spreadsheet. Runs on mock data from
-`mock_data.py` — no real database or images yet.
+A Deckbox-style layout: a tab strip (Tag Database / Inventory / Wishlist /
+Deck Viewer) on the left driving swappable central views. Inventory and
+Wishlist are spreadsheets; Tag Database and Deck Viewer are collapsible
+folder/item trees. Runs on mock data — no real database or images yet.
 
 ## Run it
 ```bash
@@ -11,29 +12,42 @@ pip install PySide6
 python main.py
 ```
 
-## Try
-- **Ctrl+1 / Ctrl+2 / Ctrl+3** — jump between Tag Database / Inventory / Wishlist.
+## Try — spreadsheet tabs (Inventory / Wishlist)
+- **Ctrl+2 / Ctrl+3** — jump to Inventory / Wishlist.
 - **Click / Ctrl+click / Shift+click** cells — Excel-like multi-selection.
-- **Arrow keys** — navigate cells once one is selected.
-- **Ctrl+C** — copies the current selection as tab/newline-separated text
-  (paste it into a spreadsheet to see).
-- **Checkbox column** — click to toggle per-row selection.
-- **"Edition / Rarity" header** — click the left half to sort by set, the
-  right half to sort by rarity. Click again to reverse direction.
-- **"Price" header** — click the small ▾ on the right edge to pick a price
-  source (TCGplayer / Card Kingdom / Cardmarket); click elsewhere in that
-  header to sort by price.
-- **⋯ button** (rightmost column) — opens a stub actions menu.
-- **Hover over a card's Name cell** — a small popover appears after a short
-  delay with a placeholder art swatch and the card's text.
+- **Ctrl+C** — copy the selection as tab/newline-separated text.
+- **"Edition / Rarity" header** — click left half to sort by set, right half
+  by rarity.
+- **"Price" header** — click the ▾ to pick a price source; click elsewhere
+  to sort by price.
+- **⋯ button** — stub actions menu. **Hover a card's Name** — popover with
+  placeholder art + text.
+
+## Try — tree tabs (Tag Database / Deck Viewer)
+- **Ctrl+1 / Ctrl+4** — jump to Tag Database / Deck Viewer.
+- **"+ Deck"/"+ Tag" and "+ Folder" buttons, or Ctrl+N / Ctrl+Shift+N** —
+  create a new item; it's immediately renameable with all text pre-selected,
+  so typing replaces the name right away.
+- **F2** — rename the selected item. **Delete** — delete selected item(s).
+- **Drag and drop** — reorder/reparent items (drop onto a folder to move
+  inside it). **Ctrl+X / Ctrl+C / Ctrl+V** — cut/copy/paste as an
+  alternative to dragging.
+- **Right-click** — full context menu, including a color-swatch submenu to
+  recolor an item's icon.
+- **Click the small ◂/▸ arrow at the top of the divider** between the tree
+  and the content area — collapses/expands the tree pane. **Tab** — same
+  toggle, from anywhere in that view. **Clicking anywhere in the right-hand
+  content area** — also collapses the tree pane, to reclaim space once
+  you've picked something.
 
 ## What's deliberately NOT here yet
-- Real card images — swatches are colored by mana color identity as a stand-in.
-- A real database — `mock_data.get_inventory_cards()` /
-  `get_wishlist_cards()` are the two functions that get swapped for real
-  SQLite queries later.
-- Tag-based filtering (the Tag Database tab shows a tree but it isn't wired
-  to anything).
-- Drag-to-resize on the two custom header columns (Edition/Rarity, Price) —
-  noted as a known limitation in `card_table.py`'s docstring.
+- Real card images.
+- Any real database — the tree/table data all comes from hardcoded seed
+  data (`mock_data.py`, `deck_viewer.py`, `tag_tree.py`); each has one clearly
+  marked function/constant that gets swapped for a real query later.
+- Tag-based card filtering, deck contents view, column right-click filtering
+  and grouping, card detail popup, and the tag-apply widget — all upcoming.
+- Drag-to-resize specifically on the Edition/Rarity and Price header cells
+  (documented limitation in `card_table.py`).
+- Delete confirmation dialogs (documented limitation in `tree_pane.py`).
 

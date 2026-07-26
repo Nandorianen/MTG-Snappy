@@ -1,10 +1,9 @@
-# MTG Local Database — Prototype (UI shell)
+# MTG Local Database — Prototype (spreadsheet UI)
 
 ## What this is
-A minimal, working PySide6 window with the three-panel layout the real app
-will use: tag tree (left) | card list + search (center) | card detail (right).
-It runs against `mock_data.py` (8 hardcoded cards) instead of a real database —
-that comes next.
+A Deckbox-style layout: a narrow tab strip on the left (Tag Database /
+Inventory / Wishlist) driving a central spreadsheet. Runs on mock data from
+`mock_data.py` — no real database or images yet.
 
 ## Run it
 ```bash
@@ -13,19 +12,28 @@ python main.py
 ```
 
 ## Try
-- Type in the search box — the list filters live by name.
-- Click a card, or use arrow keys after clicking into the list — the detail
-  panel on the right updates.
-- `Ctrl+F` — jump focus to the search box from anywhere in the window.
-- `Ctrl+T` — toggle the tag panel's visibility.
-- Drag the dividers between panels to resize them.
-- `File > Import/Export` — present but intentionally stubbed (shows a dialog
-  saying so) since there's no data layer wired up yet.
+- **Ctrl+1 / Ctrl+2 / Ctrl+3** — jump between Tag Database / Inventory / Wishlist.
+- **Click / Ctrl+click / Shift+click** cells — Excel-like multi-selection.
+- **Arrow keys** — navigate cells once one is selected.
+- **Ctrl+C** — copies the current selection as tab/newline-separated text
+  (paste it into a spreadsheet to see).
+- **Checkbox column** — click to toggle per-row selection.
+- **"Edition / Rarity" header** — click the left half to sort by set, the
+  right half to sort by rarity. Click again to reverse direction.
+- **"Price" header** — click the small ▾ on the right edge to pick a price
+  source (TCGplayer / Card Kingdom / Cardmarket); click elsewhere in that
+  header to sort by price.
+- **⋯ button** (rightmost column) — opens a stub actions menu.
+- **Hover over a card's Name cell** — a small popover appears after a short
+  delay with a placeholder art swatch and the card's text.
 
 ## What's deliberately NOT here yet
-- Real card images (the colored box in the detail panel is a placeholder,
-  colored by the card's mana color identity).
-- Any real database — `mock_data.get_all_cards()` is the one function that
-  will get swapped out for a SQLite query later; nothing else should need
-  to change when that happens.
-- Tag filtering logic (the tag tree is visible but not wired to anything).
+- Real card images — swatches are colored by mana color identity as a stand-in.
+- A real database — `mock_data.get_inventory_cards()` /
+  `get_wishlist_cards()` are the two functions that get swapped for real
+  SQLite queries later.
+- Tag-based filtering (the Tag Database tab shows a tree but it isn't wired
+  to anything).
+- Drag-to-resize on the two custom header columns (Edition/Rarity, Price) —
+  noted as a known limitation in `card_table.py`'s docstring.
+

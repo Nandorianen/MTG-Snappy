@@ -1,5 +1,18 @@
 # MTG Local Database — Prototype
 
+## Recent fixes (this pass)
+- Cut+paste of a folder into its own descendant is now blocked (previously
+  hung the app) -- rejected with an OS beep + a brief red flash on the item,
+  no dialog to dismiss.
+- Pasting an item with a name that collides with an existing sibling now
+  auto-renames it "Name (1)", "Name (2)", etc.
+- Delete now asks for confirmation first.
+- Tab now reliably collapses/expands the tree pane regardless of which
+  child widget currently has keyboard focus (previously only worked when
+  the splitter itself had focus, which never happens in practice).
+- The collapse arrow on the pane divider is now much taller and vertically
+  centered, instead of a small icon pinned to the top.
+
 ## What this is
 A Deckbox-style layout: a tab strip (Tag Database / Inventory / Wishlist /
 Deck Viewer) on the left driving swappable central views. Inventory and

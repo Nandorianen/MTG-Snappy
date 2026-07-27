@@ -24,9 +24,11 @@ a real decks/tags database, each node's "id" will be the actual database row
 id, and everything else in this file stays the same.
 
 KNOWN GAPS (deliberately not solved here, to keep this file's job focused):
-- No delete confirmation dialog -- deleting a deck with cards in it should
-  probably ask first; that's a UX decision for later, not a tree-mechanics one.
-- Copying a folder into its own descendant (a cycle) isn't guarded against.
+- The cycle guard and same-name dedup only apply to the Ctrl+X/Ctrl+V path.
+  Real mouse drag-and-drop already refuses parent-into-own-child moves
+  natively (that's Qt's own drag validation), but a drag-and-drop that
+  results in a name collision is NOT deduped the way paste is -- worth
+  revisiting if that turns out to matter in practice.
 - True cross-widget copy/paste (between two separate TreePane instances)
   isn't implemented -- the clipboard here is per-instance, in-memory.
 """
@@ -34,9 +36,10 @@ KNOWN GAPS (deliberately not solved here, to keep this file's job focused):
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTreeWidget, QTreeWidgetItem,
     QToolButton, QMenu, QStyledItemDelegate, QAbstractItemView, QLineEdit,
+    QMessageBox, QApplication,
 )
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QIcon, QPixmap, QPainter, QColor, QKeySequence, QShortcut
+from PySide6.QtCore import Qt, Signal, QTimer
+from PySide6.QtGui import QIcon, QPixmap, QPainter, QColor, QKeySequence, QShortcut, QBrush
 
 # Palette offered in the right-click "Change Icon Color" submenu. Reusing a
 # spread of hues rather than anything MTG-specific, since this same palette
@@ -244,7 +247,22 @@ class TreePane(QWidget):
         return item if node["is_folder"] else item.parent()
 
     def _delete_selected(self):
-        for item in self.tree.selectedItems():
+        items = self.tree.selectedItems()
+        if not items:
+            return
+        # Simple confirmation -- deliberately plain (no "don't ask again"
+        # checkbox, no distinction between an empty folder and one full of
+        # decks) since that's a UX refinement for later, not a safety gap.
+        names = ", ".join(item.text(0) for item in items[:5])
+        if len(items) > 5:
+            names += f", and {len(items) - 5} more"
+        reply = QMessageBox.question(
+            self, "Delete", f"Delete {names}? This cannot be undone.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        for item in items:
             parent = item.parent()
             (parent or self.tree.invisibleRootItem()).removeChild(item)
 
@@ -261,17 +279,97 @@ class TreePane(QWidget):
         if not self._clipboard:
             return
         target = self._resolve_target_folder()
+        moved_any = False
         for item in self._clipboard:
             if self._clipboard_mode == "cut":
+                # A cut+paste bypasses Qt's own drag-and-drop validation
+                # (which is what stops you from dragging a folder into its
+                # own child) -- so we have to check for that cycle
+                # ourselves. Pasting a folder into itself or one of its own
+                # descendants would make the item its own ancestor, which
+                # hangs the tree the moment anything tries to walk it.
+                if self._would_create_cycle(item, target):
+                    self._reject_paste(item)
+                    continue
                 (item.parent() or self.tree.invisibleRootItem()).removeChild(item)
+                new_name = self._dedup_sibling_name(target, item.text(0))
+                if new_name != item.text(0):
+                    item.setText(0, new_name)
                 (target.addChild if target else self.tree.addTopLevelItem)(item)
+                moved_any = True
             else:  # "copy" -- clone with fresh ids, leave the originals in place
                 clone = self._clone_item(item)
+                new_name = self._dedup_sibling_name(target, clone.text(0))
+                if new_name != clone.text(0):
+                    clone.setText(0, new_name)
                 (target.addChild if target else self.tree.addTopLevelItem)(clone)
-        if self._clipboard_mode == "cut":
-            self._clipboard = []  # a cut clipboard is consumed after one paste
-        if target:
+                moved_any = True
+        if self._clipboard_mode == "cut" and moved_any:
+            self._clipboard = []  # a cut clipboard is consumed after one successful paste
+        if target and moved_any:
             target.setExpanded(True)
+
+    def _would_create_cycle(self, item, target):
+        """True if `target` is `item` itself, or nested somewhere inside it --
+        i.e. pasting `item` into `target` would make item its own ancestor."""
+        node = target
+        while node is not None:
+            if node is item:
+                return True
+            node = node.parent()
+        return False
+
+    def _dedup_sibling_name(self, target, desired_name):
+        """
+        If `desired_name` collides with something already in the destination
+        (folder `target`, or the top level if target is None), append
+        " (n)" -- same convention as the "New X (n)" auto-naming, so a user
+        can paste several same-named items (e.g. copied from different
+        folders) into one place without silently overwriting/confusing them.
+        """
+        if target is None:
+            siblings = [self.tree.topLevelItem(i) for i in range(self.tree.topLevelItemCount())]
+        else:
+            siblings = [target.child(i) for i in range(target.childCount())]
+        existing = {s.text(0) for s in siblings}
+        if desired_name not in existing:
+            return desired_name
+        n = 1
+        while f"{desired_name} ({n})" in existing:
+            n += 1
+        return f"{desired_name} ({n})"
+
+    def _reject_paste(self, item):
+        """
+        Non-intrusive "that's not allowed" feedback: the OS alert sound
+        (QApplication.beep() -- no bundled audio needed, it plays whatever
+        the platform's own system alert sound is) plus a couple of brief
+        background-color flashes on the offending item. No dialog to
+        dismiss, no workflow interruption.
+        """
+        QApplication.beep()
+        self._flash_item(item)
+
+    def _flash_item(self, item, flashes=3, interval_ms=120):
+        original_brush = item.background(0)
+        warning_brush = QBrush(QColor("#8f3d3d"))
+        state = {"tick": 0}
+        total_ticks = flashes * 2
+
+        def tick():
+            item.setBackground(0, warning_brush if state["tick"] % 2 == 0 else original_brush)
+            state["tick"] += 1
+            if state["tick"] >= total_ticks:
+                self._flash_timer.stop()
+                item.setBackground(0, original_brush)
+
+        # Stored on self so the timer isn't garbage-collected mid-flash, and
+        # so a second flash (unlikely, but possible) reuses the same timer
+        # rather than leaking a new one.
+        self._flash_timer = QTimer(self)
+        self._flash_timer.timeout.connect(tick)
+        tick()
+        self._flash_timer.start(interval_ms)
 
     def _clone_item(self, item):
         node = dict(item.data(0, Qt.UserRole))
@@ -284,6 +382,7 @@ class TreePane(QWidget):
         for i in range(item.childCount()):
             clone.addChild(self._clone_item(item.child(i)))
         return clone
+
 
     # --- Context menu -------------------------------------------------------
     def _show_context_menu(self, pos):

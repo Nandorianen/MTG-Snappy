@@ -3,58 +3,75 @@ collapsible_pane.py
 --------------------
 CollapsibleSplitter wraps ANY left widget + right widget pair with:
   - drag-to-resize (QSplitter's native behavior),
-  - a small arrow zone at the top of the divider that toggles collapse
-    with a single click, without needing to drag the divider to zero,
-  - collapsing when the LEFT is already collapsed... no -- collapsing
-    the LEFT pane specifically when the user clicks anywhere in the RIGHT
+  - a tall arrow zone centered on the divider that toggles collapse with a
+    single click, without needing to drag the divider to zero,
+  - collapsing the LEFT pane when the user clicks anywhere in the RIGHT
     widget's contents,
-  - collapsing on Tab (a placeholder binding, as you said -- easy to
-    rebind later; see the `event()` override below for why Tab specifically
-    needs special handling).
+  - collapsing on Tab (a placeholder binding, as you said -- easy to rebind
+    later).
 
 This class deliberately knows NOTHING about trees, decks, or tags -- it just
 holds "widget A" and "widget B." That's what makes it reusable for the Deck
 Viewer and Tag Database views today, and for anything else later that wants
 a collapsible sidebar (e.g. a future filter panel).
 
-WHY TAB NEEDS event() INSTEAD OF keyPressEvent():
-Qt intercepts the Tab key very early, before it ever reaches a widget's
-keyPressEvent(), to implement "move focus to the next widget." Overriding
-keyPressEvent() to catch Key_Tab would never actually run. The fix is to
-override event() itself and consume the QKeyEvent for Key_Tab before Qt's
-own focus-traversal logic gets a chance to act on it. This is a real Qt
-quirk worth knowing about any time a shortcut refuses to fire and Tab is
-involved.
+WHY TAB IS HANDLED IN eventFilter() RATHER THAN keyPressEvent()/event():
+An earlier version of this file caught Key_Tab in the SPLITTER's own
+event() override. That worked in isolated tests (calling splitter.event()
+directly) but not in the real app, and here's why: keyboard focus normally
+sits on a CHILD widget -- the tree inside the left pane, or a table inside
+the right pane -- not on the splitter itself. Qt delivers key events
+directly to whichever widget currently has focus, and that widget's own
+event() handling intercepts Tab internally to move focus to the next widget,
+before the event ever bubbles up to a parent's event() override. So a
+Key_Tab pressed while the tree has focus never reaches the splitter's
+event() at all.
+The fix: an application-level event filter (installed via
+QApplication.installEventFilter) runs BEFORE the event reaches its target
+widget's own event() handling, for every event in the whole application.
+By checking here whether the event's target is this splitter or one of its
+descendants, we can intercept and consume Key_Tab before Qt's internal
+focus-traversal logic ever sees it -- regardless of which specific child
+widget currently holds focus.
 """
 
 from PySide6.QtWidgets import QSplitter, QSplitterHandle, QApplication
 from PySide6.QtCore import Qt, QEvent, QRect
 from PySide6.QtGui import QPainter, QColor
 
-ARROW_ZONE_HEIGHT = 18  # pixels of the handle reserved for the click-to-toggle arrow
+# Height of the clickable/painted toggle zone, centered vertically on the
+# handle. ~4-5x a normal small icon size, per feedback that the original
+# 18px zone was too small a target to reliably click.
+ARROW_ZONE_HEIGHT = 90
 
 
 class _CollapseHandle(QSplitterHandle):
     """
-    The draggable divider between the two panes, with a small toggle zone
-    pinned to its top. Everywhere OUTSIDE that zone behaves like a normal
-    QSplitter handle (drag to resize); only the small zone intercepts the
+    The draggable divider between the two panes, with a tall toggle zone
+    centered on it. Everywhere OUTSIDE that zone behaves like a normal
+    QSplitter handle (drag to resize); only the zone itself intercepts the
     click to toggle collapse instead.
     """
+
+    def _arrow_rect(self):
+        zone_height = min(ARROW_ZONE_HEIGHT, self.height())
+        zone_top = (self.height() - zone_height) // 2
+        return QRect(0, zone_top, self.width(), zone_height)
 
     def paintEvent(self, event):
         super().paintEvent(event)
         painter = QPainter(self)
         splitter = self.splitter()
-        arrow_rect = QRect(0, 0, self.width(), min(ARROW_ZONE_HEIGHT, self.height()))
-        painter.fillRect(arrow_rect, QColor("#3a3c41"))
+        rect = self._arrow_rect()
+        painter.setBrush(QColor("#3a3c41"))
+        painter.setPen(Qt.NoPen)
+        painter.drawRoundedRect(rect.adjusted(1, 0, -1, 0), 4, 4)
         arrow_glyph = "▸" if splitter.is_collapsed() else "◂"
         painter.setPen(QColor("#e3e3e3"))
-        painter.drawText(arrow_rect, Qt.AlignCenter, arrow_glyph)
+        painter.drawText(rect, Qt.AlignCenter, arrow_glyph)
 
     def mousePressEvent(self, event):
-        arrow_zone = QRect(0, 0, self.width(), min(ARROW_ZONE_HEIGHT, self.height()))
-        if arrow_zone.contains(event.pos()):
+        if self._arrow_rect().contains(event.pos()):
             self.splitter().toggle()
             event.accept()
             return
@@ -79,16 +96,14 @@ class CollapsibleSplitter(QSplitter):
         # whether setSizes() is ALLOWED to shrink a pane below its minimum
         # size hint programmatically. With collapsible=False, our own
         # collapse() calls below get silently clamped back to the widget's
-        # minimum width instead of reaching 0. So this has to be True for
-        # our OWN collapse()/expand() methods to work, not just for drag.
+        # minimum width instead of reaching 0.
         self.setCollapsible(0, True)
         self.setCollapsible(1, True)
 
-        # A click anywhere inside the right widget (or any of ITS children --
-        # e.g. a cell inside a QTableView living inside right_widget) should
-        # collapse the left pane. Per-widget event filters don't reach into
-        # child widgets automatically, so we filter at the application level
-        # and check ancestry instead.
+        # One event filter handles BOTH "click in the right pane collapses"
+        # and "Tab toggles collapse" -- see the module docstring for why
+        # Tab specifically has to be caught this way rather than in a normal
+        # keyPressEvent override.
         QApplication.instance().installEventFilter(self)
 
     def createHandle(self):
@@ -116,15 +131,15 @@ class CollapsibleSplitter(QSplitter):
         total = sum(self.sizes())
         self.setSizes([self._expanded_width, max(total - self._expanded_width, 100)])
 
-    def event(self, e):
-        if e.type() == QEvent.KeyPress and e.key() == Qt.Key_Tab:
-            self.toggle()
-            return True
-        return super().event(e)
-
     def eventFilter(self, watched, event):
+        if event.type() == QEvent.KeyPress and event.key() == Qt.Key_Tab:
+            if watched is self or self.isAncestorOf(watched):
+                self.toggle()
+                return True  # consume -- stop Qt's default focus-next-widget behavior
+
         if (event.type() == QEvent.MouseButtonPress
                 and not self._collapsed
                 and (watched is self._right_widget or self._right_widget.isAncestorOf(watched))):
             self.collapse()
+
         return super().eventFilter(watched, event)

@@ -1,17 +1,27 @@
 # MTG Local Database — Prototype
 
-## Recent fixes (this pass)
+## Recent addition (this pass): card detail popup
+- **Double-click any row** in Inventory/Wishlist to open it: name, a
+  clickable art placeholder, fixed-position stats (Type / Mana Cost /
+  Edition / Rarity / Price), oracle text, flavor text, plus Legality and
+  Rulings tabs.
+- **Click the art** to open it in a separate frameless window: scroll to
+  zoom, drag anywhere by holding and moving, close with right-click or Escape.
+- **Edition field** — dropdown of every printing this card has (mock data
+  has 2 for Lightning Bolt and Swords to Plowshares to demonstrate it);
+  switching updates rarity, price, and flavor text.
+- **Price field** — dropdown to pick TCGplayer / Card Kingdom / Cardmarket,
+  same as the table's Price header.
+
+## Earlier fixes
 - Cut+paste of a folder into its own descendant is now blocked (previously
-  hung the app) -- rejected with an OS beep + a brief red flash on the item,
-  no dialog to dismiss.
+  hung the app) -- rejected with an OS beep + a brief red flash on the item.
 - Pasting an item with a name that collides with an existing sibling now
   auto-renames it "Name (1)", "Name (2)", etc.
 - Delete now asks for confirmation first.
-- Tab now reliably collapses/expands the tree pane regardless of which
-  child widget currently has keyboard focus (previously only worked when
-  the splitter itself had focus, which never happens in practice).
-- The collapse arrow on the pane divider is now much taller and vertically
-  centered, instead of a small icon pinned to the top.
+- Tab reliably collapses/expands the tree pane regardless of which child
+  widget currently has keyboard focus.
+- The collapse arrow on the pane divider is taller and vertically centered.
 
 ## What this is
 A Deckbox-style layout: a tab strip (Tag Database / Inventory / Wishlist /

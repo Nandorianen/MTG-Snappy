@@ -32,8 +32,9 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, Signal, QTimer, QRect, QEvent
 from PySide6.QtGui import QKeySequence, QPainter, QColor
 
-from mock_data import RARITY_ORDER
+from mock_data import RARITY_ORDER, PRICE_SOURCES
 from card_popover import CardPopover
+from card_detail_popup import CardDetailDialog
 
 
 # --- Column definitions -----------------------------------------------------
@@ -66,7 +67,7 @@ COL_PT = 6
 COL_PRICE = 7
 COL_ACTIONS = 8
 
-PRICE_SOURCES = [("price_tcg", "TCGplayer"), ("price_ck", "Card Kingdom"), ("price_cm", "Cardmarket")]
+
 
 
 class CardTableModel(QAbstractTableModel):
@@ -355,6 +356,18 @@ class CardTableView(QTableView):
         self._hover_timer.setSingleShot(True)
         self._hover_timer.timeout.connect(self._show_popover)
         self._hover_index = QModelIndex()
+
+        # Double-click ANYWHERE on a row (doubleClicked is a signal every
+        # QAbstractItemView already provides -- no custom mouse handling
+        # needed here) opens the full detail popup, per spec: not
+        # restricted to the Name column the way the hover popover is.
+        self._detail_dialog = None  # keep a reference so it isn't garbage-collected while open
+        self.doubleClicked.connect(self._open_card_detail)
+
+    def _open_card_detail(self, index):
+        card = self.card_model.card_at(index.row())
+        self._detail_dialog = CardDetailDialog(card["name"], parent=self)
+        self._detail_dialog.show()
 
     # --- Ctrl+C copy support: this is the one part of "Excel-like" behavior
     # Qt does NOT give us automatically. We gather selected cells, group them

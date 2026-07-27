@@ -175,3 +175,141 @@ def swatch_for_card(card):
     if len(colors) > 1:
         return MULTICOLOR_SWATCH
     return COLOR_SWATCHES.get(colors[0], COLORLESS_SWATCH)
+
+
+# ---------------------------------------------------------------------------
+# Card detail data: editions, legalities, rulings.
+#
+# ARCHITECTURE NOTE: a row in the Inventory/Wishlist table represents ONE
+# owned/wanted COPY of a card IN A SPECIFIC PRINTING (that's what "set" and
+# "rarity" on a MOCK_CARDS entry mean). The card detail popup needs something
+# different: the FULL print history for that card NAME, independent of which
+# copy you happen to own. In the real schema this is exactly the difference
+# between a "prints" table (one row per set the card was ever printed in,
+# keyed by a shared oracle/card-name id) and a "collection" table (one row
+# per copy a user owns, referencing a specific print). CARD_PRINTS below
+# stands in for that prints table; MOCK_CARDS stands in for the collection
+# table. Two cards below (Lightning Bolt, Swords to Plowshares) get a second
+# printing so the edition-switcher dropdown has something real to switch
+# between; the rest fall back to a single print derived from their
+# MOCK_CARDS entry via get_card_prints() below.
+CARD_PRINTS = {
+    "Lightning Bolt": [
+        {"set": "LEA", "rarity": "common",
+         "flavor_text": "A red mage's first and favorite lesson.",
+         "price_tcg": 45.00, "price_ck": 39.99, "price_cm": 41.50},
+        {"set": "2XM", "rarity": "common",
+         "flavor_text": "Simple, direct, and always in style.",
+         "price_tcg": 3.50, "price_ck": 2.99, "price_cm": 3.10},
+    ],
+    "Swords to Plowshares": [
+        {"set": "LEA", "rarity": "uncommon",
+         "flavor_text": "Those who beat their swords into plowshares will plow for those who don't.",
+         "price_tcg": 22.00, "price_ck": 19.50, "price_cm": 20.75},
+        {"set": "DMR", "rarity": "rare",
+         "flavor_text": "Peace, at a cost.",
+         "price_tcg": 8.00, "price_ck": 6.50, "price_cm": 7.10},
+    ],
+}
+
+# Formats tracked for the Legality tab. This list and the statuses below are
+# illustrative/mock -- NOT accurate real-world legality data -- purely to
+# exercise the UI.
+FORMATS = ["Standard", "Pioneer", "Modern", "Legacy", "Vintage", "Commander", "Pauper"]
+_DEFAULT_LEGALITY = {fmt: "not_legal" for fmt in FORMATS}
+
+
+def _legal_in(*formats):
+    result = dict(_DEFAULT_LEGALITY)
+    for fmt in formats:
+        result[fmt] = "legal"
+    return result
+
+
+CARD_LEGALITIES = {
+    "Lightning Bolt": _legal_in("Modern", "Legacy", "Vintage", "Commander", "Pauper"),
+    "Swords to Plowshares": _legal_in("Legacy", "Vintage", "Commander"),
+    "Tarmogoyf": _legal_in("Modern", "Legacy", "Vintage", "Commander"),
+    "Baleful Strix": _legal_in("Modern", "Legacy", "Vintage", "Commander"),
+    "Goblin Guide": _legal_in("Modern", "Legacy", "Vintage", "Commander"),
+    "Serra Angel": _legal_in("Pioneer", "Modern", "Legacy", "Vintage", "Commander"),
+    "Thragtusk": _legal_in("Pioneer", "Modern", "Legacy", "Vintage", "Commander"),
+    "Thalia, Guardian of Thraben": _legal_in("Modern", "Legacy", "Vintage", "Commander"),
+}
+
+# Short, ORIGINALLY-WRITTEN mock rulings (not transcribed from any real
+# Gatherer/Scryfall ruling text) -- purely to give the Rulings tab something
+# to scroll through.
+CARD_RULINGS = {
+    "Lightning Bolt": [
+        "Lightning Bolt can target a player, a creature, a planeswalker, or a battle.",
+        "The damage is dealt when the spell resolves, not when it's cast.",
+    ],
+    "Swords to Plowshares": [
+        "The life gained is based on the creature's power as it last existed on the battlefield.",
+        "If the creature has no power (or negative power), its controller gains no life.",
+    ],
+    "Tarmogoyf": [
+        "Card types in graveyards are counted regardless of whose graveyard they're in.",
+        "An empty graveyard means Tarmogoyf is a 0/1.",
+    ],
+    "Baleful Strix": [
+        "The draw trigger happens once, when Baleful Strix enters the battlefield.",
+    ],
+    "Goblin Guide": [
+        "The revealed card is not exiled or discarded -- it's just shown, then returned to the library.",
+    ],
+    "Serra Angel": [],
+    "Thragtusk": [
+        "Both triggered abilities happen no matter how Thragtusk leaves the battlefield.",
+    ],
+    "Thalia, Guardian of Thraben": [
+        "The cost increase applies once per noncreature spell, not per instance of Thalia if there are multiples.",
+    ],
+}
+
+
+def get_card_by_name(name):
+    """Looks up the oracle-level record (name/type/mana cost/text/etc.) by name."""
+    for card in MOCK_CARDS:
+        if card["name"] == name:
+            return card
+    return None
+
+
+def get_card_prints(name):
+    """
+    Full print history for a card name. Falls back to a single print derived
+    from the card's own MOCK_CARDS entry if we haven't hand-authored a
+    multi-print list for it above.
+    """
+    if name in CARD_PRINTS:
+        return CARD_PRINTS[name]
+    card = get_card_by_name(name)
+    if card is None:
+        return []
+    return [{
+        "set": card["set"], "rarity": card["rarity"],
+        "flavor_text": "",
+        "price_tcg": card["price_tcg"], "price_ck": card["price_ck"], "price_cm": card["price_cm"],
+    }]
+
+
+def get_card_legalities(name):
+    return CARD_LEGALITIES.get(name, dict(_DEFAULT_LEGALITY))
+
+
+def get_card_rulings(name):
+    return CARD_RULINGS.get(name, [])
+
+
+# Mock price sources, standing in for real pricing API configuration. Lives
+# here (not in card_table.py) because it's data, and both card_table.py
+# (the Price column header) and card_detail_popup.py (the Price stat field)
+# need it -- keeping it in mock_data avoids either view module importing
+# from the other.
+PRICE_SOURCES = [
+    ("price_tcg", "TCGplayer"),
+    ("price_ck", "Card Kingdom"),
+    ("price_cm", "Cardmarket"),
+]

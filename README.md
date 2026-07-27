@@ -1,25 +1,31 @@
 # MTG Local Database — Prototype
 
-## Fixes (this pass)
-- Detail popup: Legality and Rulings are now side-by-side panes (separated
-  by thin vertical rules, no gap) instead of tabs — all three visible at once.
-- Detail popup: Edition/Rarity/Price moved to their own "metadata" row,
-  separate from the gameplay-relevant Type/Mana Cost row, which also each
-  got noticeably more width.
-- Fixed dropdown-arrow icons (both in the table header and the detail
-  popup's Edition/Price fields) overlapping long text — text now elides
-  within a rect that explicitly excludes the arrow's space.
-- Column resizing: a few pixels at each header border are now reserved
-  exclusively for drag-to-resize, handled deterministically rather than
-  relying on Qt's own border-detection conflicting with our click handling
-  (previously almost any border click was misread as a sort click).
-- Hover popover no longer lingers when the cursor moves from a row up onto
-  the header.
-- Group-by-Type made explicitly robust against supertypes (Legendary,
-  Basic, Snow, etc.) rather than relying on substring luck; added
-  Battle/Kindred as additional broad categories.
-- Parked for later (see NOTES.md): reticle-select zoom on the card image
-  (Ctrl+click to distinguish from dragging the window).
+## Polish pass (this round)
+- Opening the detail popup now cancels any hover popover already showing
+  or waiting out its delay timer.
+- Tree panes (Tag Database / Deck Viewer): removed the "+ Item"/"+ Folder"
+  toolbar buttons (right-click menu and Ctrl+N/Ctrl+Shift+N cover the same
+  ground) and made tab-switching set focus deterministically — this is
+  what actually fixes Tab not collapsing the pane on the very first press.
+- Removed the native dashed "focus rectangle" Qt draws on top of selected
+  items (kept the color highlight, which was already the intended look).
+- Detail popup: Legality pane now sizes itself to the widest text that can
+  actually occur, with word-wrap as a fallback, instead of a cramped
+  proportional share of the width.
+- Detail popup: removed the OS title bar entirely — frameless window with
+  its own thin title bar (name + close button), draggable by that bar,
+  closes automatically when you click anywhere in the main app window
+  (verified this doesn't misfire when clicking the popup's own dropdown
+  menus, which are technically separate top-level windows).
+- Detail popup: added Language and Condition dropdowns and a Foil toggle
+  alongside Edition/Rarity/Price.
+- Table: Power and Toughness are now independent columns (sortable/
+  filterable separately) rather than one combined "P/T" column.
+- The Type column's right-click filter checklist now offers broad
+  categories (Creature, Instant, ...) instead of full literal type lines.
+- Parked for later (see NOTES.md): an options/settings window with
+  externalized per-language string files, "have"/"want"/"in-deck" count
+  columns, and default-add behavior with variant grouping.
 
 ## Header filter, column picker, group-by
 - **Right-click any header** in Inventory/Wishlist: for most columns, a

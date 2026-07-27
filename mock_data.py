@@ -193,24 +193,43 @@ def swatch_for_card(card):
 # printing so the edition-switcher dropdown has something real to switch
 # between; the rest fall back to a single print derived from their
 # MOCK_CARDS entry via get_card_prints() below.
+#
+# "language" on each print mirrors how Scryfall actually models this: a
+# Japanese printing of a card is a distinct print entry (with its own image),
+# not a property layered on top of an English one. All mock prints below
+# default to English since we don't have real per-language art/text to show;
+# picking a different language in the UI just relabels the field for now --
+# see the Language StatField's comment in card_detail_popup.py.
 CARD_PRINTS = {
     "Lightning Bolt": [
-        {"set": "LEA", "rarity": "common",
+        {"set": "LEA", "rarity": "common", "language": "English",
          "flavor_text": "A red mage's first and favorite lesson.",
          "price_tcg": 45.00, "price_ck": 39.99, "price_cm": 41.50},
-        {"set": "2XM", "rarity": "common",
+        {"set": "2XM", "rarity": "common", "language": "English",
          "flavor_text": "Simple, direct, and always in style.",
          "price_tcg": 3.50, "price_ck": 2.99, "price_cm": 3.10},
     ],
     "Swords to Plowshares": [
-        {"set": "LEA", "rarity": "uncommon",
+        {"set": "LEA", "rarity": "uncommon", "language": "English",
          "flavor_text": "Those who beat their swords into plowshares will plow for those who don't.",
          "price_tcg": 22.00, "price_ck": 19.50, "price_cm": 20.75},
-        {"set": "DMR", "rarity": "rare",
+        {"set": "DMR", "rarity": "rare", "language": "English",
          "flavor_text": "Peace, at a cost.",
          "price_tcg": 8.00, "price_ck": 6.50, "price_cm": 7.10},
     ],
 }
+
+# Selectable in the detail popup alongside Edition/Price. Real per-language
+# card data (art, text) isn't modeled yet -- see CARD_PRINTS note above.
+LANGUAGES = ["English", "Japanese", "German", "French", "Italian",
+             "Spanish", "Portuguese", "Korean", "Russian",
+             "Chinese Simplified", "Chinese Traditional"]
+
+# Selectable condition grades, standard TCG shorthand. These describe a
+# COLLECTION ENTRY (a specific copy you own), not the card or print itself
+# -- surfaced in the detail popup as a preview/selector, but not yet wired
+# to actually saving a condition against an owned copy (see NOTES.md).
+CONDITIONS = ["Near Mint", "Lightly Played", "Moderately Played", "Heavily Played", "Damaged"]
 
 # Formats tracked for the Legality tab. This list and the statuses below are
 # illustrative/mock -- NOT accurate real-world legality data -- purely to
@@ -289,7 +308,7 @@ def get_card_prints(name):
     if card is None:
         return []
     return [{
-        "set": card["set"], "rarity": card["rarity"],
+        "set": card["set"], "rarity": card["rarity"], "language": "English",
         "flavor_text": "",
         "price_tcg": card["price_tcg"], "price_ck": card["price_ck"], "price_cm": card["price_cm"],
     }]

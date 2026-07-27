@@ -61,10 +61,27 @@ class MainWindow(QMainWindow):
         self._build_menu_bar()
         self._build_status_bar()
         self._build_shortcuts()
+        self._focus_current_view()  # deterministic initial focus, not Qt's default guess
 
     def _on_tab_changed(self, key):
         self.stack.setCurrentIndex(self._tab_indexes[key])
         self._refresh_status_bar()
+        self._focus_current_view()
+
+    def _focus_current_view(self):
+        """
+        Gives a specific, sensible widget keyboard focus whenever a tab
+        becomes active. Tag Database and Deck Viewer focus their tree;
+        Inventory/Wishlist focus the table itself. This matters beyond
+        general keyboard-UX niceness: it's what makes Tab reliably collapse
+        the tree pane on the very FIRST press rather than only from the
+        second press onward (see TreePane.focus_tree's docstring).
+        """
+        current = self.stack.currentWidget()
+        if hasattr(current, "tree_pane"):
+            current.tree_pane.focus_tree()
+        elif isinstance(current, CardTableView):
+            current.setFocus()
 
     def _build_menu_bar(self):
         menu_bar = self.menuBar()
@@ -115,9 +132,19 @@ QTableView, QTreeWidget {
     background-color: #2b2d31;
     border: 1px solid #3a3c41;
     gridline-color: #3a3c41;
+    /* Removes the platform's own dashed/dotted "current item" focus
+       rectangle (a native Windows-style artifact in particular) that Qt
+       draws on top of the selection highlight by default. We already show
+       selection clearly via background-color below; the extra native
+       focus outline just looks like a visual bug on top of it. */
+    outline: 0;
 }
 QTableView::item:selected, QTreeWidget::item:selected {
     background-color: #3d6a8f;
+}
+QTableView::item:focus, QTreeWidget::item:focus {
+    outline: none;
+    border: none;
 }
 QHeaderView::section {
     background-color: #2b2d31;

@@ -59,7 +59,8 @@ COLUMNS = [
     ("edition_rarity", "Edition / Rarity", "split"),
     ("type_line", "Type", "text"),
     ("mana_cost", "Mana Cost", "text"),
-    ("power_toughness", "P/T", "text"),
+    ("power", "Power", "text"),
+    ("toughness", "Toughness", "text"),
     ("price", "Price", "price"),
     ("actions", "", "actions"),
 ]
@@ -69,9 +70,10 @@ COL_NAME = 2
 COL_EDITION_RARITY = 3
 COL_TYPE = 4
 COL_MANA = 5
-COL_PT = 6
-COL_PRICE = 7
-COL_ACTIONS = 8
+COL_POWER = 6
+COL_TOUGHNESS = 7
+COL_PRICE = 8
+COL_ACTIONS = 9
 
 # Columns whose header has a dropdown-arrow zone (as opposed to just sorting
 # on click). Price opens a price-source picker; Type/Mana open a "group by"
@@ -82,7 +84,7 @@ DROPDOWN_COLUMNS = {COL_TYPE, COL_MANA, COL_PRICE}
 # for the checkbox/actions utility columns (nothing meaningful to filter by)
 # and for Price (continuous numeric data -- range filtering is a job for the
 # future Search feature, not a same-value checklist).
-FILTERABLE_COLUMNS = {COL_QTY, COL_NAME, COL_EDITION_RARITY, COL_TYPE, COL_MANA, COL_PT}
+FILTERABLE_COLUMNS = {COL_QTY, COL_NAME, COL_EDITION_RARITY, COL_TYPE, COL_MANA, COL_POWER, COL_TOUGHNESS}
 
 # Menu labels for columns whose header label is blank (checkbox/actions).
 MENU_COLUMN_LABELS = {COL_SELECTED: "Checkbox", COL_ACTIONS: "Actions"}
@@ -150,6 +152,22 @@ def _color_rank(card):
     return (10 + len(colors), ordered)
 
 
+def _numeric_sort_value(value):
+    """
+    Power/toughness sort key helper. Real MTG data isn't always a plain
+    number -- Scryfall itself stores power/toughness as STRINGS because
+    cards like Tarmogoyf-style "*/*+1" or "1+*" creatures exist -- so this
+    can't just assume int(value) works. Non-numeric values sort alongside
+    non-creatures (-1) rather than crashing the sort.
+    """
+    if value is None:
+        return -1
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return -1
+
+
 class CardTableModel(QAbstractTableModel):
     """
     Holds the card data plus everything needed to PRESENT it: sorting,
@@ -209,7 +227,7 @@ class CardTableModel(QAbstractTableModel):
         if role == Qt.CheckStateRole and col == COL_SELECTED:
             return Qt.Checked if card.get("selected") else Qt.Unchecked
 
-        if role == Qt.TextAlignmentRole and col in (COL_QTY, COL_MANA, COL_PT, COL_PRICE):
+        if role == Qt.TextAlignmentRole and col in (COL_QTY, COL_MANA, COL_POWER, COL_TOUGHNESS, COL_PRICE):
             return Qt.AlignCenter
 
         if role == Qt.DisplayRole:
@@ -223,9 +241,12 @@ class CardTableModel(QAbstractTableModel):
                 return card["type_line"]
             if col == COL_MANA:
                 return card["mana_cost"]
-            if col == COL_PT:
-                p, t = card.get("power"), card.get("toughness")
-                return f"{p}/{t}" if p is not None else ""
+            if col == COL_POWER:
+                power = card.get("power")
+                return "" if power is None else str(power)
+            if col == COL_TOUGHNESS:
+                toughness = card.get("toughness")
+                return "" if toughness is None else str(toughness)
             if col == COL_PRICE:
                 return f"${card.get(self.price_source, 0):.2f}"
             return ""
@@ -297,7 +318,8 @@ class CardTableModel(QAbstractTableModel):
             "rarity": lambda c: RARITY_ORDER.get(c["rarity"], 0),
             "type_line": lambda c: c["type_line"],
             "mana_cost": lambda c: c.get("cmc", 0),
-            "power_toughness": lambda c: (c.get("power") if c.get("power") is not None else -1),
+            "power": lambda c: _numeric_sort_value(c.get("power")),
+            "toughness": lambda c: _numeric_sort_value(c.get("toughness")),
             "price": lambda c: c.get(self.price_source, 0),
         }
 
@@ -309,12 +331,21 @@ class CardTableModel(QAbstractTableModel):
         if column == COL_EDITION_RARITY:
             return card["set"].upper()  # filters by SET only -- see class docstring / README gap note
         if column == COL_TYPE:
-            return card["type_line"]
+            # Broad category, same as grouping uses -- NOT the literal full
+            # type line. A checklist of every distinct full type_line string
+            # ("Legendary Creature — Human Soldier", "Creature — Angel", ...)
+            # would be nearly as long as the card list itself and useless as
+            # a filter; "Creature" / "Instant" / etc. is what's actually
+            # useful to filter by.
+            return _type_category(card["type_line"])
         if column == COL_MANA:
             return card["mana_cost"]
-        if column == COL_PT:
-            p, t = card.get("power"), card.get("toughness")
-            return f"{p}/{t}" if p is not None else None
+        if column == COL_POWER:
+            power = card.get("power")
+            return None if power is None else str(power)
+        if column == COL_TOUGHNESS:
+            toughness = card.get("toughness")
+            return None if toughness is None else str(toughness)
         return None
 
     def _passes_filters(self, card):
@@ -681,7 +712,8 @@ class CardTableView(QTableView):
         self.setSelectionMode(QAbstractItemView.ExtendedSelection)
 
         column_keys = {COL_QTY: "qty", COL_NAME: "name", COL_TYPE: "type_line",
-                       COL_MANA: "mana_cost", COL_PT: "power_toughness", COL_PRICE: "price"}
+                       COL_MANA: "mana_cost", COL_POWER: "power", COL_TOUGHNESS: "toughness",
+                       COL_PRICE: "price"}
         self.header = SplitDropdownHeader(column_keys)
         self.setHorizontalHeader(self.header)
         self.header.sort_requested.connect(self.card_model.sort_by_key)
@@ -740,6 +772,13 @@ class CardTableView(QTableView):
         card = self.card_model.card_at(index.row())
         if card is None:
             return  # double-clicked a group-header row -- nothing to open
+        # Opening the detail view should immediately supersede any hover
+        # popover that's currently showing OR still waiting out its delay
+        # timer -- otherwise the popover can appear moments later, floating
+        # on top of the just-opened dialog.
+        self._hover_timer.stop()
+        self._popover.hide()
+        self._hover_index = QModelIndex()
         self._detail_dialog = CardDetailDialog(card["name"], parent=self)
         self._detail_dialog.show()
 

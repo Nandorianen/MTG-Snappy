@@ -1,43 +1,58 @@
 """
 card_detail_popup.py
 ---------------------
-The double-click detail view: card name, a clickable art placeholder, two
-rows of fixed-position stats (gameplay: Type / Mana Cost -- metadata:
-Edition / Rarity / Price), oracle + flavor text, then Legality and Rulings
-as side-by-side panes (not tabs) separated by thin vertical rules.
+The double-click detail view: a custom (frameless, no OS title bar) window
+with its own name+close title bar, a clickable art placeholder, two rows of
+fixed-position stats (gameplay: Type / Mana Cost -- metadata: Edition /
+Language / Condition / Foil / Rarity / Price), oracle + flavor text, then
+Legality and Rulings as side-by-side panes separated by thin vertical rules.
 
-THREE PIECES OF CUSTOM MACHINERY WORTH CALLING OUT:
+FOUR PIECES OF CUSTOM MACHINERY WORTH CALLING OUT:
 
-1. "FIXED POSITION even if text length changes" -- QLabel doesn't do this on
-   its own; by default a longer string just makes the label (and everything
-   after it) wider. StatField fixes each stat to a constant pixel width and
-   ELIDES (truncates with "…") any text that doesn't fit, using
-   QFontMetrics.elidedText(). The full untruncated text is still available
-   as a tooltip.
+1. "FIXED POSITION even if text length changes" -- StatField fixes each
+   stat to a constant pixel width and ELIDES (truncates with "…") any text
+   that doesn't fit, via QFontMetrics.elidedText(). Full text stays
+   available as a tooltip.
 
 2. Panes-not-tabs layout: three widgets in one QHBoxLayout with
-   setSpacing(0), each pane separated from its neighbor by a QFrame drawn as
-   a vertical line (QFrame.VLine) rather than by layout spacing -- "without
-   spaces, but with separators," as specified. Each pane keeps its own
-   internal margins so its content doesn't press against the separator.
+   setSpacing(0), separated by QFrame vertical-line separators rather than
+   layout spacing. The Legality pane is sized to its CONTENT (the widest
+   "format: status" string that can actually occur) rather than a
+   proportional share of the dialog's width, with word-wrap as a fallback
+   for anything that still doesn't fit (longer translated strings, larger
+   text-scaling settings, etc).
 
-3. The zoomable/draggable image window is a frameless top-level QWidget.
-   Frameless means there's no OS title bar to drag by, so dragging is
-   implemented by hand; "zoom" is implemented by resizing the window itself
-   on wheelEvent. See NOTES.md for a parked idea about adding reticle-based
-   zoom-to-region later.
+3. No system title bar: this is a frameless top-level QDialog with its own
+   thin title bar (name + a close button, styled to blend via the palette
+   rather than look like a separate app), draggable by that bar. KNOWN
+   LIMITATION: going frameless also loses the OS's native edge-drag resize;
+   this dialog is a fixed size for now rather than reimplementing resize
+   handles, which wasn't asked for.
+   It also closes automatically the moment the user clicks anywhere in the
+   MAIN application window -- checked via `watched.window() is <the main
+   window>`, which is what correctly tells a genuine main-window click apart
+   from a click inside this dialog OR inside a transient popup menu it
+   opened (a QMenu's own `.window()` is the menu itself, not the main
+   window, so choosing an Edition/Price/Language/Condition option never
+   accidentally closes the dialog mid-click).
+
+4. The zoomable/draggable image window is a separate frameless top-level
+   QWidget of its own (see ImageZoomWidget) -- dragging is implemented by
+   hand since there's no OS title bar to drag by there either; "zoom" is
+   implemented by resizing the window on wheelEvent. See NOTES.md for a
+   parked idea about reticle-based zoom-to-region.
 """
 
 from PySide6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame,
-    QToolButton, QMenu, QListWidget, QListWidgetItem,
+    QToolButton, QMenu, QListWidget, QListWidgetItem, QApplication,
 )
-from PySide6.QtCore import Qt, Signal, QSize
+from PySide6.QtCore import Qt, Signal, QSize, QEvent
 from PySide6.QtGui import QFontMetrics, QColor, QPainter
 
 from mock_data import (
     get_card_by_name, get_card_prints, get_card_legalities, get_card_rulings,
-    swatch_for_card, FORMATS, PRICE_SOURCES,
+    swatch_for_card, FORMATS, PRICE_SOURCES, LANGUAGES, CONDITIONS,
 )
 
 LEGALITY_COLORS = {
@@ -49,13 +64,14 @@ LEGALITY_COLORS = {
 class StatField(QWidget):
     """
     One fixed-width labeled stat. `clickable=True` swaps the value QLabel
-    for a QToolButton with a popup menu -- used for Edition and Price.
+    for a QToolButton with a popup menu -- used for Edition, Language,
+    Condition, and Price.
 
     The clickable variant reserves extra width for Qt's own menu-indicator
     arrow (drawn automatically by the style for InstantPopup buttons) --
-    without that reservation, the elided text is computed as if the full
-    field width were available for text, and the arrow ends up drawn
-    directly on top of the last few characters.
+    without that reservation, elided text is computed as if the full field
+    width were available for text, and the arrow ends up drawn directly on
+    top of the last few characters.
     """
 
     ARROW_RESERVE = 16  # px reserved for the QToolButton's native dropdown arrow
@@ -75,10 +91,6 @@ class StatField(QWidget):
         if clickable:
             self.value_button = QToolButton()
             self.value_button.setPopupMode(QToolButton.InstantPopup)
-            # padding-right physically pushes the text away from where the
-            # style will paint the arrow, on top of the elide-width fix in
-            # set_text() below -- belt and suspenders, since relying on
-            # either alone was what let the arrow cover text before.
             self.value_button.setStyleSheet(
                 "QToolButton { text-align: left; border: none; font-weight: 600; "
                 f"padding-right: {self.ARROW_RESERVE}px; }} "
@@ -102,6 +114,29 @@ class StatField(QWidget):
         elided = metrics.elidedText(full_text, Qt.ElideRight, self.width() - 12 - reserve)
         target.setText(elided)
         target.setToolTip(full_text)
+
+
+class FoilToggle(QToolButton):
+    """
+    A simple checkable toggle for the Foil attribute -- styled like the
+    other metadata fields (small caption above, bold value below) but as
+    one clickable unit rather than a dropdown, since "foil" is binary.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.setCheckable(True)
+        self.setText("Foil: Off")
+        self.setFixedWidth(90)
+        self.setStyleSheet(
+            "QToolButton { text-align: left; border: none; font-weight: 600; "
+            "padding-top: 14px; }"
+            "QToolButton:checked { color: #e6c15c; }"
+        )
+        self.toggled.connect(self._on_toggled)
+
+    def _on_toggled(self, checked):
+        self.setText("Foil: On" if checked else "Foil: Off")
 
 
 class ClickableArt(QFrame):
@@ -169,54 +204,110 @@ class ImageZoomWidget(QWidget):
 
 
 def _vline():
-    """A thin vertical rule used as a pane separator -- zero layout spacing
-    around it, so panes sit directly against the line rather than floating
-    in extra whitespace."""
     line = QFrame()
     line.setFrameShape(QFrame.VLine)
     line.setStyleSheet("color: #3a3c41;")
     return line
 
 
+class _TitleBar(QWidget):
+    """
+    Stands in for the OS title bar we removed: shows the card name and a
+    close button, and is itself the drag handle (press-and-drag anywhere on
+    it moves the window, same as dragging a native title bar would).
+    """
+
+    def __init__(self, title, on_close):
+        super().__init__()
+        self.setFixedHeight(34)
+        self._drag_offset = None
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 0, 6, 0)
+        name_label = QLabel(title)
+        name_label.setStyleSheet("font-size: 15px; font-weight: 700;")
+        layout.addWidget(name_label)
+        layout.addStretch()
+
+        close_button = QToolButton()
+        close_button.setText("\u2715")  # ✕
+        close_button.setStyleSheet(
+            "QToolButton { border: none; padding: 4px 8px; border-radius: 3px; } "
+            "QToolButton:hover { background-color: #a83a3a; color: white; }"
+        )
+        close_button.clicked.connect(on_close)
+        layout.addWidget(close_button)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._drag_offset = event.globalPosition().toPoint() - self.window().pos()
+
+    def mouseMoveEvent(self, event):
+        if self._drag_offset is not None and (event.buttons() & Qt.LeftButton):
+            self.window().move(event.globalPosition().toPoint() - self._drag_offset)
+
+    def mouseReleaseEvent(self, event):
+        self._drag_offset = None
+
+
 class CardDetailDialog(QDialog):
     def __init__(self, card_name, parent=None):
-        super().__init__(parent)
+        super().__init__(parent, Qt.Dialog | Qt.FramelessWindowHint)
         self.oracle = get_card_by_name(card_name)
         self.prints = get_card_prints(card_name)
         self.current_print_index = 0
         self.price_source = PRICE_SOURCES[0][0]
+        self.language = LANGUAGES[0]
+        self.condition = CONDITIONS[0]
         self._zoom_widget = None  # keep a reference so it isn't garbage-collected while open
 
-        self.setWindowTitle(card_name)
-        self.resize(860, 560)
+        # Remembered so the click-outside-closes check (in eventFilter
+        # below) can tell "a click landed in the actual main window" apart
+        # from "a click landed inside this dialog" or "inside a popup menu
+        # this dialog opened" -- see the module docstring, point 3.
+        self._app_window = parent.window() if parent is not None else None
+
+        self.resize(900, 560)
 
         outer = QVBoxLayout(self)
-        name_label = QLabel(card_name)
-        name_label.setStyleSheet("font-size: 19px; font-weight: 700;")
-        name_label.setWordWrap(True)
-        outer.addWidget(name_label)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        outer.addWidget(_TitleBar(card_name, self.close))
 
-        # Three panes side by side, no layout spacing between them -- the
-        # separation comes entirely from the vertical-line separators, per
-        # spec ("without spaces, but with separators").
+        content = QVBoxLayout()
+        content.setContentsMargins(12, 8, 12, 12)
+        outer.addLayout(content)
+
         panes_row = QHBoxLayout()
         panes_row.setSpacing(0)
         panes_row.addLayout(self._build_card_pane(), stretch=3)
         panes_row.addWidget(_vline())
-        panes_row.addLayout(self._build_legality_pane(), stretch=1)
+        panes_row.addLayout(self._build_legality_pane())  # no stretch -- sized to content, see below
         panes_row.addWidget(_vline())
         panes_row.addLayout(self._build_rulings_pane(), stretch=2)
-        outer.addLayout(panes_row)
+        content.addLayout(panes_row)
 
         self._build_edition_menu()
         self._build_price_menu()
+        self._build_language_menu()
+        self._build_condition_menu()
         self._refresh_for_current_print()
         self._populate_legality()
         self._populate_rulings()
 
+        QApplication.instance().installEventFilter(self)
+
+    def closeEvent(self, event):
+        QApplication.instance().removeEventFilter(self)
+        super().closeEvent(event)
+
+    def eventFilter(self, watched, event):
+        if (event.type() == QEvent.MouseButtonPress and self._app_window is not None
+                and isinstance(watched, QWidget) and watched.window() is self._app_window):
+            self.close()
+        return super().eventFilter(watched, event)
+
     def _pane_layout(self, title):
-        """Shared scaffold for the two side panes: a small header label (the
-        job tabs used to do) over a vertical layout with modest margins."""
         layout = QVBoxLayout()
         layout.setContentsMargins(10, 4, 10, 4)
         header = QLabel(title)
@@ -233,11 +324,7 @@ class CardDetailDialog(QDialog):
         self.art_box.clicked.connect(self._open_zoom_window)
         layout.addWidget(self.art_box, alignment=Qt.AlignHCenter)
 
-        # GAMEPLAY row: only Type and Mana Cost -- the two fields that
-        # actually matter while playing. Each gets much more breathing room
-        # now that it isn't sharing a row with three metadata fields, since
-        # type lines ("Legendary Creature — Human Soldier") and some mana
-        # costs run long.
+        # GAMEPLAY row: only what matters while playing.
         gameplay_row = QHBoxLayout()
         self.type_field = StatField("Type", 280)
         self.mana_field = StatField("Mana Cost", 130)
@@ -246,16 +333,21 @@ class CardDetailDialog(QDialog):
         gameplay_row.addStretch()
         layout.addLayout(gameplay_row)
 
-        # METADATA row: Edition / Rarity / Price -- collection/shopping
-        # information, not gameplay information, so it's visually separated
-        # onto its own line rather than crowding the row above.
+        # METADATA row: collection/shopping information -- Edition, Language,
+        # Condition, Foil, Rarity, Price. Separated from gameplay info above.
+        # Condition/Foil describe a specific OWNED COPY rather than the card
+        # or print itself -- shown here as a convenient preview/selector, not
+        # yet wired to actually saving against a collection entry (NOTES.md).
         metadata_row = QHBoxLayout()
         self.edition_field = StatField("Edition", 90, clickable=True)
+        self.language_field = StatField("Language", 110, clickable=True)
+        self.condition_field = StatField("Condition", 130, clickable=True)
+        self.foil_toggle = FoilToggle()
         self.rarity_field = StatField("Rarity", 90)
         self.price_field = StatField("Price", 100, clickable=True)
-        metadata_row.addWidget(self.edition_field)
-        metadata_row.addWidget(self.rarity_field)
-        metadata_row.addWidget(self.price_field)
+        for field in (self.edition_field, self.language_field, self.condition_field,
+                      self.foil_toggle, self.rarity_field, self.price_field):
+            metadata_row.addWidget(field)
         metadata_row.addStretch()
         layout.addLayout(metadata_row)
 
@@ -274,8 +366,27 @@ class CardDetailDialog(QDialog):
     def _build_legality_pane(self):
         layout = self._pane_layout("Legality")
         self.legality_list = QListWidget()
+        self.legality_list.setWordWrap(True)  # fallback for anything the fixed width still can't fit
+        self.legality_list.setFixedWidth(self._legality_column_width())
         layout.addWidget(self.legality_list)
         return layout
+
+    def _legality_column_width(self):
+        """
+        Sized to the WIDEST "format: status" string that can actually occur
+        (all formats x all statuses), not a proportional share of the
+        dialog. Word-wrap above is the fallback for anything that still
+        doesn't fit -- longer translated strings, larger text-scaling
+        settings, a format name we haven't accounted for, etc.
+        """
+        probe = QListWidget()
+        metrics = QFontMetrics(probe.font())
+        widest = max(
+            (f'{fmt}:  {status.replace("_", " ").title()}'
+             for fmt in FORMATS for status in LEGALITY_COLORS),
+            key=lambda text: metrics.horizontalAdvance(text),
+        )
+        return metrics.horizontalAdvance(widest) + 44  # padding for list margins + scrollbar
 
     def _build_rulings_pane(self):
         layout = self._pane_layout("Rulings")
@@ -298,6 +409,20 @@ class CardDetailDialog(QDialog):
             action.triggered.connect(lambda checked=False, k=source_key: self._select_price_source(k))
         self.price_field.set_menu(menu)
 
+    def _build_language_menu(self):
+        menu = QMenu(self)
+        for lang in LANGUAGES:
+            action = menu.addAction(lang)
+            action.triggered.connect(lambda checked=False, l=lang: self._select_language(l))
+        self.language_field.set_menu(menu)
+
+    def _build_condition_menu(self):
+        menu = QMenu(self)
+        for cond in CONDITIONS:
+            action = menu.addAction(cond)
+            action.triggered.connect(lambda checked=False, c=cond: self._select_condition(c))
+        self.condition_field.set_menu(menu)
+
     def _select_print(self, index):
         self.current_print_index = index
         self._refresh_for_current_print()
@@ -306,11 +431,24 @@ class CardDetailDialog(QDialog):
         self.price_source = source_key
         self._refresh_for_current_print()
 
+    def _select_language(self, language):
+        # Mock simplification: we don't have real per-language art/text, so
+        # this just relabels the field. Once real localized print data
+        # exists, this is where re-fetching that print's image/text would go.
+        self.language = language
+        self.language_field.set_text(language)
+
+    def _select_condition(self, condition):
+        self.condition = condition
+        self.condition_field.set_text(condition)
+
     def _refresh_for_current_print(self):
         print_info = self.prints[self.current_print_index]
         self.type_field.set_text(self.oracle["type_line"])
         self.mana_field.set_text(self.oracle["mana_cost"])
         self.edition_field.set_text(print_info["set"].upper())
+        self.language_field.set_text(print_info.get("language", self.language))
+        self.condition_field.set_text(self.condition)
         self.rarity_field.set_text(print_info["rarity"].capitalize())
         self.price_field.set_text(f'${print_info.get(self.price_source, 0):.2f}')
         self.oracle_text_label.setText(self.oracle["oracle_text"])

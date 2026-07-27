@@ -2,6 +2,47 @@
 
 Things we've deliberately deferred, with enough context to pick back up later.
 
+## Options menu + externalized/translatable strings (raised alongside language selector)
+TODO, explicitly flagged as a TODO rather than a quick fix. Shape of it:
+- An actual Options/Settings window/dialog is needed once there's more than
+  a couple of app-wide preferences (default language, default condition,
+  price-source default, etc. -- see the "default add" note below).
+- **String externalization**: every user-facing label currently lives
+  inline in the Python source (`"Type"`, `"Rarity"`, `"Filter by..."`,
+  etc). Add real language support means moving these into per-language
+  files -- one file per language, each defaulting to/falling back on the
+  English file for any key it doesn't override, rather than one giant
+  all-languages file. Worth deciding the file format (JSON? Python dict
+  modules? .ts/Qt Linguist format, which has real tooling but more
+  ceremony?) before this grows -- retrofitting externalization onto strings
+  scattered through a dozen files later is a bigger job than building it in
+  as we go from here.
+- This should probably happen BEFORE too many more UI strings get written
+  inline, since every new hardcoded string is something to migrate later.
+
+## "Have" / "Want" / "In Deck" count columns (raised alongside language/condition)
+Not built yet. Inventory needs a count of copies owned; Wishlist needs a
+count wanted; Deck Viewer (once it has a real per-deck card table, which it
+doesn't yet -- see deck_viewer.py's placeholder) needs both "copies in this
+deck" AND "copies owned in Inventory" side by side, so a user can see at a
+glance whether they need to acquire more. This is a real per-view column
+addition, not just a rename of the existing Qty column, since Deck Viewer
+needs two counts simultaneously.
+
+## Default-add behavior + collapsing variants into one row (raised together with the above)
+Bigger idea, needs its own design pass:
+- New cards added to Inventory/Wishlist/a deck should default to: the
+  user's configured language (see Options above), the latest major release
+  printing, non-foil, Near Mint -- all themselves configurable defaults.
+- By default, a card should show as ONE row even if the user owns several
+  different printings/languages/conditions/foil-states of it -- with some
+  way to expand/check which specific version(s) they actually have. This is
+  a real data-model question (a card "row" becomming a summary over
+  potentially several underlying collection-entry rows) that intersects
+  with the count-columns idea above and with the eventual real SQLite
+  collection schema -- worth designing together with that schema rather
+  than bolting onto the current flat per-printing mock rows.
+
 ## Reticle-select zoom on the card image (raised during detail-popup feedback)
 Idea: let the user drag out a rectangle ("reticle") directly on the enlarged
 card image and zoom specifically into that region, rather than only the

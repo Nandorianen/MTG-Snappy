@@ -34,8 +34,8 @@ KNOWN GAPS (deliberately not solved here, to keep this file's job focused):
 """
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QTreeWidget, QTreeWidgetItem,
-    QToolButton, QMenu, QStyledItemDelegate, QAbstractItemView, QLineEdit,
+    QWidget, QVBoxLayout, QTreeWidget, QTreeWidgetItem,
+    QMenu, QStyledItemDelegate, QAbstractItemView, QLineEdit,
     QMessageBox, QApplication,
 )
 from PySide6.QtCore import Qt, Signal, QTimer
@@ -111,20 +111,13 @@ class TreePane(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
 
-        # Small toolbar so the create actions are discoverable without
-        # knowing the keyboard shortcuts -- mirrors Ctrl+N / Ctrl+Shift+N.
-        toolbar = QHBoxLayout()
-        new_leaf_btn = QToolButton()
-        new_leaf_btn.setText(f"+ {leaf_label}")
-        new_leaf_btn.clicked.connect(lambda: self.create_item(is_folder=False))
-        new_folder_btn = QToolButton()
-        new_folder_btn.setText(f"+ {folder_label}")
-        new_folder_btn.clicked.connect(lambda: self.create_item(is_folder=True))
-        toolbar.addWidget(new_leaf_btn)
-        toolbar.addWidget(new_folder_btn)
-        toolbar.addStretch()
-        layout.addLayout(toolbar)
-
+        # No toolbar here (deliberately removed) -- it only ever covered
+        # "new item" / "new folder," a fraction of what right-click and the
+        # keyboard shortcuts already do, and its buttons were the first
+        # thing to grab keyboard focus, which is what made the very first
+        # Tab press move focus to a button instead of collapsing the pane.
+        # Create/rename/delete/etc. all remain fully available via Ctrl+N,
+        # Ctrl+Shift+N, F2, Delete, and the right-click menu.
         self.tree = QTreeWidget()
         self.tree.setHeaderHidden(True)
         self.tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -151,6 +144,17 @@ class TreePane(QWidget):
             self._seed(initial_tree)
 
         self._install_shortcuts()
+
+    def focus_tree(self):
+        """
+        Gives the tree widget itself keyboard focus. Called whenever this
+        pane's tab becomes active (see main.py's _focus_current_view) so
+        that a KNOWN, SENSIBLE widget has focus before the user might press
+        Tab -- rather than leaving it to Qt's own "first focusable widget in
+        creation order" default, which is what let Tab's very first press
+        behave inconsistently.
+        """
+        self.tree.setFocus()
 
     # --- Seeding demo/initial content -----------------------------------
     def _seed(self, nodes, parent_item=None):

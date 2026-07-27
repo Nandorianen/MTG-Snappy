@@ -1,27 +1,35 @@
 # MTG Local Database — Prototype
 
-## Recent addition (this pass): card detail popup
-- **Double-click any row** in Inventory/Wishlist to open it: name, a
-  clickable art placeholder, fixed-position stats (Type / Mana Cost /
-  Edition / Rarity / Price), oracle text, flavor text, plus Legality and
-  Rulings tabs.
-- **Click the art** to open it in a separate frameless window: scroll to
-  zoom, drag anywhere by holding and moving, close with right-click or Escape.
-- **Edition field** — dropdown of every printing this card has (mock data
-  has 2 for Lightning Bolt and Swords to Plowshares to demonstrate it);
-  switching updates rarity, price, and flavor text.
-- **Price field** — dropdown to pick TCGplayer / Card Kingdom / Cardmarket,
-  same as the table's Price header.
+## Recent addition (this pass): header filter, column picker, group-by
+- **Right-click any header** in Inventory/Wishlist: for most columns, a
+  checklist of every distinct value in that column (uncheck a value to hide
+  matching rows — check it again to bring them back), plus a **"Show
+  Columns"** submenu to toggle any column's visibility live.
+- **Type / Mana Cost headers** now have the same ▾ dropdown arrow Price
+  has — click it for **"Group by Type"** / **"Group by Color"**. Grouped
+  view inserts a full-width sub-header bar between groups (Deckbox-style:
+  Creatures, then Instants, etc.; Colorless, then White, Blue, ... then
+  multicolor combos like "U/B"). Click again to un-group.
+- Group-header rows are inert — not selectable, not checkable, don't open
+  the detail popup or hover popover.
+- Known simplification: the Edition/Rarity column's filter checklist works
+  off the Set only (not Rarity); Price isn't filterable this way since it's
+  continuous data — real range filtering is planned as part of the
+  upcoming Search feature.
 
-## Earlier fixes
-- Cut+paste of a folder into its own descendant is now blocked (previously
-  hung the app) -- rejected with an OS beep + a brief red flash on the item.
-- Pasting an item with a name that collides with an existing sibling now
-  auto-renames it "Name (1)", "Name (2)", etc.
-- Delete now asks for confirmation first.
-- Tab reliably collapses/expands the tree pane regardless of which child
-  widget currently has keyboard focus.
-- The collapse arrow on the pane divider is taller and vertically centered.
+## Card detail popup
+- Double-click any row: name, clickable art placeholder (opens a separate
+  zoomable/draggable window), fixed-position stats (Type / Mana Cost /
+  Edition / Rarity / Price), oracle + flavor text, Legality and Rulings tabs.
+- Edition and Price fields are dropdowns — switching editions updates
+  rarity/price/flavor text; switching price source updates the price shown.
+
+## Tree tabs (Tag Database / Deck Viewer)
+- Full folder/item CRUD: create, rename (F2), delete (with confirmation),
+  drag-and-drop, Ctrl+X/C/V (with cycle-detection and same-name dedup),
+  right-click menu with icon color picker.
+- Collapsible/resizable side pane: drag the divider, click the tall arrow
+  on it, press Tab, or click into the right-hand content area.
 
 ## What this is
 A Deckbox-style layout: a tab strip (Tag Database / Inventory / Wishlist /

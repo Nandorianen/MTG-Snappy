@@ -2,15 +2,24 @@
 card_table.py
 -------------
 The central spreadsheet: a QAbstractTableModel (data) + QTableView (display)
-pair, plus two pieces of custom machinery layered on top:
+pair, plus custom machinery layered on top:
 
 1. SplitDropdownHeader (QHeaderView subclass) -- draws the "Edition / Rarity"
-   column as two independently-sortable halves, and a small dropdown arrow
-   on the "Price" column that opens a source-picker menu instead of sorting.
+   column as two independently-sortable halves; draws a dropdown arrow on
+   Price/Type/Mana Cost that opens a menu instead of sorting (price source,
+   or "group by" for Type/Mana); and handles RIGHT-click for a per-column
+   value filter plus a "Show Columns" visibility picker.
 
 2. ActionButtonDelegate (QStyledItemDelegate subclass) -- draws a small
    button-looking cell in the rightmost column and reacts to clicks, WITHOUT
    creating a real QPushButton per row.
+
+3. Grouping with sub-headers: when "Group by Type" or "Group by Color" is
+   active, the model inserts synthetic full-width HEADER ROWS between
+   groups of cards (e.g. a "Creature" bar, then all creatures, then an
+   "Instant" bar, etc. -- the Deckbox-style layout). These header rows live
+   only in the MODEL's presentation layer (self._display_rows) -- the real
+   card data (self._cards) is never contaminated with fake rows.
 
 WHY A DELEGATE INSTEAD OF setCellWidget()?
 Qt lets you put a real widget in a cell via QTableWidget.setCellWidget(), which
@@ -21,8 +30,7 @@ widgets the app has to keep in memory and repaint, which directly fights your
 "snappy, lightweight, don't slow down on large datasets" goal. A delegate instead
 just PAINTS the appearance of a button/checkbox/dropdown on demand (only for
 rows currently visible on screen) and handles the click manually -- no widget
-object exists per row at all. It's more code up front; it's the right call for
-where this app is headed.
+object exists per row at all.
 """
 
 from PySide6.QtWidgets import (
@@ -30,7 +38,7 @@ from PySide6.QtWidgets import (
     QApplication, QMenu,
 )
 from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, Signal, QTimer, QRect, QEvent
-from PySide6.QtGui import QKeySequence, QPainter, QColor
+from PySide6.QtGui import QKeySequence, QPainter, QColor, QBrush
 
 from mock_data import RARITY_ORDER, PRICE_SOURCES
 from card_popover import CardPopover
@@ -39,9 +47,7 @@ from card_detail_popup import CardDetailDialog
 
 # --- Column definitions -----------------------------------------------------
 # Each entry: (key, header_label, kind)
-#   kind "checkbox" -> column 0, native Qt checkbox via CheckStateRole (no delegate needed --
-#                      QTableView already knows how to draw and toggle a checkbox when a
-#                      model reports Qt.ItemIsUserCheckable + returns CheckStateRole data).
+#   kind "checkbox" -> column 0, native Qt checkbox via CheckStateRole.
 #   kind "split"     -> the Edition/Rarity column, drawn/sorted specially by the header.
 #   kind "price"     -> drawn normally in cells, but its HEADER has a dropdown menu.
 #   kind "actions"   -> drawn specially by ActionButtonDelegate.
@@ -67,28 +73,93 @@ COL_PT = 6
 COL_PRICE = 7
 COL_ACTIONS = 8
 
+# Columns whose header has a dropdown-arrow zone (as opposed to just sorting
+# on click). Price opens a price-source picker; Type/Mana open a "group by"
+# toggle. Clicking anywhere else in these headers still sorts, same as before.
+DROPDOWN_COLUMNS = {COL_TYPE, COL_MANA, COL_PRICE}
 
+# Columns offered in the right-click "Filter by..." value checklist. Skipped
+# for the checkbox/actions utility columns (nothing meaningful to filter by)
+# and for Price (continuous numeric data -- range filtering is a job for the
+# future Search feature, not a same-value checklist).
+FILTERABLE_COLUMNS = {COL_QTY, COL_NAME, COL_EDITION_RARITY, COL_TYPE, COL_MANA, COL_PT}
+
+# Menu labels for columns whose header label is blank (checkbox/actions).
+MENU_COLUMN_LABELS = {COL_SELECTED: "Checkbox", COL_ACTIONS: "Actions"}
+
+# --- Grouping helpers --------------------------------------------------------
+# Deckbox-style type ordering: creatures first (the "meat" of a deck), then
+# spells, then permanents, lands last. Anything not matching becomes "Other".
+TYPE_ORDER = ["Creature", "Planeswalker", "Instant", "Sorcery", "Artifact", "Enchantment", "Land"]
+
+# WUBRG canonical order, used both for mono-color ordering and for naming
+# multicolor combinations consistently (e.g. always "U/B", never "B/U").
+COLOR_ORDER = ["W", "U", "B", "R", "G"]
+COLOR_NAMES = {"W": "White", "U": "Blue", "B": "Black", "R": "Red", "G": "Green"}
+
+
+def _type_category(type_line):
+    for t in TYPE_ORDER:
+        if t in type_line:
+            return t
+    return "Other"
+
+
+def _type_rank(card):
+    category = _type_category(card["type_line"])
+    return TYPE_ORDER.index(category) if category in TYPE_ORDER else len(TYPE_ORDER)
+
+
+def _color_category(colors):
+    if not colors:
+        return "Colorless"
+    if len(colors) == 1:
+        return COLOR_NAMES[colors[0]]
+    ordered = [c for c in COLOR_ORDER if c in colors]
+    return "/".join(ordered)
+
+
+def _color_rank(card):
+    """
+    Sort key for grouping: colorless first (rank 0), then each mono color in
+    WUBRG order (ranks 1-5), then multicolor combos grouped by how many
+    colors they use and ordered consistently within that (rank 10+, tie-
+    broken by the WUBRG-ordered tuple of colors). The two branches never
+    compare their second element against each other because their first
+    elements (0-5 vs 10+) always differ first.
+    """
+    colors = card.get("colors", [])
+    if not colors:
+        return (0, "")
+    if len(colors) == 1:
+        return (1 + COLOR_ORDER.index(colors[0]), "")
+    ordered = tuple(c for c in COLOR_ORDER if c in colors)
+    return (10 + len(colors), ordered)
 
 
 class CardTableModel(QAbstractTableModel):
     """
-    Holds one list of card dicts (from mock_data for now, from a real
-    inventory/wishlist DB query later) and answers Qt's questions about how
-    to display and sort them. This is the ONLY class that knows what a
-    "card dict" looks like internally -- the view and delegates just ask it
-    for data by (row, column, role) and never touch self._cards directly.
+    Holds the card data plus everything needed to PRESENT it: sorting,
+    grouping, per-column filters, and the resulting flat list of display
+    rows (self._display_rows) that mixes real card rows with synthetic
+    group-header rows. The view only ever asks this model "what's in row N,
+    column M" -- it never needs to know about groups or filters itself.
     """
 
     def __init__(self, cards):
         super().__init__()
-        self._cards = cards
-        self.price_source = PRICE_SOURCES[0][0]  # which mock price field is currently shown
+        self._source_cards = cards       # the master, unfiltered pool
+        self._cards = list(cards)         # currently filtered + sorted + grouped working set
+        self.price_source = PRICE_SOURCES[0][0]
         self._sort_key = None
         self._sort_reverse = False
+        self.group_by = None              # None | "type" | "color"
+        self._column_filters = {}         # {column: set(excluded_value_strings)}
+        self._display_rows = [{"type": "card", "card": c} for c in self._cards]
 
     # --- Required QAbstractTableModel overrides ---
     def rowCount(self, parent=QModelIndex()):
-        return len(self._cards)
+        return len(self._display_rows)
 
     def columnCount(self, parent=QModelIndex()):
         return len(COLUMNS)
@@ -99,6 +170,9 @@ class CardTableModel(QAbstractTableModel):
         return super().headerData(section, orientation, role)
 
     def flags(self, index):
+        entry = self._display_rows[index.row()]
+        if entry["type"] == "header":
+            return Qt.NoItemFlags  # inert: not selectable, not clickable, not checkable
         base = Qt.ItemIsEnabled | Qt.ItemIsSelectable
         if index.column() == COL_SELECTED:
             base |= Qt.ItemIsUserCheckable
@@ -107,8 +181,17 @@ class CardTableModel(QAbstractTableModel):
     def data(self, index, role=Qt.DisplayRole):
         if not index.isValid():
             return None
-        card = self._cards[index.row()]
+        entry = self._display_rows[index.row()]
         col = index.column()
+
+        if entry["type"] == "header":
+            if role == Qt.DisplayRole and col == 0:
+                return entry["label"]
+            if role == Qt.BackgroundRole:
+                return QBrush(QColor("#26282c"))
+            return None
+
+        card = entry["card"]
 
         if role == Qt.CheckStateRole and col == COL_SELECTED:
             return Qt.Checked if card.get("selected") else Qt.Unchecked
@@ -132,24 +215,29 @@ class CardTableModel(QAbstractTableModel):
                 return f"{p}/{t}" if p is not None else ""
             if col == COL_PRICE:
                 return f"${card.get(self.price_source, 0):.2f}"
-            # COL_SELECTED and COL_ACTIONS deliberately return no text --
-            # they're drawn entirely by the checkbox mechanism / the delegate.
             return ""
         return None
 
     def setData(self, index, value, role=Qt.EditRole):
+        entry = self._display_rows[index.row()]
+        if entry["type"] == "header":
+            return False
         if role == Qt.CheckStateRole and index.column() == COL_SELECTED:
-            self._cards[index.row()]["selected"] = (value == Qt.Checked)
+            entry["card"]["selected"] = (value == Qt.Checked)
             self.dataChanged.emit(index, index, [Qt.CheckStateRole])
             return True
         return False
 
-    # --- Custom helpers (not part of the required QAbstractTableModel API) ---
+    # --- Custom helpers -----------------------------------------------------
     def card_at(self, row):
-        return self._cards[row]
+        """Returns the card dict for a row, or None if it's a group-header row."""
+        entry = self._display_rows[row]
+        return entry["card"] if entry["type"] == "card" else None
+
+    def is_group_header(self, row):
+        return self._display_rows[row]["type"] == "header"
 
     def set_price_source(self, source_key):
-        """Called when the user picks a source from the Price header's dropdown menu."""
         self.price_source = source_key
         top_left = self.index(0, COL_PRICE)
         bottom_right = self.index(self.rowCount() - 1, COL_PRICE)
@@ -157,13 +245,39 @@ class CardTableModel(QAbstractTableModel):
 
     def sort_by_key(self, sort_key):
         """
-        Dispatches a sort by KEY NAME (e.g. "name", "set", "rarity", "price")
-        rather than by column index. We need this because our custom header
-        can request a sort on "set" or "rarity" from the SAME physical column
-        (Edition/Rarity) -- a plain column-index sort can't express that.
-        Clicking the same key again reverses direction, like a normal table.
+        Dispatches a sort by KEY NAME rather than by column index -- needed
+        because the Edition/Rarity column can request a sort on either "set"
+        or "rarity" from the SAME physical column. Clicking the same key
+        again reverses direction.
         """
-        key_funcs = {
+        if sort_key not in self._key_funcs():
+            return
+        if self._sort_key == sort_key:
+            self._sort_reverse = not self._sort_reverse
+        else:
+            self._sort_key = sort_key
+            self._sort_reverse = False
+        self._commit_reorder()
+
+    def set_group_by(self, mode):
+        """Toggles grouping: clicking the same mode again turns it off."""
+        self.group_by = None if self.group_by == mode else mode
+        self._commit_reorder()
+
+    def set_column_filter(self, column, excluded_values):
+        self._column_filters[column] = set(excluded_values)
+        self._commit_reorder()
+
+    def distinct_values_for_column(self, column):
+        values = set()
+        for card in self._source_cards:
+            value = self._raw_filter_value(card, column)
+            if value is not None:
+                values.add(value)
+        return sorted(values)
+
+    def _key_funcs(self):
+        return {
             "qty": lambda c: c.get("qty", 0),
             "name": lambda c: c["name"].lower(),
             "set": lambda c: c["set"],
@@ -173,45 +287,115 @@ class CardTableModel(QAbstractTableModel):
             "power_toughness": lambda c: (c.get("power") if c.get("power") is not None else -1),
             "price": lambda c: c.get(self.price_source, 0),
         }
-        func = key_funcs.get(sort_key)
-        if func is None:
-            return
-        if self._sort_key == sort_key:
-            self._sort_reverse = not self._sort_reverse
-        else:
-            self._sort_key = sort_key
-            self._sort_reverse = False
 
-        self.layoutAboutToBeChanged.emit()
+    def _raw_filter_value(self, card, column):
+        if column == COL_QTY:
+            return str(card.get("qty", ""))
+        if column == COL_NAME:
+            return card["name"]
+        if column == COL_EDITION_RARITY:
+            return card["set"].upper()  # filters by SET only -- see class docstring / README gap note
+        if column == COL_TYPE:
+            return card["type_line"]
+        if column == COL_MANA:
+            return card["mana_cost"]
+        if column == COL_PT:
+            p, t = card.get("power"), card.get("toughness")
+            return f"{p}/{t}" if p is not None else None
+        return None
+
+    def _passes_filters(self, card):
+        for column, excluded in self._column_filters.items():
+            if not excluded:
+                continue
+            if self._raw_filter_value(card, column) in excluded:
+                return False
+        return True
+
+    def _commit_reorder(self):
+        """
+        The one place that actually re-derives self._cards (filtered subset
+        of self._source_cards, sorted, then grouped) and rebuilds
+        self._display_rows (cards + synthetic group headers). Wrapped in
+        beginResetModel()/endResetModel() because grouping can change the
+        ROW COUNT (headers are extra rows), which a plain layoutChanged
+        signal doesn't account for.
+        """
+        self.beginResetModel()
+
+        self._cards = [c for c in self._source_cards if self._passes_filters(c)]
+
+        key_funcs = self._key_funcs()
+        func = key_funcs.get(self._sort_key, key_funcs["name"])
         self._cards.sort(key=func, reverse=self._sort_reverse)
-        self.layoutChanged.emit()
+        # A second, separate stable sort by group rank -- Python's sort is
+        # guaranteed stable, so this regroups the list WITHOUT disturbing
+        # the within-group order the line above just established.
+        if self.group_by == "type":
+            self._cards.sort(key=_type_rank)
+        elif self.group_by == "color":
+            self._cards.sort(key=_color_rank)
+
+        rows = []
+        last_label = object()  # sentinel -- guarantees the first card always starts a group
+        for card in self._cards:
+            if self.group_by:
+                label = _type_category(card["type_line"]) if self.group_by == "type" else _color_category(card.get("colors", []))
+                if label != last_label:
+                    rows.append({"type": "header", "label": label})
+                    last_label = label
+            rows.append({"type": "card", "card": card})
+        self._display_rows = rows
+
+        self.endResetModel()
+
+
+class _StayOpenMenu(QMenu):
+    """
+    A QMenu where clicking a checkable action toggles it WITHOUT closing the
+    menu -- the standard Qt idiom for a checklist-style dropdown (used for
+    both the column visibility picker and the per-column value filter,
+    where you want to check/uncheck several items in one go).
+    """
+    def mouseReleaseEvent(self, event):
+        action = self.activeAction()
+        if action is not None and action.isCheckable():
+            action.trigger()
+            return
+        super().mouseReleaseEvent(event)
 
 
 class SplitDropdownHeader(QHeaderView):
     """
-    Custom header for two special columns:
-      - Edition/Rarity: painted as two halves, each independently clickable
-        to sort by that half's key.
-      - Price: painted with a small dropdown arrow; clicking the arrow area
-        emits a signal asking for a source-picker menu instead of sorting.
+    Custom header handling:
+      - Edition/Rarity: painted as two halves, each independently sortable.
+      - Price/Type/Mana Cost: a dropdown-arrow zone on the right edge opens
+        a menu (price source, or group-by) instead of sorting; clicking
+        elsewhere in these headers still sorts normally.
+      - RIGHT-click anywhere: a context menu with a per-column value
+        checklist filter (where applicable) and a "Show Columns" submenu
+        for toggling column visibility live.
 
-    KNOWN LIMITATION (documented rather than hidden): for these two special
-    columns we fully handle the mouse press ourselves and don't call the
-    parent implementation, which means drag-to-resize on those two specific
-    header cells doesn't work yet. Every other column still resizes normally.
-    Fixing that means detecting "click near the section border" vs "click in
-    the middle" and only intercepting the latter -- straightforward, just not
-    done in this first pass.
+    Reads/writes model state directly via self.model() (Qt wires this up
+    automatically once the header is attached to a view via
+    setHorizontalHeader()) rather than round-tripping through signals --
+    reasonable here since this header is only ever used with
+    CardTableModel, unlike the more generic sort/price-menu signals kept
+    from the earlier pass for compatibility.
+
+    KNOWN LIMITATION (documented rather than hidden): for Edition/Rarity and
+    the DROPDOWN_COLUMNS, we fully handle the mouse press ourselves and
+    don't call the parent implementation, so drag-to-resize on those
+    specific header cells doesn't work. Every other column still resizes
+    normally.
     """
 
-    sort_requested = Signal(str)          # emits a sort key name, e.g. "rarity" or "price"
-    price_menu_requested = Signal(object)  # emits a QPoint (global) to show the menu at
+    sort_requested = Signal(str)
+    price_menu_requested = Signal(object)
 
     def __init__(self, column_keys):
         super().__init__(Qt.Horizontal)
         self.setSectionsClickable(True)
-        # Maps ordinary column indices -> the sort key name to request.
-        # (Special columns are handled separately in mousePressEvent below.)
         self._column_keys = column_keys
         self._active_sort_key = None
 
@@ -219,7 +403,7 @@ class SplitDropdownHeader(QHeaderView):
         if logical_index == COL_EDITION_RARITY:
             self._paint_split_section(painter, rect)
             return
-        if logical_index == COL_PRICE:
+        if logical_index in DROPDOWN_COLUMNS:
             super().paintSection(painter, rect, logical_index)
             self._paint_dropdown_arrow(painter, rect)
             return
@@ -252,6 +436,12 @@ class SplitDropdownHeader(QHeaderView):
     def mousePressEvent(self, event):
         pos = event.position().toPoint()
         logical_index = self.logicalIndexAt(pos)
+
+        if event.button() == Qt.RightButton:
+            self._show_context_menu(logical_index, self.mapToGlobal(pos))
+            event.accept()
+            return
+
         section_x = self.sectionViewportPosition(logical_index)
         section_width = self.sectionSize(logical_index)
         rel_x = pos.x() - section_x
@@ -264,14 +454,15 @@ class SplitDropdownHeader(QHeaderView):
             event.accept()
             return
 
-        if logical_index == COL_PRICE:
+        if logical_index in DROPDOWN_COLUMNS:
             if rel_x > section_width - 20:
-                global_pos = self.mapToGlobal(pos)
-                self.price_menu_requested.emit(global_pos)
+                self._show_dropdown_menu(logical_index, self.mapToGlobal(pos))
             else:
-                self._active_sort_key = "price"
-                self.sort_requested.emit("price")
-                self.update()
+                key = self._column_keys.get(logical_index)
+                if key:
+                    self._active_sort_key = key
+                    self.sort_requested.emit(key)
+                    self.update()
             event.accept()
             return
 
@@ -282,17 +473,77 @@ class SplitDropdownHeader(QHeaderView):
             self.update()
         super().mousePressEvent(event)
 
+    # --- Dropdown-arrow menus (Price source / Group by) ---------------------
+    def _show_dropdown_menu(self, column, global_pos):
+        if column == COL_PRICE:
+            self.price_menu_requested.emit(global_pos)
+            return
+        menu = self._build_dropdown_menu(column)
+        if menu is not None:
+            menu.exec(global_pos)
+
+    def _build_dropdown_menu(self, column):
+        mode = "type" if column == COL_TYPE else "color"
+        label = "Type" if mode == "type" else "Color"
+        menu = QMenu(self)
+        action = menu.addAction(f"Group by {label}")
+        action.setCheckable(True)
+        action.setChecked(self.model().group_by == mode)
+        action.triggered.connect(lambda checked=False, m=mode: self.model().set_group_by(m))
+        return menu
+
+    # --- Right-click: per-column filter + column visibility ------------------
+    def _show_context_menu(self, column, global_pos):
+        self._build_context_menu(column).exec(global_pos)
+
+    def _build_context_menu(self, column):
+        menu = _StayOpenMenu(self)
+
+        if column in FILTERABLE_COLUMNS:
+            label = COLUMNS[column][1] or "this column"
+            header_action = menu.addAction(f"Filter by {label}")
+            header_action.setEnabled(False)  # acts as a section label, not clickable
+            menu.addSeparator()
+            excluded = self.model()._column_filters.get(column, set())
+            for value in self.model().distinct_values_for_column(column):
+                action = menu.addAction(value)
+                action.setCheckable(True)
+                action.setChecked(value not in excluded)
+                action.toggled.connect(
+                    lambda checked, v=value, col=column: self._on_filter_toggled(col, v, checked)
+                )
+            menu.addSeparator()
+
+        columns_menu = menu.addMenu("Show Columns")
+        for index, (_key, label, _kind) in enumerate(COLUMNS):
+            display_label = label or MENU_COLUMN_LABELS.get(index, f"Column {index}")
+            action = columns_menu.addAction(display_label)
+            action.setCheckable(True)
+            action.setChecked(not self.isSectionHidden(index))
+            action.toggled.connect(lambda checked, i=index: self.setSectionHidden(i, not checked))
+
+        return menu
+
+    def _on_filter_toggled(self, column, value, checked):
+        excluded = set(self.model()._column_filters.get(column, set()))
+        if checked:
+            excluded.discard(value)
+        else:
+            excluded.add(value)
+        self.model().set_column_filter(column, excluded)
+
 
 class ActionButtonDelegate(QStyledItemDelegate):
     """
     Paints a small "..." button in the actions column and opens a stub menu
-    on click. See the module docstring for why this is a delegate and not a
-    real QPushButton placed in each row.
+    on click. Skips group-header rows entirely (nothing to act on there).
     """
 
     BUTTON_MARGIN = 6
 
     def paint(self, painter, option, index):
+        if index.model().card_at(index.row()) is None:
+            return  # a group-header row -- nothing to draw here
         painter.save()
         rect = option.rect.adjusted(self.BUTTON_MARGIN, self.BUTTON_MARGIN,
                                      -self.BUTTON_MARGIN, -self.BUTTON_MARGIN)
@@ -301,10 +552,12 @@ class ActionButtonDelegate(QStyledItemDelegate):
         painter.setPen(Qt.NoPen)
         painter.drawRoundedRect(rect, 4, 4)
         painter.setPen(QColor("#e3e3e3"))
-        painter.drawText(rect, Qt.AlignCenter, "\u22EF")  # a horizontal ellipsis, "⋯"
+        painter.drawText(rect, Qt.AlignCenter, "\u22EF")
         painter.restore()
 
     def editorEvent(self, event, model, option, index):
+        if model.card_at(index.row()) is None:
+            return False
         if event.type() == QEvent.MouseButtonRelease:
             menu = QMenu()
             menu.addAction("Add to deck")
@@ -318,7 +571,8 @@ class ActionButtonDelegate(QStyledItemDelegate):
 class CardTableView(QTableView):
     """
     The table widget itself. Configures selection to behave like a
-    spreadsheet, adds Ctrl+C clipboard export, and drives the hover popover.
+    spreadsheet, adds Ctrl+C clipboard export, drives the hover popover, and
+    keeps the group-header full-width row spans in sync with the model.
     """
 
     def __init__(self, cards):
@@ -326,22 +580,21 @@ class CardTableView(QTableView):
         self.card_model = CardTableModel(cards)
         self.setModel(self.card_model)
 
-        # --- Selection behavior: this is what gives us Ctrl+click / Shift+click /
-        # arrow-key navigation "for free" -- Qt implements all of that natively
-        # for any QTableView configured this way. Nothing below this comment
-        # was written to make that part work; it already just works.
         self.setSelectionBehavior(QAbstractItemView.SelectItems)
         self.setSelectionMode(QAbstractItemView.ExtendedSelection)
 
-        # --- Custom header ---
         column_keys = {COL_QTY: "qty", COL_NAME: "name", COL_TYPE: "type_line",
-                       COL_MANA: "mana_cost", COL_PT: "power_toughness"}
+                       COL_MANA: "mana_cost", COL_PT: "power_toughness", COL_PRICE: "price"}
         self.header = SplitDropdownHeader(column_keys)
         self.setHorizontalHeader(self.header)
         self.header.sort_requested.connect(self.card_model.sort_by_key)
         self.header.price_menu_requested.connect(self._show_price_menu)
 
-        # --- Actions column delegate ---
+        # Whenever the model resets (sort/group/filter change), row 0..N
+        # shift around and any previously-spanned header rows need to be
+        # recomputed from scratch.
+        self.card_model.modelReset.connect(self._reapply_group_spans)
+
         self.setItemDelegateForColumn(COL_ACTIONS, ActionButtonDelegate(self))
 
         self.horizontalHeader().setStretchLastSection(False)
@@ -349,7 +602,6 @@ class CardTableView(QTableView):
         self.setColumnWidth(COL_ACTIONS, 36)
         self.verticalHeader().setVisible(False)
 
-        # --- Hover popover wiring ---
         self.viewport().setMouseTracking(True)
         self._popover = CardPopover()
         self._hover_timer = QTimer(self)
@@ -357,22 +609,29 @@ class CardTableView(QTableView):
         self._hover_timer.timeout.connect(self._show_popover)
         self._hover_index = QModelIndex()
 
-        # Double-click ANYWHERE on a row (doubleClicked is a signal every
-        # QAbstractItemView already provides -- no custom mouse handling
-        # needed here) opens the full detail popup, per spec: not
-        # restricted to the Name column the way the hover popover is.
-        self._detail_dialog = None  # keep a reference so it isn't garbage-collected while open
+        self._detail_dialog = None
         self.doubleClicked.connect(self._open_card_detail)
+
+    def _reapply_group_spans(self):
+        """
+        Merges each group-header row's cells into one full-width bar via
+        QTableView.setSpan(). Has to be redone from scratch on every reset
+        since the row positions of headers move whenever sort/group/filter
+        state changes.
+        """
+        self.clearSpans()
+        column_count = self.card_model.columnCount()
+        for row in range(self.card_model.rowCount()):
+            if self.card_model.is_group_header(row):
+                self.setSpan(row, 0, 1, column_count)
 
     def _open_card_detail(self, index):
         card = self.card_model.card_at(index.row())
+        if card is None:
+            return  # double-clicked a group-header row -- nothing to open
         self._detail_dialog = CardDetailDialog(card["name"], parent=self)
         self._detail_dialog.show()
 
-    # --- Ctrl+C copy support: this is the one part of "Excel-like" behavior
-    # Qt does NOT give us automatically. We gather selected cells, group them
-    # by row, and join with tabs/newlines -- exactly the format spreadsheet
-    # apps use, so pasting into Excel/Sheets/deckbox.org-style tools works.
     def keyPressEvent(self, event):
         if event.matches(QKeySequence.Copy):
             self._copy_selection_to_clipboard()
@@ -404,12 +663,10 @@ class CardTableView(QTableView):
             action.triggered.connect(lambda checked=False, k=source_key: self.card_model.set_price_source(k))
         menu.exec(global_pos)
 
-    # --- Hover popover: mouse-move over the Name column starts a short
-    # delay timer before showing the popover, so it doesn't flicker while
-    # the cursor just passes through on its way somewhere else.
     def mouseMoveEvent(self, event):
         index = self.indexAt(event.position().toPoint())
-        if index.isValid() and index.column() == COL_NAME:
+        if (index.isValid() and index.column() == COL_NAME
+                and self.card_model.card_at(index.row()) is not None):
             if index != self._hover_index:
                 self._hover_index = index
                 self._hover_timer.start(350)
@@ -428,6 +685,8 @@ class CardTableView(QTableView):
         if not self._hover_index.isValid():
             return
         card = self.card_model.card_at(self._hover_index.row())
+        if card is None:
+            return
         anchor = self.visualRect(self._hover_index).bottomLeft()
         global_pos = self.viewport().mapToGlobal(anchor)
         self._popover.show_card(card, global_pos)

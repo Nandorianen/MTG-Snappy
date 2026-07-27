@@ -1,33 +1,35 @@
 """
 card_detail_popup.py
 ---------------------
-The double-click detail view: card name, a clickable art placeholder, a row
-of fixed-position stats (Type / Mana Cost / Edition / Rarity / Price), oracle
-+ flavor text, then three tabs' worth of everything else (the "Card" tab
-holds the stuff above; Legality and Rulings are their own tabs).
+The double-click detail view: card name, a clickable art placeholder, two
+rows of fixed-position stats (gameplay: Type / Mana Cost -- metadata:
+Edition / Rarity / Price), oracle + flavor text, then Legality and Rulings
+as side-by-side panes (not tabs) separated by thin vertical rules.
 
-TWO PIECES OF CUSTOM MACHINERY WORTH CALLING OUT:
+THREE PIECES OF CUSTOM MACHINERY WORTH CALLING OUT:
 
 1. "FIXED POSITION even if text length changes" -- QLabel doesn't do this on
    its own; by default a longer string just makes the label (and everything
    after it) wider. StatField fixes each stat to a constant pixel width and
    ELIDES (truncates with "…") any text that doesn't fit, using
    QFontMetrics.elidedText(). The full untruncated text is still available
-   as a tooltip. This is the standard Qt technique for "same width no matter
-   the content."
+   as a tooltip.
 
-2. The zoomable/draggable image window is a frameless top-level QWidget.
+2. Panes-not-tabs layout: three widgets in one QHBoxLayout with
+   setSpacing(0), each pane separated from its neighbor by a QFrame drawn as
+   a vertical line (QFrame.VLine) rather than by layout spacing -- "without
+   spaces, but with separators," as specified. Each pane keeps its own
+   internal margins so its content doesn't press against the separator.
+
+3. The zoomable/draggable image window is a frameless top-level QWidget.
    Frameless means there's no OS title bar to drag by, so dragging is
-   implemented by hand (track the mouse-down offset, move the window on
-   mouse-move); "zoom" is implemented by resizing the window itself on
-   wheelEvent, since we're drawing a placeholder color rather than a real
-   QPixmap that could be scaled more efficiently -- when real card images
-   arrive, this'll want to switch to scaling a QPixmap instead of just
-   resizing the window, so the image doesn't visibly blur while dragging.
+   implemented by hand; "zoom" is implemented by resizing the window itself
+   on wheelEvent. See NOTES.md for a parked idea about adding reticle-based
+   zoom-to-region later.
 """
 
 from PySide6.QtWidgets import (
-    QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QTabWidget,
+    QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame,
     QToolButton, QMenu, QListWidget, QListWidgetItem,
 )
 from PySide6.QtCore import Qt, Signal, QSize
@@ -46,15 +48,22 @@ LEGALITY_COLORS = {
 
 class StatField(QWidget):
     """
-    One fixed-width labeled stat (e.g. "Type" / "Legendary Creature — ...").
-    `clickable=True` swaps the value QLabel for a QToolButton with a popup
-    menu -- used for Edition and Price, which need to open a dropdown rather
-    than just display text.
+    One fixed-width labeled stat. `clickable=True` swaps the value QLabel
+    for a QToolButton with a popup menu -- used for Edition and Price.
+
+    The clickable variant reserves extra width for Qt's own menu-indicator
+    arrow (drawn automatically by the style for InstantPopup buttons) --
+    without that reservation, the elided text is computed as if the full
+    field width were available for text, and the arrow ends up drawn
+    directly on top of the last few characters.
     """
+
+    ARROW_RESERVE = 16  # px reserved for the QToolButton's native dropdown arrow
 
     def __init__(self, title, width, clickable=False):
         super().__init__()
         self.setFixedWidth(width)
+        self._clickable = clickable
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 0, 4, 0)
         layout.setSpacing(2)
@@ -66,8 +75,13 @@ class StatField(QWidget):
         if clickable:
             self.value_button = QToolButton()
             self.value_button.setPopupMode(QToolButton.InstantPopup)
+            # padding-right physically pushes the text away from where the
+            # style will paint the arrow, on top of the elide-width fix in
+            # set_text() below -- belt and suspenders, since relying on
+            # either alone was what let the arrow cover text before.
             self.value_button.setStyleSheet(
-                "QToolButton { text-align: left; border: none; font-weight: 600; } "
+                "QToolButton { text-align: left; border: none; font-weight: 600; "
+                f"padding-right: {self.ARROW_RESERVE}px; }} "
                 "QToolButton::menu-indicator { subcontrol-position: right center; }"
             )
             layout.addWidget(self.value_button)
@@ -83,13 +97,11 @@ class StatField(QWidget):
 
     def set_text(self, full_text):
         target = self.value_button or self.value_label
-        # Elide to fit THIS field's fixed width, regardless of how long the
-        # real value is -- this is what keeps every field's on-screen
-        # position constant from card to card.
         metrics = QFontMetrics(target.font())
-        elided = metrics.elidedText(full_text, Qt.ElideRight, self.width() - 12)
+        reserve = self.ARROW_RESERVE if self._clickable else 0
+        elided = metrics.elidedText(full_text, Qt.ElideRight, self.width() - 12 - reserve)
         target.setText(elided)
-        target.setToolTip(full_text)  # full value still available on hover
+        target.setToolTip(full_text)
 
 
 class ClickableArt(QFrame):
@@ -109,7 +121,7 @@ class ImageZoomWidget(QWidget):
     """
     A separate, frameless, always-on-top-of-itself window showing the
     (placeholder) art at a user-adjustable zoom, draggable anywhere on
-    screen. Closes on right-click or Escape, per spec.
+    screen. Closes on right-click or Escape.
     """
 
     BASE_SIZE = QSize(300, 420)
@@ -121,7 +133,7 @@ class ImageZoomWidget(QWidget):
         self._zoom = 1.0
         self._drag_offset = None
         self.resize(self.BASE_SIZE)
-        self.setFocusPolicy(Qt.StrongFocus)  # so keyPressEvent (Escape) actually reaches us
+        self.setFocusPolicy(Qt.StrongFocus)
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -156,6 +168,16 @@ class ImageZoomWidget(QWidget):
             super().keyPressEvent(event)
 
 
+def _vline():
+    """A thin vertical rule used as a pane separator -- zero layout spacing
+    around it, so panes sit directly against the line rather than floating
+    in extra whitespace."""
+    line = QFrame()
+    line.setFrameShape(QFrame.VLine)
+    line.setStyleSheet("color: #3a3c41;")
+    return line
+
+
 class CardDetailDialog(QDialog):
     def __init__(self, card_name, parent=None):
         super().__init__(parent)
@@ -166,22 +188,25 @@ class CardDetailDialog(QDialog):
         self._zoom_widget = None  # keep a reference so it isn't garbage-collected while open
 
         self.setWindowTitle(card_name)
-        self.resize(460, 620)
+        self.resize(860, 560)
 
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
         name_label = QLabel(card_name)
         name_label.setStyleSheet("font-size: 19px; font-weight: 700;")
         name_label.setWordWrap(True)
-        layout.addWidget(name_label)
+        outer.addWidget(name_label)
 
-        tabs = QTabWidget()
-        layout.addWidget(tabs)
-        tabs.addTab(self._build_card_tab(), "Card")
-        self.legality_list = QListWidget()
-        tabs.addTab(self.legality_list, "Legality")
-        self.rulings_list = QListWidget()
-        self.rulings_list.setWordWrap(True)
-        tabs.addTab(self.rulings_list, "Rulings")
+        # Three panes side by side, no layout spacing between them -- the
+        # separation comes entirely from the vertical-line separators, per
+        # spec ("without spaces, but with separators").
+        panes_row = QHBoxLayout()
+        panes_row.setSpacing(0)
+        panes_row.addLayout(self._build_card_pane(), stretch=3)
+        panes_row.addWidget(_vline())
+        panes_row.addLayout(self._build_legality_pane(), stretch=1)
+        panes_row.addWidget(_vline())
+        panes_row.addLayout(self._build_rulings_pane(), stretch=2)
+        outer.addLayout(panes_row)
 
         self._build_edition_menu()
         self._build_price_menu()
@@ -189,29 +214,50 @@ class CardDetailDialog(QDialog):
         self._populate_legality()
         self._populate_rulings()
 
-    def _build_card_tab(self):
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
+    def _pane_layout(self, title):
+        """Shared scaffold for the two side panes: a small header label (the
+        job tabs used to do) over a vertical layout with modest margins."""
+        layout = QVBoxLayout()
+        layout.setContentsMargins(10, 4, 10, 4)
+        header = QLabel(title)
+        header.setStyleSheet("color: #a8adb5; font-size: 11px; font-weight: 600;")
+        layout.addWidget(header)
+        return layout
+
+    def _build_card_pane(self):
+        layout = self._pane_layout("Card")
+        layout.setContentsMargins(4, 4, 10, 4)
 
         self.art_box = ClickableArt()
         self.art_box.setFixedSize(220, 306)
         self.art_box.clicked.connect(self._open_zoom_window)
         layout.addWidget(self.art_box, alignment=Qt.AlignHCenter)
 
-        # Fixed widths per field -- Type gets the most room since type
-        # lines run long ("Legendary Creature — Human Soldier"); the others
-        # are short and bounded. Order/position never changes card to card.
-        stats_row = QHBoxLayout()
-        self.type_field = StatField("Type", 170)
-        self.mana_field = StatField("Mana Cost", 80)
-        self.edition_field = StatField("Edition", 80, clickable=True)
-        self.rarity_field = StatField("Rarity", 80)
-        self.price_field = StatField("Price", 90, clickable=True)
-        for field in (self.type_field, self.mana_field, self.edition_field,
-                      self.rarity_field, self.price_field):
-            stats_row.addWidget(field)
-        stats_row.addStretch()
-        layout.addLayout(stats_row)
+        # GAMEPLAY row: only Type and Mana Cost -- the two fields that
+        # actually matter while playing. Each gets much more breathing room
+        # now that it isn't sharing a row with three metadata fields, since
+        # type lines ("Legendary Creature — Human Soldier") and some mana
+        # costs run long.
+        gameplay_row = QHBoxLayout()
+        self.type_field = StatField("Type", 280)
+        self.mana_field = StatField("Mana Cost", 130)
+        gameplay_row.addWidget(self.type_field)
+        gameplay_row.addWidget(self.mana_field)
+        gameplay_row.addStretch()
+        layout.addLayout(gameplay_row)
+
+        # METADATA row: Edition / Rarity / Price -- collection/shopping
+        # information, not gameplay information, so it's visually separated
+        # onto its own line rather than crowding the row above.
+        metadata_row = QHBoxLayout()
+        self.edition_field = StatField("Edition", 90, clickable=True)
+        self.rarity_field = StatField("Rarity", 90)
+        self.price_field = StatField("Price", 100, clickable=True)
+        metadata_row.addWidget(self.edition_field)
+        metadata_row.addWidget(self.rarity_field)
+        metadata_row.addWidget(self.price_field)
+        metadata_row.addStretch()
+        layout.addLayout(metadata_row)
 
         self.oracle_text_label = QLabel()
         self.oracle_text_label.setWordWrap(True)
@@ -223,7 +269,20 @@ class CardDetailDialog(QDialog):
         layout.addWidget(self.flavor_text_label)
 
         layout.addStretch()
-        return tab
+        return layout
+
+    def _build_legality_pane(self):
+        layout = self._pane_layout("Legality")
+        self.legality_list = QListWidget()
+        layout.addWidget(self.legality_list)
+        return layout
+
+    def _build_rulings_pane(self):
+        layout = self._pane_layout("Rulings")
+        self.rulings_list = QListWidget()
+        self.rulings_list.setWordWrap(True)
+        layout.addWidget(self.rulings_list)
+        return layout
 
     def _build_edition_menu(self):
         menu = QMenu(self)
@@ -248,13 +307,6 @@ class CardDetailDialog(QDialog):
         self._refresh_for_current_print()
 
     def _refresh_for_current_print(self):
-        """
-        Re-renders everything that depends on which printing is selected:
-        edition, rarity, price, flavor text, and (once real images exist)
-        the art itself. Oracle-level fields (type, mana cost, oracle text)
-        don't change between printings, so they're set from self.oracle,
-        not from the print dict.
-        """
         print_info = self.prints[self.current_print_index]
         self.type_field.set_text(self.oracle["type_line"])
         self.mana_field.set_text(self.oracle["mana_cost"])

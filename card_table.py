@@ -90,7 +90,17 @@ MENU_COLUMN_LABELS = {COL_SELECTED: "Checkbox", COL_ACTIONS: "Actions"}
 # --- Grouping helpers --------------------------------------------------------
 # Deckbox-style type ordering: creatures first (the "meat" of a deck), then
 # spells, then permanents, lands last. Anything not matching becomes "Other".
-TYPE_ORDER = ["Creature", "Planeswalker", "Instant", "Sorcery", "Artifact", "Enchantment", "Land"]
+TYPE_ORDER = ["Creature", "Planeswalker", "Instant", "Sorcery",
+              "Artifact", "Enchantment", "Battle", "Kindred", "Land"]
+
+# Supertypes stripped before category matching -- "Legendary Creature —
+# Human Soldier" must group under "Creature", not get treated as some
+# separate "Legendary" bucket. Substring matching against TYPE_ORDER would
+# happen to work for most of these by luck (none of them collide with a
+# TYPE_ORDER word), but stripping them explicitly makes that guarantee
+# instead of an accident, and protects against a future edge case (e.g. a
+# hypothetical supertype whose name happened to contain one of the words above).
+SUPERTYPES_TO_STRIP = ["Legendary", "Basic", "Snow", "World", "Ongoing", "Elite"]
 
 # WUBRG canonical order, used both for mono-color ordering and for naming
 # multicolor combinations consistently (e.g. always "U/B", never "B/U").
@@ -99,9 +109,12 @@ COLOR_NAMES = {"W": "White", "U": "Blue", "B": "Black", "R": "Red", "G": "Green"
 
 
 def _type_category(type_line):
-    for t in TYPE_ORDER:
-        if t in type_line:
-            return t
+    stripped = type_line
+    for supertype in SUPERTYPES_TO_STRIP:
+        stripped = stripped.replace(supertype, "")
+    for category in TYPE_ORDER:
+        if category in stripped:
+            return category
     return "Other"
 
 
@@ -375,37 +388,52 @@ class SplitDropdownHeader(QHeaderView):
       - RIGHT-click anywhere: a context menu with a per-column value
         checklist filter (where applicable) and a "Show Columns" submenu
         for toggling column visibility live.
+      - A few pixels at each section border are reserved EXCLUSIVELY for
+        drag-to-resize, checked first, before any of the above.
 
     Reads/writes model state directly via self.model() (Qt wires this up
     automatically once the header is attached to a view via
     setHorizontalHeader()) rather than round-tripping through signals --
-    reasonable here since this header is only ever used with
-    CardTableModel, unlike the more generic sort/price-menu signals kept
-    from the earlier pass for compatibility.
+    reasonable here since this header is only ever used with CardTableModel.
 
-    KNOWN LIMITATION (documented rather than hidden): for Edition/Rarity and
-    the DROPDOWN_COLUMNS, we fully handle the mouse press ourselves and
-    don't call the parent implementation, so drag-to-resize on those
-    specific header cells doesn't work. Every other column still resizes
-    normally.
+    WHY RESIZE IS HANDLED MANUALLY RATHER THAN VIA super().mousePressEvent():
+    Qt's own QHeaderView normally detects "click near a border" internally
+    and starts a resize drag on its own. But since this header already
+    intercepts every mousePressEvent to decide between sort / split-sort /
+    dropdown-menu / right-click-filter, and those decisions were being made
+    using OUR OWN idea of where the section boundary is, a click near an
+    edge kept getting swallowed as "sort this column" before Qt's internal
+    resize detection ever got a chance to see it -- which is exactly the bug
+    reported ("clicking the border is read as sort"). Rather than hope our
+    margin and Qt's internal margin happen to agree, RESIZE_MARGIN below is
+    checked FIRST and, when it matches, this class does the entire
+    press/move/release resize sequence itself (see mouseMoveEvent /
+    mouseReleaseEvent) -- deterministic, and directly testable without
+    depending on Qt's internal fuzzy hit-testing.
     """
 
     sort_requested = Signal(str)
     price_menu_requested = Signal(object)
+
+    RESIZE_MARGIN = 6      # pixels at each section edge reserved purely for resizing
+    ARROW_WIDTH = 18       # width reserved for the dropdown arrow glyph
+    MIN_SECTION_WIDTH = 24
 
     def __init__(self, column_keys):
         super().__init__(Qt.Horizontal)
         self.setSectionsClickable(True)
         self._column_keys = column_keys
         self._active_sort_key = None
+        self._resizing_column = None
+        self._resize_start_x = None
+        self._resize_start_width = None
 
     def paintSection(self, painter: QPainter, rect: QRect, logical_index: int):
         if logical_index == COL_EDITION_RARITY:
             self._paint_split_section(painter, rect)
             return
         if logical_index in DROPDOWN_COLUMNS:
-            super().paintSection(painter, rect, logical_index)
-            self._paint_dropdown_arrow(painter, rect)
+            self._paint_section_with_arrow(painter, rect, logical_index)
             return
         super().paintSection(painter, rect, logical_index)
 
@@ -426,15 +454,66 @@ class SplitDropdownHeader(QHeaderView):
         painter.drawLine(mid_x, rect.top() + 4, mid_x, rect.bottom() - 4)
         painter.restore()
 
-    def _paint_dropdown_arrow(self, painter, rect):
+    def _paint_section_with_arrow(self, painter, rect, logical_index):
+        """
+        Draws the label ELIDED TO A RECT THAT EXCLUDES THE ARROW ZONE, rather
+        than drawing the full-width centered label (via super().paintSection)
+        and then drawing the arrow on top of it -- the previous approach,
+        which is exactly what let a long label run underneath the arrow
+        glyph. Reserving the space up front means the two can never overlap.
+        """
         painter.save()
-        arrow_rect = QRect(rect.right() - 18, rect.top(), 18, rect.height())
+        painter.fillRect(rect, self.palette().button().color())
+
+        text_rect = rect.adjusted(6, 0, -(self.ARROW_WIDTH + 4), 0)
+        label = COLUMNS[logical_index][1]
+        metrics = painter.fontMetrics()
+        elided = metrics.elidedText(label, Qt.ElideRight, max(text_rect.width(), 0))
         painter.setPen(self.palette().text().color())
+        painter.drawText(text_rect, Qt.AlignVCenter | Qt.AlignLeft, elided)
+
+        arrow_rect = QRect(rect.right() - self.ARROW_WIDTH, rect.top(), self.ARROW_WIDTH, rect.height())
         painter.drawText(arrow_rect, Qt.AlignCenter, "▾")
         painter.restore()
 
+    # --- Manual resize: press near a border, drag, release -------------------
+    def _resize_target_at(self, pos):
+        """
+        Returns the logical column index that a press at `pos` should
+        resize, or None if `pos` isn't within RESIZE_MARGIN of any border.
+        Pressing near the LEFT edge of section N resizes section N-1 (its
+        RIGHT edge) -- the same convention every spreadsheet/table UI uses,
+        since visually there's one shared border between two columns, not
+        two independent ones.
+        """
+        logical_index = self.logicalIndexAt(pos)
+        if logical_index < 0:
+            return None
+        section_x = self.sectionViewportPosition(logical_index)
+        section_width = self.sectionSize(logical_index)
+        rel_x = pos.x() - section_x
+
+        if rel_x >= section_width - self.RESIZE_MARGIN:
+            return logical_index
+        if rel_x <= self.RESIZE_MARGIN:
+            visual = self.visualIndex(logical_index)
+            if visual > 0:
+                return self.logicalIndex(visual - 1)
+            return logical_index
+        return None
+
     def mousePressEvent(self, event):
         pos = event.position().toPoint()
+
+        if event.button() == Qt.LeftButton:
+            target = self._resize_target_at(pos)
+            if target is not None:
+                self._resizing_column = target
+                self._resize_start_x = pos.x()
+                self._resize_start_width = self.sectionSize(target)
+                event.accept()
+                return
+
         logical_index = self.logicalIndexAt(pos)
 
         if event.button() == Qt.RightButton:
@@ -471,7 +550,25 @@ class SplitDropdownHeader(QHeaderView):
             self._active_sort_key = key
             self.sort_requested.emit(key)
             self.update()
-        super().mousePressEvent(event)
+        event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self._resizing_column is not None:
+            delta = event.position().toPoint().x() - self._resize_start_x
+            new_width = max(self.MIN_SECTION_WIDTH, self._resize_start_width + delta)
+            self.resizeSection(self._resizing_column, new_width)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self._resizing_column is not None:
+            self._resizing_column = None
+            self._resize_start_x = None
+            self._resize_start_width = None
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     # --- Dropdown-arrow menus (Price source / Group by) ---------------------
     def _show_dropdown_menu(self, column, global_pos):
@@ -589,6 +686,13 @@ class CardTableView(QTableView):
         self.setHorizontalHeader(self.header)
         self.header.sort_requested.connect(self.card_model.sort_by_key)
         self.header.price_menu_requested.connect(self._show_price_menu)
+        # The header is a separate sibling widget from the viewport, not a
+        # region within it -- moving the mouse from the viewport up onto the
+        # header doesn't fire the VIEW's mouseMoveEvent/leaveEvent at all
+        # (that's why the hover popover was sticking around). An event
+        # filter on the header itself is the reliable way to notice "the
+        # cursor just entered a completely different widget."
+        self.header.installEventFilter(self)
 
         # Whenever the model resets (sort/group/filter change), row 0..N
         # shift around and any previously-spanned header rows need to be
@@ -611,6 +715,13 @@ class CardTableView(QTableView):
 
         self._detail_dialog = None
         self.doubleClicked.connect(self._open_card_detail)
+
+    def eventFilter(self, watched, event):
+        if watched is self.header and event.type() == QEvent.Enter:
+            self._hover_timer.stop()
+            self._popover.hide()
+            self._hover_index = QModelIndex()
+        return super().eventFilter(watched, event)
 
     def _reapply_group_spans(self):
         """

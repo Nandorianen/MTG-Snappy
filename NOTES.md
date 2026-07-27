@@ -2,6 +2,22 @@
 
 Things we've deliberately deferred, with enough context to pick back up later.
 
+## Reticle-select zoom on the card image (raised during detail-popup feedback)
+Idea: let the user drag out a rectangle ("reticle") directly on the enlarged
+card image and zoom specifically into that region, rather than only the
+current whole-image wheel-zoom. Ctrl+click was suggested as the modifier to
+distinguish "start a reticle selection" from "drag the window around" (plain
+click+drag currently means "move the window"). Not designed yet -- open
+questions when we get to it:
+- Does the reticle zoom replace the current whole-image zoom, or layer on
+  top of it (zoom into a region of an already-zoomed image)?
+- Once real card images (not color placeholders) exist, is this pixel-crop
+  based (crop + rescale a QPixmap region) or done via a transform on the
+  view (translate + scale)? The former is simpler; the latter generalizes
+  better if we ever want smooth pan/zoom animation.
+- Should the reticle rectangle stay visible as an overlay while dragging it
+  out (typical UX), and what cancels it (Escape, releasing outside the image)?
+
 ## Undo/redo + save model (raised during TreePane feedback pass)
 Not designed yet. Rough shape of the open questions, for when we do:
 

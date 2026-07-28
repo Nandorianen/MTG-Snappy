@@ -21,13 +21,13 @@ TODO, explicitly flagged as a TODO rather than a quick fix. Shape of it:
   inline, since every new hardcoded string is something to migrate later.
 
 ## "Have" / "Want" / "In Deck" count columns (raised alongside language/condition)
-Not built yet. Inventory needs a count of copies owned; Wishlist needs a
-count wanted; Deck Viewer (once it has a real per-deck card table, which it
-doesn't yet -- see deck_viewer.py's placeholder) needs both "copies in this
-deck" AND "copies owned in Inventory" side by side, so a user can see at a
-glance whether they need to acquire more. This is a real per-view column
-addition, not just a rename of the existing Qty column, since Deck Viewer
-needs two counts simultaneously.
+UPDATE: Have/Want now exist as real columns (dynamically labeled per table)
+across both All Card Database and Inventory, and are filterable by exact
+value (right-click -> uncheck "0" isolates "cards I own" or "cards I
+want"). What's still missing: Deck Viewer doesn't have a real per-deck card
+table yet (see deck_viewer.py's placeholder), so there's no "copies in this
+deck" column to add alongside Have yet -- that's still pending on building
+actual deck contents.
 
 ## Default-add behavior + collapsing variants into one row (raised together with the above)
 Bigger idea, needs its own design pass:

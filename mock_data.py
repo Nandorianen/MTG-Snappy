@@ -146,13 +146,32 @@ _WISHLIST_QTY = [1, 2, 1, 1, 1, 1, 1, 1]
 
 
 def get_inventory_cards():
-    """Mock 'owned copies' dataset -- stand-in for a real inventory DB query."""
+    """
+    Owned-copies dataset. Conceptually "SELECT * FROM cards JOIN collection
+    WHERE have > 0" against the real schema -- a filtered SUBSET of the full
+    catalog. In this mock, all 8 cards happen to have nonzero Have counts,
+    since we don't have a large enough fake catalog to include cards you
+    own none of -- so right now this looks identical to get_all_cards()'s
+    data. That's a limitation of the mock's small size, not a design
+    decision; the distinction (and the point of filtering by Have > 0 to
+    get from one to the other) becomes real once there's an actual
+    thousands-of-cards catalog behind this.
+    """
     return _with_collection_fields(MOCK_CARDS, _INVENTORY_QTY, _WISHLIST_QTY)
 
 
-def get_wishlist_cards():
-    """Mock 'wanted copies' dataset -- stand-in for a real wishlist DB query."""
-    return _with_collection_fields(MOCK_CARDS, _WISHLIST_QTY, _INVENTORY_QTY)
+def get_all_cards():
+    """
+    The master card catalog -- every card, each showing both how many you
+    own (Have) and how many you've wishlisted (Want). This replaces having
+    a separate, always-filtered "Wishlist" view: rather than a tab that only
+    ever shows wishlisted cards, this is the same browsable "all cards" list
+    Inventory pulls from, and the user filters/sorts by the Have or Want
+    column themselves (right-click either column -> uncheck "0") to isolate
+    "what I own" or "what I want" on demand, instead of needing a dedicated
+    tab per lens.
+    """
+    return _with_collection_fields(MOCK_CARDS, _INVENTORY_QTY, _WISHLIST_QTY)
 
 
 # Rough placeholder swatch colors per mana color, purely for visual variety

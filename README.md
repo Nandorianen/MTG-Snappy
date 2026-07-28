@@ -1,6 +1,23 @@
 # MTG Local Database — Prototype
 
-## Polish pass (this round)
+## Repurposing pass (this round)
+- **Wishlist is gone as a standalone tab.** It's replaced by "All Card
+  Database" -- the full browsable catalog, showing both Have and Want
+  counts for every card. Inventory is the same shape of data, filtered to
+  what you actually own. Isolating "what I want" is now just: right-click
+  the Want column on either table, uncheck "0". Tab order changed
+  accordingly: Tag Database, All Card Database, Inventory, Deck Viewer
+  (Ctrl+1..4) -- All Card Database took Inventory's old slot, Inventory took
+  Wishlist's.
+- Header background is now a deliberately darker near-black (matching what
+  used to show up by accident before it got "fixed" to match the rows) --
+  applied uniformly across plain and custom-painted headers alike.
+- Card detail popup: Edition/Rarity/Price and Language/Condition rows are
+  now center-aligned across the board, instead of left-aligned in a way
+  that read as inconsistent next to the Type/Mana row's intentional
+  left/center split.
+
+## Polish pass (earlier round)
 - Side nav buttons now highlight the instant you press them, not after a
   visible dashed-focus-rect-then-highlight delay (the delay was a native
   focus rectangle Qt draws before our own styling takes over — removed via
@@ -83,10 +100,11 @@
   on it, press Tab, or click into the right-hand content area.
 
 ## What this is
-A Deckbox-style layout: a tab strip (Tag Database / Inventory / Wishlist /
-Deck Viewer) on the left driving swappable central views. Inventory and
-Wishlist are spreadsheets; Tag Database and Deck Viewer are collapsible
-folder/item trees. Runs on mock data — no real database or images yet.
+A Deckbox-style layout: a tab strip (Tag Database / All Card Database /
+Inventory / Deck Viewer) on the left driving swappable central views. All
+Card Database and Inventory are spreadsheets; Tag Database and Deck Viewer
+are collapsible folder/item trees. Runs on mock data — no real database or
+images yet.
 
 ## Run it
 ```bash
@@ -94,22 +112,24 @@ pip install PySide6
 python main.py
 ```
 
-## Try — spreadsheet tabs (Inventory / Wishlist)
-- **Ctrl+2 / Ctrl+3** — jump to Inventory / Wishlist.
+## Try — spreadsheet tabs (All Card Database / Inventory)
+- **Ctrl+2 / Ctrl+3** — jump to All Card Database / Inventory.
 - **Click / Ctrl+click / Shift+click** cells — Excel-like multi-selection.
 - **Ctrl+C** — copy the selection as tab/newline-separated text.
 - **"Edition / Rarity" header** — click left half to sort by set, right half
   by rarity.
 - **"Price" header** — click the ▾ to pick a price source; click elsewhere
   to sort by price.
+- **"Have" / "Want" columns** — right-click, uncheck "0" to isolate cards
+  you own / cards you've wishlisted.
 - **⋯ button** — stub actions menu. **Hover a card's Name** — popover with
   placeholder art + text.
 
 ## Try — tree tabs (Tag Database / Deck Viewer)
 - **Ctrl+1 / Ctrl+4** — jump to Tag Database / Deck Viewer.
-- **"+ Deck"/"+ Tag" and "+ Folder" buttons, or Ctrl+N / Ctrl+Shift+N** —
-  create a new item; it's immediately renameable with all text pre-selected,
-  so typing replaces the name right away.
+- **Ctrl+N / Ctrl+Shift+N** — create a new item/folder; it's immediately
+  renameable with all text pre-selected, so typing replaces the name right
+  away. (Also available via right-click.)
 - **F2** — rename the selected item. **Delete** — delete selected item(s).
 - **Drag and drop** — reorder/reparent items (drop onto a folder to move
   inside it). **Ctrl+X / Ctrl+C / Ctrl+V** — cut/copy/paste as an

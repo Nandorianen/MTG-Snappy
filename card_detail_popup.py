@@ -149,7 +149,7 @@ class FoilToggle(QToolButton):
         self.setText("Foil: No")
         self.setFixedWidth(90)
         self.setStyleSheet(
-            "QToolButton { text-align: left; border: none; font-weight: 600; "
+            "QToolButton { text-align: center; border: none; font-weight: 600; "
             "padding-top: 14px; }"
             "QToolButton:checked { color: #e6c15c; }"
         )
@@ -363,9 +363,9 @@ class CardDetailDialog(QDialog):
         # METADATA row 1: Edition / Rarity / Price -- collection/shopping
         # info, separated from gameplay info above.
         metadata_row = QHBoxLayout()
-        self.edition_field = StatField("Edition", 90, clickable=True)
-        self.rarity_field = StatField("Rarity", 90)
-        self.price_field = StatField("Price", 100, clickable=True)
+        self.edition_field = StatField("Edition", 90, clickable=True, align=Qt.AlignHCenter)
+        self.rarity_field = StatField("Rarity", 90, align=Qt.AlignHCenter)
+        self.price_field = StatField("Price", 100, clickable=True, align=Qt.AlignHCenter)
         for field in (self.edition_field, self.rarity_field, self.price_field):
             metadata_row.addWidget(field)
         metadata_row.addStretch()
@@ -378,8 +378,8 @@ class CardDetailDialog(QDialog):
         # Price. Not yet wired to actually saving against a collection
         # entry (see NOTES.md).
         collection_row = QHBoxLayout()
-        self.language_field = StatField("Language", 110, clickable=True)
-        self.condition_field = StatField("Condition", 130, clickable=True)
+        self.language_field = StatField("Language", 110, clickable=True, align=Qt.AlignHCenter)
+        self.condition_field = StatField("Condition", 130, clickable=True, align=Qt.AlignHCenter)
         self.foil_toggle = FoilToggle()
         for field in (self.language_field, self.condition_field, self.foil_toggle):
             collection_row.addWidget(field)

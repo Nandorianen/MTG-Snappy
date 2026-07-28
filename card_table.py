@@ -90,13 +90,20 @@ DROPDOWN_COLUMNS = {COL_TYPE, COL_MANA, COL_PRICE}
 # systems in Qt, and only Qt's OWN default section painting (used by every
 # OTHER column) actually goes through the style sheet. Without this shared
 # constant, custom-painted headers visibly mismatched the plain ones.
-HEADER_BG = "#2b2d31"
+#
+# Color choice: deliberately darker than the row background (#2b2d31) --
+# this used to happen by accident (palette().button() rendering near-black)
+# and reads better than matching the rows exactly, since a header that's
+# visually distinct from its own rows is easier to spot at a glance. Keep
+# this in sync with QHeaderView::section's background-color in main.py's
+# STYLE_SHEET.
+HEADER_BG = "#141517"
 
 # Columns offered in the right-click "Filter by..." value checklist. Skipped
 # for the checkbox/actions utility columns (nothing meaningful to filter by)
 # and for Price (continuous numeric data -- range filtering is a job for the
 # future Search feature, not a same-value checklist).
-FILTERABLE_COLUMNS = {COL_QTY, COL_NAME, COL_EDITION_RARITY, COL_TYPE, COL_MANA, COL_POWER, COL_TOUGHNESS}
+FILTERABLE_COLUMNS = {COL_QTY, COL_CROSS_QTY, COL_NAME, COL_EDITION_RARITY, COL_TYPE, COL_MANA, COL_POWER, COL_TOUGHNESS}
 
 # Menu labels for columns whose header label is blank (checkbox/actions).
 MENU_COLUMN_LABELS = {COL_SELECTED: "Checkbox", COL_ACTIONS: "Actions"}
@@ -189,12 +196,13 @@ class CardTableModel(QAbstractTableModel):
     column M" -- it never needs to know about groups or filters itself.
     """
 
-    def __init__(self, cards, cross_qty_label="Cross"):
+    def __init__(self, cards, qty_label="Qty", cross_qty_label="Cross"):
         super().__init__()
         self._source_cards = cards       # the master, unfiltered pool
         self._cards = list(cards)         # currently filtered + sorted + grouped working set
         self.price_source = PRICE_SOURCES[0][0]
-        self.cross_qty_label = cross_qty_label  # e.g. "Wished" on Inventory, "Have" on Wishlist
+        self.qty_label = qty_label              # e.g. "Have" on both All Card Database and Inventory
+        self.cross_qty_label = cross_qty_label  # e.g. "Want" alongside it
         self._sort_key = None
         self._sort_reverse = False
         self.group_by = None              # None | "type" | "color"
@@ -210,6 +218,8 @@ class CardTableModel(QAbstractTableModel):
 
     def headerData(self, section, orientation, role=Qt.DisplayRole):
         if orientation == Qt.Horizontal and role == Qt.DisplayRole:
+            if section == COL_QTY:
+                return self.qty_label
             if section == COL_CROSS_QTY:
                 return self.cross_qty_label
             return COLUMNS[section][1]
@@ -344,6 +354,8 @@ class CardTableModel(QAbstractTableModel):
     def _raw_filter_value(self, card, column):
         if column == COL_QTY:
             return str(card.get("qty", ""))
+        if column == COL_CROSS_QTY:
+            return str(card.get("cross_qty", ""))
         if column == COL_NAME:
             return card["name"]
         if column == COL_EDITION_RARITY:
@@ -646,7 +658,12 @@ class SplitDropdownHeader(QHeaderView):
         menu = _StayOpenMenu(self)
 
         if column in FILTERABLE_COLUMNS:
-            label = COLUMNS[column][1] or "this column"
+            if column == COL_QTY:
+                label = self.model().qty_label
+            elif column == COL_CROSS_QTY:
+                label = self.model().cross_qty_label
+            else:
+                label = COLUMNS[column][1] or "this column"
             header_action = menu.addAction(f"Filter by {label}")
             header_action.setEnabled(False)  # acts as a section label, not clickable
             menu.addSeparator()
@@ -662,7 +679,9 @@ class SplitDropdownHeader(QHeaderView):
 
         columns_menu = menu.addMenu("Show Columns")
         for index, (_key, label, _kind) in enumerate(COLUMNS):
-            if index == COL_CROSS_QTY:
+            if index == COL_QTY:
+                display_label = self.model().qty_label
+            elif index == COL_CROSS_QTY:
                 display_label = self.model().cross_qty_label
             else:
                 display_label = label or MENU_COLUMN_LABELS.get(index, f"Column {index}")
@@ -724,9 +743,9 @@ class CardTableView(QTableView):
     keeps the group-header full-width row spans in sync with the model.
     """
 
-    def __init__(self, cards, cross_qty_label="Cross"):
+    def __init__(self, cards, qty_label="Qty", cross_qty_label="Cross"):
         super().__init__()
-        self.card_model = CardTableModel(cards, cross_qty_label=cross_qty_label)
+        self.card_model = CardTableModel(cards, qty_label=qty_label, cross_qty_label=cross_qty_label)
         self.setModel(self.card_model)
 
         self.setSelectionBehavior(QAbstractItemView.SelectItems)

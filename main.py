@@ -2,8 +2,14 @@
 main.py
 -------
 Entry point. Assembles the Deckbox-style layout: a narrow tab strip on the
-left (SideNav) driving a QStackedWidget on the right that swaps between the
-Tag Database view and the Inventory / Wishlist spreadsheets.
+left (SideNav) driving a QStackedWidget on the right that swaps between
+Tag Database, All Card Database, Inventory, and Deck Viewer.
+
+All Card Database is the full browsable catalog (every card, showing both
+Have and Want counts); Inventory is the same underlying kind of data
+filtered down to what you actually own. There's no separate always-filtered
+"Wishlist" view anymore -- right-click the Have or Want column and uncheck
+"0" to get that lens on demand, from either table.
 
 This replaces the earlier three-panel-with-persistent-detail-panel design --
 the detail view now lives in card_table.py's hover popover instead of a
@@ -21,7 +27,7 @@ from side_nav import SideNav, TABS
 from tag_tree import TagTreePanel
 from deck_viewer import DeckViewerView
 from card_table import CardTableView
-from mock_data import get_inventory_cards, get_wishlist_cards
+from mock_data import get_inventory_cards, get_all_cards
 
 
 class MainWindow(QMainWindow):
@@ -32,19 +38,19 @@ class MainWindow(QMainWindow):
 
         # --- Build the views that live in the stack ---
         self.tag_panel = TagTreePanel()
-        self.inventory_table = CardTableView(get_inventory_cards(), cross_qty_label="Wished")
-        self.wishlist_table = CardTableView(get_wishlist_cards(), cross_qty_label="Have")
+        self.all_cards_table = CardTableView(get_all_cards(), qty_label="Have", cross_qty_label="Want")
+        self.inventory_table = CardTableView(get_inventory_cards(), qty_label="Have", cross_qty_label="Want")
         self.deck_viewer = DeckViewerView()
 
         self.stack = QStackedWidget()
         # Order here defines the stack INDEX for each view; self._tab_indexes
         # below maps the SideNav's string keys to these indexes, so the two
         # never need to be kept in sync by hand elsewhere.
-        self.stack.addWidget(self.tag_panel)         # index 0
-        self.stack.addWidget(self.inventory_table)    # index 1
-        self.stack.addWidget(self.wishlist_table)      # index 2
-        self.stack.addWidget(self.deck_viewer)          # index 3
-        self._tab_indexes = {"tags": 0, "inventory": 1, "wishlist": 2, "decks": 3}
+        self.stack.addWidget(self.tag_panel)          # index 0
+        self.stack.addWidget(self.all_cards_table)     # index 1
+        self.stack.addWidget(self.inventory_table)      # index 2
+        self.stack.addWidget(self.deck_viewer)           # index 3
+        self._tab_indexes = {"tags": 0, "all_cards": 1, "inventory": 2, "decks": 3}
 
         # --- Side nav ---
         self.side_nav = SideNav()
@@ -147,7 +153,7 @@ QTableView::item:focus, QTreeWidget::item:focus {
     border: none;
 }
 QHeaderView::section {
-    background-color: #2b2d31;
+    background-color: #141517;
     border: 1px solid #3a3c41;
     padding: 4px;
 }

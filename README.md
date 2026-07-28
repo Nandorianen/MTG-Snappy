@@ -1,6 +1,30 @@
 # MTG Local Database — Prototype
 
 ## Polish pass (this round)
+- Side nav buttons now highlight the instant you press them, not after a
+  visible dashed-focus-rect-then-highlight delay (the delay was a native
+  focus rectangle Qt draws before our own styling takes over — removed via
+  `outline: 0`, plus an explicit `:pressed` style for immediate feedback).
+- Table headers are now visually uniform — the custom-painted ones
+  (Edition/Rarity split, Type/Mana/Price dropdown arrows) were reading their
+  background from the widget's base palette instead of the app's actual
+  stylesheet color, which are two different things in Qt; they now share
+  one explicit color constant with the plain headers.
+- Added a cross-reference count column: Inventory shows "Wished" (how many
+  you've wishlisted), Wishlist shows "Have" (how many you own) — sortable,
+  toggleable via Show Columns like any other.
+- Detail popup: Rulings pane now has a proper visible border (QListWidget
+  wasn't in the app's bordered-widget style rule at all — now is) and is
+  guaranteed at least as wide as the Legality pane.
+- Detail popup: Language/Condition/Foil moved to their own third metadata
+  row, separate from Edition/Rarity/Price, so the card pane isn't
+  overcrowded.
+- Detail popup: Foil now reads "Yes"/"No" instead of "On"/"Off".
+- Detail popup: the Type/Mana Cost row is now a true proportional 2:1
+  split of the row's actual width (via layout stretch, not fixed pixel
+  guesses) — Type left-aligned, Mana Cost centered.
+
+## Frameless detail popup, Power/Toughness split, broader type filter
 - Opening the detail popup now cancels any hover popover already showing
   or waiting out its delay timer.
 - Tree panes (Tag Database / Deck Viewer): removed the "+ Item"/"+ Folder"

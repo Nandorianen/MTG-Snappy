@@ -32,8 +32,8 @@ class MainWindow(QMainWindow):
 
         # --- Build the views that live in the stack ---
         self.tag_panel = TagTreePanel()
-        self.inventory_table = CardTableView(get_inventory_cards())
-        self.wishlist_table = CardTableView(get_wishlist_cards())
+        self.inventory_table = CardTableView(get_inventory_cards(), cross_qty_label="Wished")
+        self.wishlist_table = CardTableView(get_wishlist_cards(), cross_qty_label="Have")
         self.deck_viewer = DeckViewerView()
 
         self.stack = QStackedWidget()
@@ -128,7 +128,7 @@ QWidget {
     color: #e3e3e3;
     font-size: 13px;
 }
-QTableView, QTreeWidget {
+QTableView, QTreeWidget, QListWidget {
     background-color: #2b2d31;
     border: 1px solid #3a3c41;
     gridline-color: #3a3c41;
@@ -157,12 +157,26 @@ SideNav QPushButton {
     border: none;
     border-radius: 4px;
     background-color: transparent;
+    /* Same focus-rectangle removal as above -- this was the actual cause
+       of the visible "dashed rectangle THEN highlight" two-step: the
+       native focus rect painted immediately on click, and only the
+       checked-state color came from our own styling, so they visibly
+       arrived in two separate steps. */
+    outline: 0;
 }
 SideNav QPushButton:checked {
     background-color: #3d6a8f;
 }
 SideNav QPushButton:hover:!checked {
     background-color: #2b2d31;
+}
+SideNav QPushButton:pressed {
+    /* Shows the highlight color the instant the mouse/touch goes DOWN,
+       rather than waiting for release (when Qt actually fires the
+       checked-state change) -- this is what makes the click feel
+       immediate rather than laggy, especially noticeable on a touchpad
+       where press-to-release timing is longer. */
+    background-color: #3d6a8f;
 }
 """
 

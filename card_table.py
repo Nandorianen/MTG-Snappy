@@ -55,6 +55,7 @@ from card_detail_popup import CardDetailDialog
 COLUMNS = [
     ("selected", "", "checkbox"),
     ("qty", "Qty", "text"),
+    ("cross_qty", "", "text"),  # label is set per-instance -- see CardTableModel.headerData
     ("name", "Name", "text"),
     ("edition_rarity", "Edition / Rarity", "split"),
     ("type_line", "Type", "text"),
@@ -66,19 +67,30 @@ COLUMNS = [
 ]
 COL_SELECTED = 0
 COL_QTY = 1
-COL_NAME = 2
-COL_EDITION_RARITY = 3
-COL_TYPE = 4
-COL_MANA = 5
-COL_POWER = 6
-COL_TOUGHNESS = 7
-COL_PRICE = 8
-COL_ACTIONS = 9
+COL_CROSS_QTY = 2
+COL_NAME = 3
+COL_EDITION_RARITY = 4
+COL_TYPE = 5
+COL_MANA = 6
+COL_POWER = 7
+COL_TOUGHNESS = 8
+COL_PRICE = 9
+COL_ACTIONS = 10
 
 # Columns whose header has a dropdown-arrow zone (as opposed to just sorting
 # on click). Price opens a price-source picker; Type/Mana open a "group by"
 # toggle. Clicking anywhere else in these headers still sorts, same as before.
 DROPDOWN_COLUMNS = {COL_TYPE, COL_MANA, COL_PRICE}
+
+# Custom-painted header sections (the split Edition/Rarity column, and any
+# DROPDOWN_COLUMNS section) can't rely on self.palette().button().color()
+# for their background -- that reads the widget's base QPalette, which the
+# app's QSS stylesheet (main.py's STYLE_SHEET, `QHeaderView::section {
+# background-color: ... }`) does NOT update; QSS and QPalette are separate
+# systems in Qt, and only Qt's OWN default section painting (used by every
+# OTHER column) actually goes through the style sheet. Without this shared
+# constant, custom-painted headers visibly mismatched the plain ones.
+HEADER_BG = "#2b2d31"
 
 # Columns offered in the right-click "Filter by..." value checklist. Skipped
 # for the checkbox/actions utility columns (nothing meaningful to filter by)
@@ -177,11 +189,12 @@ class CardTableModel(QAbstractTableModel):
     column M" -- it never needs to know about groups or filters itself.
     """
 
-    def __init__(self, cards):
+    def __init__(self, cards, cross_qty_label="Cross"):
         super().__init__()
         self._source_cards = cards       # the master, unfiltered pool
         self._cards = list(cards)         # currently filtered + sorted + grouped working set
         self.price_source = PRICE_SOURCES[0][0]
+        self.cross_qty_label = cross_qty_label  # e.g. "Wished" on Inventory, "Have" on Wishlist
         self._sort_key = None
         self._sort_reverse = False
         self.group_by = None              # None | "type" | "color"
@@ -197,6 +210,8 @@ class CardTableModel(QAbstractTableModel):
 
     def headerData(self, section, orientation, role=Qt.DisplayRole):
         if orientation == Qt.Horizontal and role == Qt.DisplayRole:
+            if section == COL_CROSS_QTY:
+                return self.cross_qty_label
             return COLUMNS[section][1]
         return super().headerData(section, orientation, role)
 
@@ -227,12 +242,14 @@ class CardTableModel(QAbstractTableModel):
         if role == Qt.CheckStateRole and col == COL_SELECTED:
             return Qt.Checked if card.get("selected") else Qt.Unchecked
 
-        if role == Qt.TextAlignmentRole and col in (COL_QTY, COL_MANA, COL_POWER, COL_TOUGHNESS, COL_PRICE):
+        if role == Qt.TextAlignmentRole and col in (COL_QTY, COL_CROSS_QTY, COL_MANA, COL_POWER, COL_TOUGHNESS, COL_PRICE):
             return Qt.AlignCenter
 
         if role == Qt.DisplayRole:
             if col == COL_QTY:
                 return str(card.get("qty", ""))
+            if col == COL_CROSS_QTY:
+                return str(card.get("cross_qty", ""))
             if col == COL_NAME:
                 return card["name"]
             if col == COL_EDITION_RARITY:
@@ -313,6 +330,7 @@ class CardTableModel(QAbstractTableModel):
     def _key_funcs(self):
         return {
             "qty": lambda c: c.get("qty", 0),
+            "cross_qty": lambda c: c.get("cross_qty", 0),
             "name": lambda c: c["name"].lower(),
             "set": lambda c: c["set"],
             "rarity": lambda c: RARITY_ORDER.get(c["rarity"], 0),
@@ -470,7 +488,7 @@ class SplitDropdownHeader(QHeaderView):
 
     def _paint_split_section(self, painter, rect):
         painter.save()
-        painter.fillRect(rect, self.palette().button().color())
+        painter.fillRect(rect, QColor(HEADER_BG))
         mid_x = rect.left() + rect.width() // 2
 
         left_rect = QRect(rect.left(), rect.top(), rect.width() // 2, rect.height())
@@ -494,7 +512,7 @@ class SplitDropdownHeader(QHeaderView):
         glyph. Reserving the space up front means the two can never overlap.
         """
         painter.save()
-        painter.fillRect(rect, self.palette().button().color())
+        painter.fillRect(rect, QColor(HEADER_BG))
 
         text_rect = rect.adjusted(6, 0, -(self.ARROW_WIDTH + 4), 0)
         label = COLUMNS[logical_index][1]
@@ -644,7 +662,10 @@ class SplitDropdownHeader(QHeaderView):
 
         columns_menu = menu.addMenu("Show Columns")
         for index, (_key, label, _kind) in enumerate(COLUMNS):
-            display_label = label or MENU_COLUMN_LABELS.get(index, f"Column {index}")
+            if index == COL_CROSS_QTY:
+                display_label = self.model().cross_qty_label
+            else:
+                display_label = label or MENU_COLUMN_LABELS.get(index, f"Column {index}")
             action = columns_menu.addAction(display_label)
             action.setCheckable(True)
             action.setChecked(not self.isSectionHidden(index))
@@ -703,16 +724,17 @@ class CardTableView(QTableView):
     keeps the group-header full-width row spans in sync with the model.
     """
 
-    def __init__(self, cards):
+    def __init__(self, cards, cross_qty_label="Cross"):
         super().__init__()
-        self.card_model = CardTableModel(cards)
+        self.card_model = CardTableModel(cards, cross_qty_label=cross_qty_label)
         self.setModel(self.card_model)
 
         self.setSelectionBehavior(QAbstractItemView.SelectItems)
         self.setSelectionMode(QAbstractItemView.ExtendedSelection)
 
-        column_keys = {COL_QTY: "qty", COL_NAME: "name", COL_TYPE: "type_line",
-                       COL_MANA: "mana_cost", COL_POWER: "power", COL_TOUGHNESS: "toughness",
+        column_keys = {COL_QTY: "qty", COL_CROSS_QTY: "cross_qty", COL_NAME: "name",
+                       COL_TYPE: "type_line", COL_MANA: "mana_cost",
+                       COL_POWER: "power", COL_TOUGHNESS: "toughness",
                        COL_PRICE: "price"}
         self.header = SplitDropdownHeader(column_keys)
         self.setHorizontalHeader(self.header)

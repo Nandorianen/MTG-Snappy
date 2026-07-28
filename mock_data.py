@@ -113,33 +113,46 @@ MOCK_CARDS = [
 RARITY_ORDER = {"common": 0, "uncommon": 1, "rare": 2, "mythic": 3}
 
 
-def _with_collection_fields(cards, qty_values):
+def _with_collection_fields(cards, qty_values, cross_qty_values=None):
     """
     Returns deep-enough copies of the mock cards with per-collection fields
-    (qty, selected) attached. Deep copy matters here because inventory and
-    wishlist need INDEPENDENT qty/selected state for the same underlying card
-    -- if we didn't copy, checking a box in Inventory would incorrectly also
-    check it in Wishlist, since both would point at the same dict.
+    (qty, selected, cross_qty) attached. Deep copy matters here because
+    inventory and wishlist need INDEPENDENT qty/selected state for the same
+    underlying card -- if we didn't copy, checking a box in Inventory would
+    incorrectly also check it in Wishlist, since both would point at the
+    same dict.
+
+    cross_qty is the OTHER collection's count for the same card -- how many
+    you've wishlisted, shown on an Inventory row, or how many you own,
+    shown on a Wishlist row. Defaults to 0 per card when not supplied.
     """
+    if cross_qty_values is None:
+        cross_qty_values = [0] * len(cards)
     result = []
-    for card, qty in zip(cards, qty_values):
+    for card, qty, cross_qty in zip(cards, qty_values, cross_qty_values):
         card_copy = dict(card)
         card_copy["qty"] = qty
         card_copy["selected"] = False
+        card_copy["cross_qty"] = cross_qty
         result.append(card_copy)
     return result
 
 
+# Defined once, referenced by both functions below, so Inventory's "Wished"
+# column and Wishlist's "Have" column are always cross-referencing the SAME
+# numbers rather than two independently-typed-out lists that could drift.
+_INVENTORY_QTY = [4, 1, 2, 1, 3, 1, 2, 1]
+_WISHLIST_QTY = [1, 2, 1, 1, 1, 1, 1, 1]
+
+
 def get_inventory_cards():
     """Mock 'owned copies' dataset -- stand-in for a real inventory DB query."""
-    qty_values = [4, 1, 2, 1, 3, 1, 2, 1]
-    return _with_collection_fields(MOCK_CARDS, qty_values)
+    return _with_collection_fields(MOCK_CARDS, _INVENTORY_QTY, _WISHLIST_QTY)
 
 
 def get_wishlist_cards():
     """Mock 'wanted copies' dataset -- stand-in for a real wishlist DB query."""
-    qty_values = [1, 2, 1, 1, 1, 1, 1, 1]
-    return _with_collection_fields(MOCK_CARDS, qty_values)
+    return _with_collection_fields(MOCK_CARDS, _WISHLIST_QTY, _INVENTORY_QTY)
 
 
 # Rough placeholder swatch colors per mana color, purely for visual variety

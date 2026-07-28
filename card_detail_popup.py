@@ -45,7 +45,7 @@ FOUR PIECES OF CUSTOM MACHINERY WORTH CALLING OUT:
 
 from PySide6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame,
-    QToolButton, QMenu, QListWidget, QListWidgetItem, QApplication,
+    QToolButton, QMenu, QListWidget, QListWidgetItem, QApplication, QSizePolicy,
 )
 from PySide6.QtCore import Qt, Signal, QSize, QEvent
 from PySide6.QtGui import QFontMetrics, QColor, QPainter
@@ -76,23 +76,35 @@ class StatField(QWidget):
 
     ARROW_RESERVE = 16  # px reserved for the QToolButton's native dropdown arrow
 
-    def __init__(self, title, width, clickable=False):
+    def __init__(self, title, width=None, clickable=False, align=Qt.AlignLeft):
+        """
+        width=None means "no fixed width -- let the containing layout's
+        stretch factor govern my size instead" (used for the gameplay row's
+        proportional 2:1 split). Any other value fixes the width exactly,
+        which is what makes elision reliable for the metadata fields.
+        """
         super().__init__()
-        self.setFixedWidth(width)
+        self._fixed_width = width
+        if width is not None:
+            self.setFixedWidth(width)
+        else:
+            self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self._clickable = clickable
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 0, 4, 0)
         layout.setSpacing(2)
 
         title_label = QLabel(title)
+        title_label.setAlignment(align | Qt.AlignVCenter)
         title_label.setStyleSheet("color: #a8adb5; font-size: 10px;")
         layout.addWidget(title_label)
 
         if clickable:
             self.value_button = QToolButton()
             self.value_button.setPopupMode(QToolButton.InstantPopup)
+            align_css = "center" if align == Qt.AlignHCenter else "left"
             self.value_button.setStyleSheet(
-                "QToolButton { text-align: left; border: none; font-weight: 600; "
+                f"QToolButton {{ text-align: {align_css}; border: none; font-weight: 600; "
                 f"padding-right: {self.ARROW_RESERVE}px; }} "
                 "QToolButton::menu-indicator { subcontrol-position: right center; }"
             )
@@ -100,6 +112,7 @@ class StatField(QWidget):
             self.value_label = None
         else:
             self.value_label = QLabel()
+            self.value_label.setAlignment(align | Qt.AlignVCenter)
             self.value_label.setStyleSheet("font-weight: 600;")
             layout.addWidget(self.value_label)
             self.value_button = None
@@ -111,7 +124,14 @@ class StatField(QWidget):
         target = self.value_button or self.value_label
         metrics = QFontMetrics(target.font())
         reserve = self.ARROW_RESERVE if self._clickable else 0
-        elided = metrics.elidedText(full_text, Qt.ElideRight, self.width() - 12 - reserve)
+        # For fixed-width fields, self.width() is reliable immediately (it
+        # was set explicitly in __init__). For stretch-governed fields
+        # (width=None, e.g. Type/Mana in the gameplay row), self.width()
+        # may still report a stale pre-layout value the first time this
+        # runs -- fall back to a generous estimate rather than aggressively
+        # over-eliding before the real layout has ever run.
+        available = self.width() if (self._fixed_width is not None or self.width() > 40) else 260
+        elided = metrics.elidedText(full_text, Qt.ElideRight, available - 12 - reserve)
         target.setText(elided)
         target.setToolTip(full_text)
 
@@ -126,7 +146,7 @@ class FoilToggle(QToolButton):
     def __init__(self):
         super().__init__()
         self.setCheckable(True)
-        self.setText("Foil: Off")
+        self.setText("Foil: No")
         self.setFixedWidth(90)
         self.setStyleSheet(
             "QToolButton { text-align: left; border: none; font-weight: 600; "
@@ -136,7 +156,7 @@ class FoilToggle(QToolButton):
         self.toggled.connect(self._on_toggled)
 
     def _on_toggled(self, checked):
-        self.setText("Foil: On" if checked else "Foil: Off")
+        self.setText("Foil: Yes" if checked else "Foil: No")
 
 
 class ClickableArt(QFrame):
@@ -324,32 +344,47 @@ class CardDetailDialog(QDialog):
         self.art_box.clicked.connect(self._open_zoom_window)
         layout.addWidget(self.art_box, alignment=Qt.AlignHCenter)
 
-        # GAMEPLAY row: only what matters while playing.
+        # GAMEPLAY row: only what matters while playing. Type gets 2/3 of the
+        # row (left-aligned, since type lines read left-to-right and can run
+        # long), Mana Cost gets the remaining 1/3 (centered, since mana costs
+        # are short symbol clusters that read fine centered in their space).
+        # Stretch factors (not fixed pixel widths) are what make this an
+        # actual 2:1 PROPORTION of whatever width the row ends up with,
+        # rather than two fixed sizes with leftover blank space -- there's
+        # deliberately no addStretch() after them, since the two fields
+        # together ARE meant to fill the row.
         gameplay_row = QHBoxLayout()
-        self.type_field = StatField("Type", 280)
-        self.mana_field = StatField("Mana Cost", 130)
-        gameplay_row.addWidget(self.type_field)
-        gameplay_row.addWidget(self.mana_field)
-        gameplay_row.addStretch()
+        self.type_field = StatField("Type", width=None)
+        self.mana_field = StatField("Mana Cost", width=None, align=Qt.AlignHCenter)
+        gameplay_row.addWidget(self.type_field, stretch=2)
+        gameplay_row.addWidget(self.mana_field, stretch=1)
         layout.addLayout(gameplay_row)
 
-        # METADATA row: collection/shopping information -- Edition, Language,
-        # Condition, Foil, Rarity, Price. Separated from gameplay info above.
-        # Condition/Foil describe a specific OWNED COPY rather than the card
-        # or print itself -- shown here as a convenient preview/selector, not
-        # yet wired to actually saving against a collection entry (NOTES.md).
+        # METADATA row 1: Edition / Rarity / Price -- collection/shopping
+        # info, separated from gameplay info above.
         metadata_row = QHBoxLayout()
         self.edition_field = StatField("Edition", 90, clickable=True)
-        self.language_field = StatField("Language", 110, clickable=True)
-        self.condition_field = StatField("Condition", 130, clickable=True)
-        self.foil_toggle = FoilToggle()
         self.rarity_field = StatField("Rarity", 90)
         self.price_field = StatField("Price", 100, clickable=True)
-        for field in (self.edition_field, self.language_field, self.condition_field,
-                      self.foil_toggle, self.rarity_field, self.price_field):
+        for field in (self.edition_field, self.rarity_field, self.price_field):
             metadata_row.addWidget(field)
         metadata_row.addStretch()
         layout.addLayout(metadata_row)
+
+        # METADATA row 2: Language / Condition / Foil -- kept off row 1 so
+        # that row doesn't get cramped; these three also describe a specific
+        # OWNED COPY rather than the card or print itself, which is a
+        # reasonable second reason to group them apart from Edition/Rarity/
+        # Price. Not yet wired to actually saving against a collection
+        # entry (see NOTES.md).
+        collection_row = QHBoxLayout()
+        self.language_field = StatField("Language", 110, clickable=True)
+        self.condition_field = StatField("Condition", 130, clickable=True)
+        self.foil_toggle = FoilToggle()
+        for field in (self.language_field, self.condition_field, self.foil_toggle):
+            collection_row.addWidget(field)
+        collection_row.addStretch()
+        layout.addLayout(collection_row)
 
         self.oracle_text_label = QLabel()
         self.oracle_text_label.setWordWrap(True)
@@ -392,6 +427,14 @@ class CardDetailDialog(QDialog):
         layout = self._pane_layout("Rulings")
         self.rulings_list = QListWidget()
         self.rulings_list.setWordWrap(True)
+        # At least as wide as the Legality pane -- previously it only got
+        # whatever the 3:2 stretch split left over, which could shrink
+        # below Legality's content-driven width. The border-looking-missing
+        # complaint was actually QListWidget not being included in the
+        # app's bordered/backgrounded style rule at all (fixed in main.py's
+        # STYLE_SHEET) -- both panes' QListWidgets get the same visible
+        # border now, this width floor is the separate "at least as wide" ask.
+        self.rulings_list.setMinimumWidth(self._legality_column_width())
         layout.addWidget(self.rulings_list)
         return layout
 

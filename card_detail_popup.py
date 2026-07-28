@@ -147,7 +147,7 @@ class FoilToggle(QToolButton):
         super().__init__()
         self.setCheckable(True)
         self.setText("Foil: No")
-        self.setFixedWidth(90)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self.setStyleSheet(
             "QToolButton { text-align: center; border: none; font-weight: 600; "
             "padding-top: 14px; }"
@@ -226,6 +226,16 @@ class ImageZoomWidget(QWidget):
 def _vline():
     line = QFrame()
     line.setFrameShape(QFrame.VLine)
+    line.setStyleSheet("color: #3a3c41;")
+    return line
+
+
+def _hline():
+    """Thin horizontal rule -- separates the stat rows from the oracle text
+    below, so the two zones read as visually distinct without needing a
+    heavier box/border around either."""
+    line = QFrame()
+    line.setFrameShape(QFrame.HLine)
     line.setStyleSheet("color: #3a3c41;")
     return line
 
@@ -343,6 +353,7 @@ class CardDetailDialog(QDialog):
         self.art_box.setFixedSize(220, 306)
         self.art_box.clicked.connect(self._open_zoom_window)
         layout.addWidget(self.art_box, alignment=Qt.AlignHCenter)
+        layout.addSpacing(14)  # a bit more breathing room before the stats start
 
         # GAMEPLAY row: only what matters while playing. Type gets 2/3 of the
         # row (left-aligned, since type lines read left-to-right and can run
@@ -361,14 +372,20 @@ class CardDetailDialog(QDialog):
         layout.addLayout(gameplay_row)
 
         # METADATA row 1: Edition / Rarity / Price -- collection/shopping
-        # info, separated from gameplay info above.
+        # info, separated from gameplay info above. Each field is
+        # width=None + equal stretch=1, same technique as the gameplay row's
+        # 2:1 split -- this is what actually makes them 1/3 of the row each;
+        # fixed pixel widths plus a trailing addStretch() (the previous
+        # approach) left them left-packed with blank space at the end,
+        # which is also why centering the TEXT inside each field didn't
+        # look like it was doing anything -- the fields themselves weren't
+        # occupying an even share of the row to be centered within.
         metadata_row = QHBoxLayout()
-        self.edition_field = StatField("Edition", 90, clickable=True, align=Qt.AlignHCenter)
-        self.rarity_field = StatField("Rarity", 90, align=Qt.AlignHCenter)
-        self.price_field = StatField("Price", 100, clickable=True, align=Qt.AlignHCenter)
+        self.edition_field = StatField("Edition", width=None, clickable=True, align=Qt.AlignHCenter)
+        self.rarity_field = StatField("Rarity", width=None, align=Qt.AlignHCenter)
+        self.price_field = StatField("Price", width=None, clickable=True, align=Qt.AlignHCenter)
         for field in (self.edition_field, self.rarity_field, self.price_field):
-            metadata_row.addWidget(field)
-        metadata_row.addStretch()
+            metadata_row.addWidget(field, stretch=1)
         layout.addLayout(metadata_row)
 
         # METADATA row 2: Language / Condition / Foil -- kept off row 1 so
@@ -376,15 +393,18 @@ class CardDetailDialog(QDialog):
         # OWNED COPY rather than the card or print itself, which is a
         # reasonable second reason to group them apart from Edition/Rarity/
         # Price. Not yet wired to actually saving against a collection
-        # entry (see NOTES.md).
+        # entry (see NOTES.md). Same even-thirds technique as row 1.
         collection_row = QHBoxLayout()
-        self.language_field = StatField("Language", 110, clickable=True, align=Qt.AlignHCenter)
-        self.condition_field = StatField("Condition", 130, clickable=True, align=Qt.AlignHCenter)
+        self.language_field = StatField("Language", width=None, clickable=True, align=Qt.AlignHCenter)
+        self.condition_field = StatField("Condition", width=None, clickable=True, align=Qt.AlignHCenter)
         self.foil_toggle = FoilToggle()
         for field in (self.language_field, self.condition_field, self.foil_toggle):
-            collection_row.addWidget(field)
-        collection_row.addStretch()
+            collection_row.addWidget(field, stretch=1)
         layout.addLayout(collection_row)
+
+        layout.addSpacing(6)
+        layout.addWidget(_hline())
+        layout.addSpacing(6)
 
         self.oracle_text_label = QLabel()
         self.oracle_text_label.setWordWrap(True)

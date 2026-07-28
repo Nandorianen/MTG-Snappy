@@ -35,7 +35,7 @@ object exists per row at all.
 
 from PySide6.QtWidgets import (
     QTableView, QHeaderView, QStyledItemDelegate, QStyle, QAbstractItemView,
-    QApplication, QMenu,
+    QApplication, QMenu, QLineEdit, QWidgetAction,
 )
 from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, Signal, QTimer, QRect, QEvent
 from PySide6.QtGui import QKeySequence, QPainter, QColor, QBrush
@@ -104,6 +104,13 @@ HEADER_BG = "#141517"
 # and for Price (continuous numeric data -- range filtering is a job for the
 # future Search feature, not a same-value checklist).
 FILTERABLE_COLUMNS = {COL_QTY, COL_CROSS_QTY, COL_NAME, COL_EDITION_RARITY, COL_TYPE, COL_MANA, COL_POWER, COL_TOUGHNESS}
+
+# How a missing Power/Toughness (non-creatures have none) is represented in
+# the filter checklist. Without this, distinct_values_for_column would just
+# never offer a way to filter "show only creatures" / "show only
+# non-creatures" at all, since None values would need special-casing
+# everywhere they're compared/displayed instead of being a normal string.
+EMPTY_VALUE_LABEL = "(none)"
 
 # Menu labels for columns whose header label is blank (checkbox/actions).
 MENU_COLUMN_LABELS = {COL_SELECTED: "Checkbox", COL_ACTIONS: "Actions"}
@@ -369,13 +376,18 @@ class CardTableModel(QAbstractTableModel):
             # useful to filter by.
             return _type_category(card["type_line"])
         if column == COL_MANA:
-            return card["mana_cost"]
+            # Filters by COLOR CATEGORY (same buckets Group-by-Color uses:
+            # Colorless / White / Blue / .../ multicolor combos like "U/B"),
+            # not the literal mana cost string -- this is what makes "show
+            # me mono-white cards only" possible, which a checklist of raw
+            # mana-cost strings like "{1}{W}" vs "{W}{W}" never could.
+            return _color_category(card.get("colors", []))
         if column == COL_POWER:
             power = card.get("power")
-            return None if power is None else str(power)
+            return EMPTY_VALUE_LABEL if power is None else str(power)
         if column == COL_TOUGHNESS:
             toughness = card.get("toughness")
-            return None if toughness is None else str(toughness)
+            return EMPTY_VALUE_LABEL if toughness is None else str(toughness)
         return None
 
     def _passes_filters(self, card):
@@ -666,8 +678,23 @@ class SplitDropdownHeader(QHeaderView):
                 label = COLUMNS[column][1] or "this column"
             header_action = menu.addAction(f"Filter by {label}")
             header_action.setEnabled(False)  # acts as a section label, not clickable
+
+            # Excel-style search box: narrows which checkboxes are VISIBLE
+            # as you type (case-insensitive substring match). This doesn't
+            # filter the table itself -- it's purely so a long value list
+            # (every quantity from 0-20, say) is something you can jump
+            # into by typing "2" instead of scanning/clicking through every
+            # individual value. The table filter still comes from which
+            # boxes end up checked/unchecked below.
+            search_box = QLineEdit()
+            search_box.setPlaceholderText("Search values...")
+            search_action = QWidgetAction(menu)
+            search_action.setDefaultWidget(search_box)
+            menu.addAction(search_action)
             menu.addSeparator()
+
             excluded = self.model()._column_filters.get(column, set())
+            value_actions = []
             for value in self.model().distinct_values_for_column(column):
                 action = menu.addAction(value)
                 action.setCheckable(True)
@@ -675,6 +702,14 @@ class SplitDropdownHeader(QHeaderView):
                 action.toggled.connect(
                     lambda checked, v=value, col=column: self._on_filter_toggled(col, v, checked)
                 )
+                value_actions.append((value, action))
+
+            def _narrow_checklist(text):
+                needle = text.strip().lower()
+                for value, action in value_actions:
+                    action.setVisible(needle in value.lower())
+            search_box.textChanged.connect(_narrow_checklist)
+
             menu.addSeparator()
 
         columns_menu = menu.addMenu("Show Columns")

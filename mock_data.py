@@ -108,6 +108,23 @@ MOCK_CARDS = [
         "power": 2, "toughness": 1,
         "price_tcg": 8.00, "price_ck": 6.99, "price_cm": 7.40,
     },
+    {
+        # Deliberately included to exercise variable power/toughness ("*"),
+        # which real Scryfall data represents as a STRING, not always an
+        # int -- this is what makes the Have/Want/Power/Toughness column
+        # filtering's "(none)"/"*" handling something that's actually
+        # tested against real data, not just claimed to work.
+        "name": "Endless One", "mana_cost": "{X}", "cmc": 0,
+        "type_line": "Artifact Creature — Shapeshifter", "colors": [],
+        "oracle_text": (
+            "Endless One enters the battlefield with X +1/+1 counters on it. "
+            "Endless One's power and toughness are each equal to the number "
+            "of +1/+1 counters on it."
+        ),
+        "set": "NPH", "rarity": "mythic", "keywords": [],
+        "power": "*", "toughness": "*",
+        "price_tcg": 1.50, "price_ck": 1.20, "price_cm": 1.35,
+    },
 ]
 
 RARITY_ORDER = {"common": 0, "uncommon": 1, "rare": 2, "mythic": 3}
@@ -141,8 +158,8 @@ def _with_collection_fields(cards, qty_values, cross_qty_values=None):
 # Defined once, referenced by both functions below, so Inventory's "Wished"
 # column and Wishlist's "Have" column are always cross-referencing the SAME
 # numbers rather than two independently-typed-out lists that could drift.
-_INVENTORY_QTY = [4, 1, 2, 1, 3, 1, 2, 1]
-_WISHLIST_QTY = [1, 2, 1, 1, 1, 1, 1, 1]
+_INVENTORY_QTY = [4, 1, 2, 1, 3, 1, 2, 1, 0]
+_WISHLIST_QTY = [1, 2, 1, 1, 1, 1, 1, 1, 1]
 
 
 def get_inventory_cards():
@@ -185,18 +202,6 @@ COLOR_SWATCHES = {
 }
 MULTICOLOR_SWATCH = "#C9A227"
 COLORLESS_SWATCH = "#8A8D8F"
-
-
-def get_all_cards():
-    """
-    Returns the full mock card list.
-
-    This is the ONE function main_window.py calls to get card data. When we build
-    the real data layer, this function gets reimplemented to run a SQL query
-    against SQLite instead -- e.g. `SELECT * FROM cards` -- but the return shape
-    (list of dicts with these same keys) stays identical, so nothing upstream breaks.
-    """
-    return MOCK_CARDS
 
 
 def swatch_for_card(card):

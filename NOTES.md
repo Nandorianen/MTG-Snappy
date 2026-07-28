@@ -2,6 +2,39 @@
 
 Things we've deliberately deferred, with enough context to pick back up later.
 
+## Theming: system accent colors + light/dark presets (raised while polishing colors)
+TODO, explicitly flagged rather than a quick fix. The current dark theme is
+a single hardcoded QSS string (`main.py`'s STYLE_SHEET) with literal hex
+colors everywhere -- this is the OPPOSITE of how Qt normally adapts to the
+OS: QSS color rules completely override `QPalette`, which is what would
+otherwise reflect the OS's accent color and light/dark setting automatically.
+The Qt-friendly path, when we get here:
+- Stop hardcoding colors in QSS; either don't set a palette at all (let the
+  OS/style provide one) or set one derived from `QGuiApplication` theme
+  hints, and reference palette ROLES from QSS via the `palette(highlight)`
+  / `palette(window)` etc. functions instead of literal hex values -- this
+  keeps structural styling (padding, radius, borders) in QSS while colors
+  stay OS/theme-driven.
+- A real light/dark (and possibly "system") preset switcher belongs in the
+  Options window (see the options/i18n TODO above) -- likely 2-3 named
+  QPalette presets plus a "follow system" option, with the custom-painted
+  bits (SplitDropdownHeader's HEADER_BG, CardPopover, ImageZoomWidget, etc.)
+  needing to read from whichever preset/palette is active rather than a
+  single hardcoded constant, which is the main reason this is a real
+  refactor and not a one-line change.
+
+## Flexible search engine (raised as an explicit TODO)
+A proper search pane -- its own view, not just column filters -- covering
+multi-field queries (name + type + color + keyword combined), with a
+lighter/quicker variant accessible via Ctrl+F as a popup that collapses/
+hides non-matching rows in whichever pane has focus (this was actually part
+of the ORIGINAL project outline, goal #2, not a new idea). The per-column
+filter checklists now have an Excel-style search box to narrow long value
+lists (see this round's changes to card_table.py) -- that's a smaller,
+separate thing from this: a real search engine needs cross-field queries,
+saved searches, and probably its own query-language-ish input, not just
+"narrow this one column's checklist."
+
 ## Options menu + externalized/translatable strings (raised alongside language selector)
 TODO, explicitly flagged as a TODO rather than a quick fix. Shape of it:
 - An actual Options/Settings window/dialog is needed once there's more than

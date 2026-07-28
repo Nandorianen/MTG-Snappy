@@ -1,6 +1,28 @@
 # MTG Local Database — Prototype
 
-## Repurposing pass (this round)
+## Filter improvements + layout fixes (this round)
+- Card detail popup: rows 2 and 3 (Edition/Rarity/Price, Language/
+  Condition/Foil) now actually split into even thirds and center within
+  them — the previous version used fixed pixel widths plus trailing empty
+  space, which is why centering didn't visibly do anything.
+- Card detail popup: a bit more space below the art, and a thin separator
+  between the stat rows and the oracle text.
+- Every column's filter menu now has an Excel-style search box that
+  narrows the checkbox list as you type — useful once a column has many
+  distinct values (quantities, etc).
+- Mana Cost's filter now offers color categories (White, Blue, Colorless,
+  multicolor combos like "U/B", ...) instead of literal mana-cost strings —
+  this is what makes "show me mono-white cards only" possible.
+- Power/Toughness missing values (non-creatures) now show as "(none)" in
+  the filter checklist instead of being silently excluded from it, so
+  "show only creatures" / "show only non-creatures" is now a real filter
+  option. Added a card with variable power/toughness ("*", Endless One) so
+  this is tested against real non-numeric data, not just claimed to work.
+- Theming (system accent colors, light/dark presets) and a real flexible
+  search engine are explicitly parked in NOTES.md rather than attempted as
+  quick fixes — both are real subsystems, not polish.
+
+## Repurposing pass (earlier round)
 - **Wishlist is gone as a standalone tab.** It's replaced by "All Card
   Database" -- the full browsable catalog, showing both Have and Want
   counts for every card. Inventory is the same shape of data, filtered to

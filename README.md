@@ -1,6 +1,29 @@
 # MTG Local Database — Prototype
 
-## Tag-apply widget (this round)
+## Detail-popup layout + filter-menu polish (this round)
+- Detail popup: Type's caption now centers within a notional 1/3-of-row
+  slot (matching every other caption's rhythm) even though its VALUE still
+  spans the full 2/3 width it needs.
+- Detail popup: Type and Condition now wrap onto multiple lines instead of
+  truncating with "…" when text is too long for their space (Condition
+  required a manual line-breaker since QToolButton has no native word-wrap).
+- Detail popup: centered dropdown fields (Edition/Price/Language/Condition)
+  now actually look centered — they were only getting right-side padding
+  reserved for the arrow, which silently shifted the "centered" content box
+  left; matching left padding fixes it.
+- Filter menus: the search box now auto-focuses the instant you right-click
+  (no need to click into it first), has a visibly different border when
+  focused vs. not, and gives placeholder text a bit of left margin.
+- Filter menus: pressing Up/Down in the search box hands focus to the menu
+  and forwards that same keypress, so you can type a few characters to
+  narrow the list then immediately arrow-key into the results.
+- Mana Cost's filter now has a "Monocolored only" preset above a separator
+  — checking it sets every single-color entry on and colorless/multicolor
+  off in one action, so you can then fine-tune by unchecking specific colors.
+- Price is now filterable too (with the same search box), consistent with
+  every other column.
+
+## Tag-apply widget (earlier round)
 - **Right-click any card row** in All Card Database or Inventory to open
   it: a checkbox tree mirroring the Tag Database. Both folders AND leaf
   tags are checkable (a card can carry the broad "Removal" tag, a specific

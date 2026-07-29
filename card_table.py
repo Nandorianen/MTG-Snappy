@@ -104,7 +104,7 @@ HEADER_BG = "#141517"
 # for the checkbox/actions utility columns (nothing meaningful to filter by)
 # and for Price (continuous numeric data -- range filtering is a job for the
 # future Search feature, not a same-value checklist).
-FILTERABLE_COLUMNS = {COL_QTY, COL_CROSS_QTY, COL_NAME, COL_EDITION_RARITY, COL_TYPE, COL_MANA, COL_POWER, COL_TOUGHNESS}
+FILTERABLE_COLUMNS = {COL_QTY, COL_CROSS_QTY, COL_NAME, COL_EDITION_RARITY, COL_TYPE, COL_MANA, COL_POWER, COL_TOUGHNESS, COL_PRICE}
 
 # How a missing Power/Toughness (non-creatures have none) is represented in
 # the filter checklist. Without this, distinct_values_for_column would just
@@ -389,6 +389,11 @@ class CardTableModel(QAbstractTableModel):
         if column == COL_TOUGHNESS:
             toughness = card.get("toughness")
             return EMPTY_VALUE_LABEL if toughness is None else str(toughness)
+        if column == COL_PRICE:
+            # Formatted the same way it's DISPLAYED (respecting whichever
+            # price source is currently active) -- a checklist of raw
+            # floats would show duplicates like 3.5 vs "3.50" side by side.
+            return f"${card.get(self.price_source, 0):.2f}"
         return None
 
     def _passes_filters(self, card):
@@ -450,6 +455,43 @@ class _StayOpenMenu(QMenu):
             action.trigger()
             return
         super().mouseReleaseEvent(event)
+
+
+class _MenuSearchBox(QLineEdit):
+    """
+    The Excel-style "narrow the checklist" search box embedded in a filter
+    menu. Two behaviors plain QLineEdit doesn't have, both needed for this
+    to feel like part of the menu rather than an isolated text field:
+
+    1. Up/Down arrow keys hand keyboard focus back to the MENU itself and
+       forward that same key event to it, rather than doing nothing (or
+       moving the text cursor, which QLineEdit doesn't even do for
+       vertical arrows). This is what lets someone type a few characters
+       to narrow the list, then immediately arrow-key down into the
+       results without an extra click first.
+    2. Distinct focused/unfocused border colors (grey when idle, accent
+       blue when focused) so it's visually obvious which control has
+       keyboard focus inside the menu -- otherwise a plain default-style
+       QLineEdit can look inert.
+    """
+
+    def __init__(self, menu):
+        super().__init__()
+        self._menu = menu
+        self.setPlaceholderText("Search values...")
+        self.setStyleSheet(
+            "QLineEdit { border: 1px solid #6b6f76; border-radius: 3px; "
+            "padding: 3px 6px; background-color: #2b2d31; color: #e3e3e3; } "
+            "QLineEdit:focus { border: 1px solid #4f8fc0; }"
+        )
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key_Up, Qt.Key_Down):
+            self._menu.setFocus()
+            QApplication.sendEvent(self._menu, event)
+            return
+        super().keyPressEvent(event)
+
 
 
 class SplitDropdownHeader(QHeaderView):
@@ -683,15 +725,35 @@ class SplitDropdownHeader(QHeaderView):
             # Excel-style search box: narrows which checkboxes are VISIBLE
             # as you type (case-insensitive substring match). This doesn't
             # filter the table itself -- it's purely so a long value list
-            # (every quantity from 0-20, say) is something you can jump
-            # into by typing "2" instead of scanning/clicking through every
-            # individual value. The table filter still comes from which
-            # boxes end up checked/unchecked below.
-            search_box = QLineEdit()
-            search_box.setPlaceholderText("Search values...")
+            # (every quantity from 0-20, every distinct price, etc.) is
+            # something you can jump into by typing instead of scanning/
+            # clicking through every individual value. The table filter
+            # still comes from which boxes end up checked/unchecked below.
+            search_box = _MenuSearchBox(menu)
             search_action = QWidgetAction(menu)
             search_action.setDefaultWidget(search_box)
             menu.addAction(search_action)
+            # Auto-focus the search box the instant the menu appears, so
+            # you can start typing immediately on right-click without an
+            # extra click into the box first.
+            menu.aboutToShow.connect(search_box.setFocus)
+
+            # Mana Cost gets an extra convenience preset ABOVE its own
+            # separator: checking "Monocolored only" checks every single-
+            # color entry below (White/Blue/.../Green) and unchecks
+            # Colorless plus any multicolor combo in one action, so the
+            # user can then fine-tune by unchecking specific colors --
+            # "filter for any monocolored cards, then narrow further,"
+            # exactly as asked, without needing a long individual click
+            # sequence to get there. It's a one-shot preset (checking it
+            # applies the preset; unchecking it has no effect of its own),
+            # not a value bound bidirectionally to the checklist below.
+            mono_action = None
+            if column == COL_MANA:
+                mono_action = menu.addAction("Monocolored only")
+                mono_action.setCheckable(True)
+                menu.addSeparator()
+
             menu.addSeparator()
 
             excluded = self.model()._column_filters.get(column, set())
@@ -710,6 +772,15 @@ class SplitDropdownHeader(QHeaderView):
                 for value, action in value_actions:
                     action.setVisible(needle in value.lower())
             search_box.textChanged.connect(_narrow_checklist)
+
+            if mono_action is not None:
+                mono_colors = {"White", "Blue", "Black", "Red", "Green"}
+                def _apply_mono_preset(checked, actions=value_actions):
+                    if not checked:
+                        return
+                    for value, action in actions:
+                        action.setChecked(value in mono_colors)
+                mono_action.toggled.connect(_apply_mono_preset)
 
             menu.addSeparator()
 

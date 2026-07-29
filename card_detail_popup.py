@@ -61,6 +61,29 @@ LEGALITY_COLORS = {
 }
 
 
+def _wrap_to_pixel_width(text, pixel_width, font_metrics):
+    """
+    Manual word-wrap for QToolButton text -- unlike QLabel, QToolButton has
+    no native word-wrap property, but it DOES render embedded newlines as
+    separate lines, so we break the text ourselves and join with "\\n".
+    Used for the Condition field, which can't rely on QLabel's automatic
+    wrapping since it needs to stay clickable (a dropdown button).
+    """
+    words = text.split()
+    if not words:
+        return text
+    lines, current = [], words[0]
+    for word in words[1:]:
+        candidate = f"{current} {word}"
+        if font_metrics.horizontalAdvance(candidate) <= pixel_width:
+            current = candidate
+        else:
+            lines.append(current)
+            current = word
+    lines.append(current)
+    return "\n".join(lines)
+
+
 class StatField(QWidget):
     """
     One fixed-width labeled stat. `clickable=True` swaps the value QLabel
@@ -76,12 +99,27 @@ class StatField(QWidget):
 
     ARROW_RESERVE = 16  # px reserved for the QToolButton's native dropdown arrow
 
-    def __init__(self, title, width=None, clickable=False, align=Qt.AlignLeft):
+    def __init__(self, title, width=None, clickable=False, align=Qt.AlignLeft,
+                 caption_half_width=False, wrap=False):
         """
         width=None means "no fixed width -- let the containing layout's
-        stretch factor govern my size instead" (used for the gameplay row's
-        proportional 2:1 split). Any other value fixes the width exactly,
-        which is what makes elision reliable for the metadata fields.
+        stretch factor govern my size instead" (used for the proportional
+        row splits). Any other value fixes the width exactly, which is what
+        makes elision reliable for the metadata fields.
+
+        caption_half_width=True centers the CAPTION (the small label above
+        the value) within only the first half of this field's width, rather
+        than its full width -- used for Type, which occupies 2/3 of the
+        gameplay row for its VALUE (long type lines need the room) but
+        whose caption should still land where a normal 1/3-width field's
+        caption would, so the header row reads consistently with Mana
+        Cost's caption instead of looking like it's centered in a much
+        wider box than every other caption.
+
+        wrap=True switches from eliding ("…") to wrapping onto multiple
+        lines as a fallback when text doesn't fit -- QLabel does this
+        natively; QToolButton needs the manual _wrap_to_pixel_width() helper
+        since it has no built-in word-wrap.
         """
         super().__init__()
         self._fixed_width = width
@@ -90,22 +128,45 @@ class StatField(QWidget):
         else:
             self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self._clickable = clickable
+        self._wrap = wrap
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 0, 4, 0)
         layout.setSpacing(2)
 
         title_label = QLabel(title)
-        title_label.setAlignment(align | Qt.AlignVCenter)
         title_label.setStyleSheet("color: #a8adb5; font-size: 10px;")
-        layout.addWidget(title_label)
+        if caption_half_width:
+            # The caption gets HALF the field's width (a stand-in for "a
+            # normal 1/3-of-the-row slot," since this field itself is 2/3 of
+            # the row), centered within that half, with the remaining half
+            # left as blank space -- rather than centering across the
+            # field's full (much wider) width.
+            title_label.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
+            caption_row = QHBoxLayout()
+            caption_row.setContentsMargins(0, 0, 0, 0)
+            caption_row.addWidget(title_label, stretch=1)
+            caption_row.addStretch(1)
+            layout.addLayout(caption_row)
+        else:
+            title_label.setAlignment(align | Qt.AlignVCenter)
+            layout.addWidget(title_label)
 
         if clickable:
             self.value_button = QToolButton()
             self.value_button.setPopupMode(QToolButton.InstantPopup)
             align_css = "center" if align == Qt.AlignHCenter else "left"
+            # Symmetric padding is what makes text-align:center actually
+            # LOOK centered: with only padding-right reserved (needed so the
+            # arrow glyph doesn't overlap text), Qt centers within a content
+            # box that's shifted left by that same amount, which reads as
+            # visibly off-center. Matching padding-left restores a truly
+            # symmetric content box for the center-aligned case; left-
+            # aligned fields don't need it since they were never centered
+            # in the first place.
+            left_padding = self.ARROW_RESERVE if align == Qt.AlignHCenter else 0
             self.value_button.setStyleSheet(
                 f"QToolButton {{ text-align: {align_css}; border: none; font-weight: 600; "
-                f"padding-right: {self.ARROW_RESERVE}px; }} "
+                f"padding-left: {left_padding}px; padding-right: {self.ARROW_RESERVE}px; }} "
                 "QToolButton::menu-indicator { subcontrol-position: right center; }"
             )
             layout.addWidget(self.value_button)
@@ -114,6 +175,8 @@ class StatField(QWidget):
             self.value_label = QLabel()
             self.value_label.setAlignment(align | Qt.AlignVCenter)
             self.value_label.setStyleSheet("font-weight: 600;")
+            if wrap:
+                self.value_label.setWordWrap(True)
             layout.addWidget(self.value_label)
             self.value_button = None
 
@@ -131,6 +194,20 @@ class StatField(QWidget):
         # runs -- fall back to a generous estimate rather than aggressively
         # over-eliding before the real layout has ever run.
         available = self.width() if (self._fixed_width is not None or self.width() > 40) else 260
+
+        if self._wrap:
+            if self._clickable:
+                # QToolButton has no native word-wrap -- break it ourselves
+                # and rely on embedded newlines, which QToolButton DOES render.
+                wrapped = _wrap_to_pixel_width(full_text, available - 12 - reserve, metrics)
+                target.setText(wrapped)
+            else:
+                # QLabel wraps natively once setWordWrap(True) is set (done
+                # in __init__) -- no eliding, no manual line-breaking needed.
+                target.setText(full_text)
+            target.setToolTip(full_text)
+            return
+
         elided = metrics.elidedText(full_text, Qt.ElideRight, available - 12 - reserve)
         target.setText(elided)
         target.setToolTip(full_text)
@@ -365,7 +442,7 @@ class CardDetailDialog(QDialog):
         # deliberately no addStretch() after them, since the two fields
         # together ARE meant to fill the row.
         gameplay_row = QHBoxLayout()
-        self.type_field = StatField("Type", width=None)
+        self.type_field = StatField("Type", width=None, caption_half_width=True, wrap=True)
         self.mana_field = StatField("Mana Cost", width=None, align=Qt.AlignHCenter)
         gameplay_row.addWidget(self.type_field, stretch=2)
         gameplay_row.addWidget(self.mana_field, stretch=1)
@@ -396,7 +473,7 @@ class CardDetailDialog(QDialog):
         # entry (see NOTES.md). Same even-thirds technique as row 1.
         collection_row = QHBoxLayout()
         self.language_field = StatField("Language", width=None, clickable=True, align=Qt.AlignHCenter)
-        self.condition_field = StatField("Condition", width=None, clickable=True, align=Qt.AlignHCenter)
+        self.condition_field = StatField("Condition", width=None, clickable=True, align=Qt.AlignHCenter, wrap=True)
         self.foil_toggle = FoilToggle()
         for field in (self.language_field, self.condition_field, self.foil_toggle):
             collection_row.addWidget(field, stretch=1)

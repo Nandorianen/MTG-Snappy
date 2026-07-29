@@ -156,6 +156,31 @@ class TreePane(QWidget):
         """
         self.tree.setFocus()
 
+    def export_tree(self):
+        """
+        Returns a plain nested list of dicts (id/name/is_folder/icon_color/
+        children) mirroring the current tree structure -- a read-only
+        snapshot for external code (the tag-apply dialog) to build its OWN
+        checkbox tree from. Deliberately NOT sharing actual QTreeWidgetItem
+        objects: a Qt item can only belong to one QTreeWidget at a time, so
+        cloning into plain dicts is what lets a second, independent tree
+        widget exist showing "the same" tags without any ownership conflict.
+        """
+        def walk(item):
+            node = item.data(0, Qt.UserRole)
+            entry = {
+                "id": node["id"],
+                "name": item.text(0),
+                "is_folder": node["is_folder"],
+                "icon_color": node.get("icon_color"),
+            }
+            if item.childCount():
+                entry["children"] = [walk(item.child(i)) for i in range(item.childCount())]
+            return entry
+
+        root = self.tree.invisibleRootItem()
+        return [walk(root.child(i)) for i in range(root.childCount())]
+
     # --- Seeding demo/initial content -----------------------------------
     def _seed(self, nodes, parent_item=None):
         for spec in nodes:

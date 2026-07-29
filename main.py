@@ -42,6 +42,12 @@ class MainWindow(QMainWindow):
         self.inventory_table = CardTableView(get_inventory_cards(), qty_label="Have", cross_qty_label="Want")
         self.deck_viewer = DeckViewerView()
 
+        # Right-click-to-tag needs a reference to the Tag Database's tree --
+        # wired here (after both exist) rather than passed into CardTableView's
+        # constructor, matching the late-bound tag_source attribute pattern.
+        self.all_cards_table.tag_source = self.tag_panel.tree_pane
+        self.inventory_table.tag_source = self.tag_panel.tree_pane
+
         self.stack = QStackedWidget()
         # Order here defines the stack INDEX for each view; self._tab_indexes
         # below maps the SideNav's string keys to these indexes, so the two

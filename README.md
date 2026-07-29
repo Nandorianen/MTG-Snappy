@@ -1,6 +1,24 @@
 # MTG Local Database — Prototype
 
-## Filter improvements + layout fixes (this round)
+## Tag-apply widget (this round)
+- **Right-click any card row** in All Card Database or Inventory to open
+  it: a checkbox tree mirroring the Tag Database. Both folders AND leaf
+  tags are checkable (a card can carry the broad "Removal" tag, a specific
+  "Destroy"/"Exile" subtag, or any combination independently — matches the
+  original spec's example directly).
+- Right-clicking a row that's part of your current multi-selection keeps
+  the whole selection (bulk-tag several cards at once); right-clicking
+  outside it selects just that row first (standard Explorer-style behavior).
+- Checkboxes start **tri-state**: fully checked if every selected card
+  already has that tag, unchecked if none do, partially-checked if it's
+  mixed. A partial checkbox left untouched is skipped entirely on Apply —
+  only tags you explicitly resolve to fully checked/unchecked get applied
+  across the whole selection.
+- Backed by a new `tag_assignments.py` — a simple card-name → tag-id store,
+  keyed by tag ID specifically so renaming a tag later never orphans
+  existing assignments.
+
+## Filter improvements + layout fixes (earlier round)
 - Card detail popup: rows 2 and 3 (Edition/Rarity/Price, Language/
   Condition/Foil) now actually split into even thirds and center within
   them — the previous version used fixed pixel widths plus trailing empty
@@ -146,6 +164,9 @@ python main.py
   you own / cards you've wishlisted.
 - **⋯ button** — stub actions menu. **Hover a card's Name** — popover with
   placeholder art + text.
+- **Right-click a card row** (or a multi-selection of rows) — opens the
+  tag-apply dialog: check/uncheck tags from the Tag Database, Apply to
+  every selected card at once.
 
 ## Try — tree tabs (Tag Database / Deck Viewer)
 - **Ctrl+1 / Ctrl+4** — jump to Tag Database / Deck Viewer.

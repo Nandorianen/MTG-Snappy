@@ -43,6 +43,7 @@ from PySide6.QtGui import QKeySequence, QPainter, QColor, QBrush
 from mock_data import RARITY_ORDER, PRICE_SOURCES
 from card_popover import CardPopover
 from card_detail_popup import CardDetailDialog
+from tag_apply_dialog import TagApplyDialog
 
 
 # --- Column definitions -----------------------------------------------------
@@ -823,6 +824,48 @@ class CardTableView(QTableView):
 
         self._detail_dialog = None
         self.doubleClicked.connect(self._open_card_detail)
+
+        # Set by main.py after construction (main.py builds the Tag
+        # Database before the tables, but wiring it as a late-bound
+        # attribute rather than a constructor arg keeps CardTableView usable
+        # in contexts that don't need tagging at all, without an awkward
+        # required-but-often-None parameter).
+        self.tag_source = None
+        self._tag_dialog = None
+
+    def contextMenuEvent(self, event):
+        index = self.indexAt(event.pos())
+        if not index.isValid() or self.card_model.card_at(index.row()) is None:
+            return  # empty area or a group-header row -- nothing to tag
+        if self.tag_source is None:
+            return  # no Tag Database wired up -- safe no-op
+
+        # Explorer-style selection rule: right-clicking a row that's
+        # already part of the current selection keeps the WHOLE selection
+        # (so a multi-row selection can be bulk-tagged); right-clicking a
+        # row outside the current selection replaces it with just that row.
+        selected_rows = {idx.row() for idx in self.selectionModel().selectedIndexes()}
+        if index.row() not in selected_rows:
+            self.selectionModel().clearSelection()
+            self.selectRow(index.row())
+
+        cards = self._get_selected_cards()
+        if not cards:
+            return
+        self._tag_dialog = TagApplyDialog(cards, self.tag_source, parent=self)
+        self._tag_dialog.exec()
+
+    def _get_selected_cards(self):
+        """Unique card dicts for every row that currently has at least one
+        selected cell, skipping group-header rows entirely."""
+        rows = sorted({idx.row() for idx in self.selectionModel().selectedIndexes()})
+        cards, seen_ids = [], set()
+        for row in rows:
+            card = self.card_model.card_at(row)
+            if card is not None and id(card) not in seen_ids:
+                cards.append(card)
+                seen_ids.add(id(card))
+        return cards
 
     def eventFilter(self, watched, event):
         if watched is self.header and event.type() == QEvent.Enter:

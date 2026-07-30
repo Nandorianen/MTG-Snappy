@@ -215,6 +215,13 @@ class CardTableModel(QAbstractTableModel):
         self._sort_reverse = False
         self.group_by = None              # None | "type" | "color"
         self._column_filters = {}         # {column: set(excluded_value_strings)}
+        # A SEPARATE boolean flag, not expressed via the checklist exclusion
+        # mechanism: "only cards with exactly one color" (excludes both
+        # colorless AND multicolor). Kept independent of the per-color
+        # checkboxes below so the two combine naturally -- turn this on to
+        # restrict to single-color cards, then still use the individual
+        # White/Blue/.../Green checkboxes to narrow WHICH mono colors show.
+        self.mana_mono_only = False
         self._display_rows = [{"type": "card", "card": c} for c in self._cards]
 
     # --- Required QAbstractTableModel overrides ---
@@ -402,7 +409,13 @@ class CardTableModel(QAbstractTableModel):
                 continue
             if self._raw_filter_value(card, column) in excluded:
                 return False
+        if self.mana_mono_only and len(card.get("colors", [])) != 1:
+            return False
         return True
+
+    def set_mana_mono_only(self, value):
+        self.mana_mono_only = value
+        self._commit_reorder()
 
     def _commit_reorder(self):
         """
@@ -486,9 +499,28 @@ class _MenuSearchBox(QLineEdit):
         )
 
     def keyPressEvent(self, event):
-        if event.key() in (Qt.Key_Up, Qt.Key_Down):
-            self._menu.setFocus()
-            QApplication.sendEvent(self._menu, event)
+        if event.key() == Qt.Key_Up:
+            # Clamped: there's nothing "above" the search box to navigate
+            # to, so this deliberately does nothing rather than bouncing
+            # focus somewhere unexpected.
+            return
+        if event.key() == Qt.Key_Down:
+            # Deliberately NOT using QApplication.sendEvent() to forward
+            # this keypress to the menu -- that re-dispatches a raw key
+            # event through Qt's whole event system, and in practice that
+            # could land the menu's internal "active action" on a HIDDEN
+            # action (one narrowed out of view by the search box above) or
+            # bounce focus straight back to this search box, since the
+            # first action in the menu (this very search box's own
+            # QWidgetAction) can reclaim focus as part of default
+            # navigation. Calling setActiveAction() directly is a real,
+            # supported QMenu API that highlights a SPECIFIC action
+            # immediately and unambiguously -- no event redispatch, no
+            # chance of landing on something invisible.
+            visible_actions = [a for a in self._menu.actions() if a.isVisible() and a.isCheckable()]
+            if visible_actions:
+                self._menu.setFocus()
+                self._menu.setActiveAction(visible_actions[0])
             return
         super().keyPressEvent(event)
 
@@ -561,10 +593,18 @@ class SplitDropdownHeader(QHeaderView):
         left_rect = QRect(rect.left(), rect.top(), rect.width() // 2, rect.height())
         right_rect = QRect(mid_x, rect.top(), rect.width() - rect.width() // 2, rect.height())
 
-        left_label = "Ed " + ("▲" if self._active_sort_key == "set" else "")
-        right_label = "Rar " + ("▲" if self._active_sort_key == "rarity" else "")
-        painter.drawText(left_rect, Qt.AlignCenter, left_label)
-        painter.drawText(right_rect, Qt.AlignCenter, right_label)
+        # "Ed"/"Rar" are drawn as FIXED strings, always centered in their
+        # half regardless of sort state -- appending "▲" directly into the
+        # label (the previous approach) changed the string's rendered
+        # width, which shifted the CENTERED text sideways every time sort
+        # state changed. The arrow is now a separate glyph pinned to a
+        # fixed position within each half, so "Ed"/"Rar" never move.
+        painter.drawText(left_rect, Qt.AlignCenter, "Ed")
+        painter.drawText(right_rect, Qt.AlignCenter, "Rar")
+        if self._active_sort_key == "set":
+            painter.drawText(left_rect.adjusted(0, 0, -4, 0), Qt.AlignRight | Qt.AlignVCenter, "▲")
+        elif self._active_sort_key == "rarity":
+            painter.drawText(right_rect.adjusted(0, 0, -4, 0), Qt.AlignRight | Qt.AlignVCenter, "▲")
 
         painter.setPen(self.palette().mid().color())
         painter.drawLine(mid_x, rect.top() + 4, mid_x, rect.bottom() - 4)
@@ -572,21 +612,24 @@ class SplitDropdownHeader(QHeaderView):
 
     def _paint_section_with_arrow(self, painter, rect, logical_index):
         """
-        Draws the label ELIDED TO A RECT THAT EXCLUDES THE ARROW ZONE, rather
-        than drawing the full-width centered label (via super().paintSection)
-        and then drawing the arrow on top of it -- the previous approach,
-        which is exactly what let a long label run underneath the arrow
-        glyph. Reserving the space up front means the two can never overlap.
+        Centers the label within the FULL section width -- consistent with
+        how every other (non-dropdown) header is centered -- rather than
+        reserving arrow space and left-aligning within what's left, which
+        made the label's position depend on the arrow's presence (and read
+        inconsistently against plain headers). The dropdown arrow is drawn
+        as a fixed overlay pinned to the right edge; it doesn't factor into
+        where the label sits at all. These are short, fixed, known label
+        strings ("Type," "Mana Cost," "Price") that never grow at runtime,
+        so there's no real risk of the centered text colliding with the
+        arrow in practice -- unlike arbitrary user data, eliding isn't
+        needed here either.
         """
         painter.save()
         painter.fillRect(rect, QColor(HEADER_BG))
 
-        text_rect = rect.adjusted(6, 0, -(self.ARROW_WIDTH + 4), 0)
         label = COLUMNS[logical_index][1]
-        metrics = painter.fontMetrics()
-        elided = metrics.elidedText(label, Qt.ElideRight, max(text_rect.width(), 0))
         painter.setPen(self.palette().text().color())
-        painter.drawText(text_rect, Qt.AlignVCenter | Qt.AlignLeft, elided)
+        painter.drawText(rect, Qt.AlignCenter, label)
 
         arrow_rect = QRect(rect.right() - self.ARROW_WIDTH, rect.top(), self.ARROW_WIDTH, rect.height())
         painter.drawText(arrow_rect, Qt.AlignCenter, "▾")
@@ -738,27 +781,38 @@ class SplitDropdownHeader(QHeaderView):
             # extra click into the box first.
             menu.aboutToShow.connect(search_box.setFocus)
 
-            # Mana Cost gets an extra convenience preset ABOVE its own
-            # separator: checking "Monocolored only" checks every single-
-            # color entry below (White/Blue/.../Green) and unchecks
-            # Colorless plus any multicolor combo in one action, so the
-            # user can then fine-tune by unchecking specific colors --
-            # "filter for any monocolored cards, then narrow further,"
-            # exactly as asked, without needing a long individual click
-            # sequence to get there. It's a one-shot preset (checking it
-            # applies the preset; unchecking it has no effect of its own),
-            # not a value bound bidirectionally to the checklist below.
+            # Mana Cost is special-cased: its checklist ONLY offers the 5
+            # mono colors, never "Colorless" or a multicolor combo like
+            # "U/B". Since a card's raw filter value is still its full
+            # color category (see _raw_filter_value), and exclusion only
+            # ever happens when that raw value matches an OFFERED checkbox,
+            # colorless and multicolor cards are simply never excludable
+            # via these checkboxes at all -- colorless in particular isn't
+            # "filtered one way or another," by construction, not because
+            # of a special-case skip. "Monocolored only" is a SEPARATE,
+            # persistent, real toggle (model.mana_mono_only) -- checking it
+            # additionally excludes colorless AND multicolor outright; the
+            # checkboxes below still narrow WHICH mono colors show, whether
+            # or not the toggle is on. This is what makes both workflows
+            # possible: uncheck all 5 colors to isolate multicolor (+
+            # colorless, unaffected either way), OR toggle "Monocolored
+            # only" on and uncheck specific colors to narrow within it.
             mono_action = None
             if column == COL_MANA:
                 mono_action = menu.addAction("Monocolored only")
                 mono_action.setCheckable(True)
+                mono_action.setChecked(self.model().mana_mono_only)
+                mono_action.toggled.connect(self.model().set_mana_mono_only)
                 menu.addSeparator()
 
-            menu.addSeparator()
-
             excluded = self.model()._column_filters.get(column, set())
+            if column == COL_MANA:
+                offered_values = [COLOR_NAMES[c] for c in COLOR_ORDER]  # White, Blue, Black, Red, Green -- WUBRG order
+            else:
+                offered_values = self.model().distinct_values_for_column(column)
+
             value_actions = []
-            for value in self.model().distinct_values_for_column(column):
+            for value in offered_values:
                 action = menu.addAction(value)
                 action.setCheckable(True)
                 action.setChecked(value not in excluded)
@@ -772,15 +826,6 @@ class SplitDropdownHeader(QHeaderView):
                 for value, action in value_actions:
                     action.setVisible(needle in value.lower())
             search_box.textChanged.connect(_narrow_checklist)
-
-            if mono_action is not None:
-                mono_colors = {"White", "Blue", "Black", "Red", "Green"}
-                def _apply_mono_preset(checked, actions=value_actions):
-                    if not checked:
-                        return
-                    for value, action in actions:
-                        action.setChecked(value in mono_colors)
-                mono_action.toggled.connect(_apply_mono_preset)
 
             menu.addSeparator()
 
@@ -903,6 +948,24 @@ class CardTableView(QTableView):
         # required-but-often-None parameter).
         self.tag_source = None
         self._tag_dialog = None
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.RightButton:
+            # Deliberately swallowed rather than passed to the default
+            # QAbstractItemView handling. Right-clicking a cell that's part
+            # of an existing multi-column selection (e.g. Ctrl+clicked
+            # across several rows' "Have" cells) was inconsistently
+            # dropping that selection depending on which column the
+            # right-click landed in -- Qt's own default click handling can
+            # still touch the current index / selection state for a
+            # right-button press in some configurations. Selection changes
+            # on right-click are handled ENTIRELY and deliberately in
+            # contextMenuEvent below (Explorer-style: keep the whole
+            # selection if the click landed on any already-selected row),
+            # so nothing else should be allowed to touch selection first.
+            event.accept()
+            return
+        super().mousePressEvent(event)
 
     def contextMenuEvent(self, event):
         index = self.indexAt(event.pos())

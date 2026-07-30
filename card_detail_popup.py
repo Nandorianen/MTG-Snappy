@@ -50,6 +50,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal, QSize, QEvent
 from PySide6.QtGui import QFontMetrics, QColor, QPainter
 
+from frameless_dialog import FramelessDialog
 from mock_data import (
     get_card_by_name, get_card_prints, get_card_legalities, get_card_rulings,
     swatch_for_card, FORMATS, PRICE_SOURCES, LANGUAGES, CONDITIONS,
@@ -100,7 +101,7 @@ class StatField(QWidget):
     ARROW_RESERVE = 16  # px reserved for the QToolButton's native dropdown arrow
 
     def __init__(self, title, width=None, clickable=False, align=Qt.AlignLeft,
-                 caption_half_width=False, wrap=False):
+                 caption_half_width=False, wrap=False, value_left_margin=0):
         """
         width=None means "no fixed width -- let the containing layout's
         stretch factor govern my size instead" (used for the proportional
@@ -120,6 +121,15 @@ class StatField(QWidget):
         lines as a fallback when text doesn't fit -- QLabel does this
         natively; QToolButton needs the manual _wrap_to_pixel_width() helper
         since it has no built-in word-wrap.
+
+        value_left_margin adds left padding to a (non-clickable) value
+        label -- used for Type, whose value is left-aligned flush against
+        the field's edge by default; a short value ("Instant") then looks
+        oddly far left compared to every OTHER row's centered content,
+        which visually begins somewhat indented. A small fixed indent here
+        gives Type's value the same "doesn't hug the absolute edge" feel
+        without actually centering it (long type lines still need to read
+        left-to-right from a consistent start point).
         """
         super().__init__()
         self._fixed_width = width
@@ -177,6 +187,8 @@ class StatField(QWidget):
             self.value_label.setStyleSheet("font-weight: 600;")
             if wrap:
                 self.value_label.setWordWrap(True)
+            if value_left_margin:
+                self.value_label.setContentsMargins(value_left_margin, 0, 0, 0)
             layout.addWidget(self.value_label)
             self.value_button = None
 
@@ -317,49 +329,9 @@ def _hline():
     return line
 
 
-class _TitleBar(QWidget):
-    """
-    Stands in for the OS title bar we removed: shows the card name and a
-    close button, and is itself the drag handle (press-and-drag anywhere on
-    it moves the window, same as dragging a native title bar would).
-    """
-
-    def __init__(self, title, on_close):
-        super().__init__()
-        self.setFixedHeight(34)
-        self._drag_offset = None
-
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(10, 0, 6, 0)
-        name_label = QLabel(title)
-        name_label.setStyleSheet("font-size: 15px; font-weight: 700;")
-        layout.addWidget(name_label)
-        layout.addStretch()
-
-        close_button = QToolButton()
-        close_button.setText("\u2715")  # ✕
-        close_button.setStyleSheet(
-            "QToolButton { border: none; padding: 4px 8px; border-radius: 3px; } "
-            "QToolButton:hover { background-color: #a83a3a; color: white; }"
-        )
-        close_button.clicked.connect(on_close)
-        layout.addWidget(close_button)
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            self._drag_offset = event.globalPosition().toPoint() - self.window().pos()
-
-    def mouseMoveEvent(self, event):
-        if self._drag_offset is not None and (event.buttons() & Qt.LeftButton):
-            self.window().move(event.globalPosition().toPoint() - self._drag_offset)
-
-    def mouseReleaseEvent(self, event):
-        self._drag_offset = None
-
-
-class CardDetailDialog(QDialog):
+class CardDetailDialog(FramelessDialog):
     def __init__(self, card_name, parent=None):
-        super().__init__(parent, Qt.Dialog | Qt.FramelessWindowHint)
+        super().__init__(card_name, parent)
         self.oracle = get_card_by_name(card_name)
         self.prints = get_card_prints(card_name)
         self.current_print_index = 0
@@ -368,22 +340,7 @@ class CardDetailDialog(QDialog):
         self.condition = CONDITIONS[0]
         self._zoom_widget = None  # keep a reference so it isn't garbage-collected while open
 
-        # Remembered so the click-outside-closes check (in eventFilter
-        # below) can tell "a click landed in the actual main window" apart
-        # from "a click landed inside this dialog" or "inside a popup menu
-        # this dialog opened" -- see the module docstring, point 3.
-        self._app_window = parent.window() if parent is not None else None
-
         self.resize(900, 560)
-
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
-        outer.addWidget(_TitleBar(card_name, self.close))
-
-        content = QVBoxLayout()
-        content.setContentsMargins(12, 8, 12, 12)
-        outer.addLayout(content)
 
         panes_row = QHBoxLayout()
         panes_row.setSpacing(0)
@@ -392,7 +349,7 @@ class CardDetailDialog(QDialog):
         panes_row.addLayout(self._build_legality_pane())  # no stretch -- sized to content, see below
         panes_row.addWidget(_vline())
         panes_row.addLayout(self._build_rulings_pane(), stretch=2)
-        content.addLayout(panes_row)
+        self.content_layout.addLayout(panes_row)
 
         self._build_edition_menu()
         self._build_price_menu()
@@ -401,18 +358,6 @@ class CardDetailDialog(QDialog):
         self._refresh_for_current_print()
         self._populate_legality()
         self._populate_rulings()
-
-        QApplication.instance().installEventFilter(self)
-
-    def closeEvent(self, event):
-        QApplication.instance().removeEventFilter(self)
-        super().closeEvent(event)
-
-    def eventFilter(self, watched, event):
-        if (event.type() == QEvent.MouseButtonPress and self._app_window is not None
-                and isinstance(watched, QWidget) and watched.window() is self._app_window):
-            self.close()
-        return super().eventFilter(watched, event)
 
     def _pane_layout(self, title):
         layout = QVBoxLayout()
@@ -442,8 +387,8 @@ class CardDetailDialog(QDialog):
         # deliberately no addStretch() after them, since the two fields
         # together ARE meant to fill the row.
         gameplay_row = QHBoxLayout()
-        self.type_field = StatField("Type", width=None, caption_half_width=True, wrap=True)
-        self.mana_field = StatField("Mana Cost", width=None, align=Qt.AlignHCenter)
+        self.type_field = StatField("Type", width=None, caption_half_width=True, wrap=True, value_left_margin=10)
+        self.mana_field = StatField("Mana Cost", width=None, align=Qt.AlignHCenter, wrap=True)
         gameplay_row.addWidget(self.type_field, stretch=2)
         gameplay_row.addWidget(self.mana_field, stretch=1)
         layout.addLayout(gameplay_row)
@@ -472,7 +417,7 @@ class CardDetailDialog(QDialog):
         # Price. Not yet wired to actually saving against a collection
         # entry (see NOTES.md). Same even-thirds technique as row 1.
         collection_row = QHBoxLayout()
-        self.language_field = StatField("Language", width=None, clickable=True, align=Qt.AlignHCenter)
+        self.language_field = StatField("Language", width=None, clickable=True, align=Qt.AlignHCenter, wrap=True)
         self.condition_field = StatField("Condition", width=None, clickable=True, align=Qt.AlignHCenter, wrap=True)
         self.foil_toggle = FoilToggle()
         for field in (self.language_field, self.condition_field, self.foil_toggle):

@@ -1,6 +1,38 @@
 # MTG Local Database — Prototype
 
-## Detail-popup layout + filter-menu polish (this round)
+## Alignment & interaction fixes (this round)
+- Detail popup: Type's value now has a left indent so short values ("Instant")
+  don't look stranded far from the caption above them; Type and Condition
+  wrap onto multiple lines instead of truncating; Language and Mana Cost
+  wrap too (needed for entries like "Chinese Simplified").
+- CardDetailDialog and TagApplyDialog now share one `frameless_dialog.py`
+  base (no OS title bar, custom draggable title bar, click-outside-closes)
+  instead of duplicating that logic.
+- Table headers: the Edition/Rarity sort arrow and the Type/Mana/Price
+  dropdown arrow no longer shift the label text — labels are drawn at a
+  fixed position and the arrow is a separate overlay, not part of the
+  centered/positioned text itself.
+- Mana Cost filter redesigned: the checklist now shows only the 5 mono
+  colors (no Colorless, no multicolor combos) — colorless is structurally
+  exempt from the checkboxes rather than specially skipped, and "Monocolored
+  only" is a real persistent toggle (not a one-shot preset) that combines
+  with the color checkboxes rather than overwriting them.
+- Filter-menu search box: arrow-key navigation rewritten — Up is clamped
+  (does nothing), Down jumps directly to the first *visible* checkable
+  action via `setActiveAction()` instead of re-dispatching a raw key event
+  through the menu (which was landing on hidden/narrowed-out items and
+  bouncing focus back to the search box).
+- Right-click on a card row no longer drops a multi-row selection when the
+  click lands on a different column than the one originally selected —
+  right-button presses now skip Qt's default click handling entirely,
+  leaving selection changes on right-click to our own deliberate logic.
+- Tag-apply widget: now frameless (matches the card detail popup), and
+  fully-checked tags are visually highlighted (bold + accent color).
+- Parked for later (see NOTES.md): a search box inside the tag-apply
+  widget itself, and user-assignable per-branch hotkey letter sequences
+  for fast tag navigation.
+
+## Detail-popup layout + filter-menu polish (earlier round)
 - Detail popup: Type's caption now centers within a notional 1/3-of-row
   slot (matching every other caption's rhythm) even though its VALUE still
   spans the full 2/3 width it needs.

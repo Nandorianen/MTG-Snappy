@@ -35,6 +35,30 @@ separate thing from this: a real search engine needs cross-field queries,
 saved searches, and probably its own query-language-ish input, not just
 "narrow this one column's checklist."
 
+## Tag-apply widget: search/filter (raised as an explicit TODO)
+The tag tree in TagApplyDialog can get long once a real tag hierarchy
+exists. Needs the same kind of search box the column filter menus now have
+(narrows what's visible as you type) -- probably simpler than the header
+version since there's no "excluded values" concept here, just show/hide
+tree items (and their ancestor folders, so a matching deeply-nested tag
+doesn't end up hidden because its parent got hidden).
+
+## Tag-apply widget: user-assignable hotkey sequences (raised as an explicit TODO)
+Idea, described in detail: let the user assign a single letter to any tag,
+unique only among its SIBLINGS at the same tree depth (not globally unique)
+-- then typing a sequence of those letters navigates straight to a tag
+without touching the mouse. Given example: a→Artifacts, c→Creature,
+d→Destroy under one branch, so "a c c" reaches "Removal for Artifact" and
+"a c d" reaches "Removal (Enchantment)" (per the user's own worked example),
+while "c c c" reaches an entirely different tag "Fetch Any Card" down a
+different branch, since letters only need to be unique among siblings at
+each level, not across the whole tree. Open questions for when we design
+this: where do the assignments live (per-tag field alongside icon_color?),
+what happens on a collision when the user tries to assign an already-used
+sibling letter, and how does the UI show "type a letter to jump" (small
+letter badges next to each item, probably, activated by some modifier or
+a distinct navigation mode toggle).
+
 ## Options menu + externalized/translatable strings (raised alongside language selector)
 TODO, explicitly flagged as a TODO rather than a quick fix. Shape of it:
 - An actual Options/Settings window/dialog is needed once there's more than

@@ -1,6 +1,41 @@
 # MTG Local Database — Prototype
 
-## Alignment & interaction fixes (this round)
+## Detail popup, mono-color, and keyboard-parity fixes (this round)
+- Fixed the actual bug behind the "inconsistent" alignment complaint: the
+  reserved-width calculation for centered dropdown fields only subtracted
+  the arrow's space ONCE, when symmetric padding means it needed subtracting
+  TWICE — this made short values look fine but medium-length ones (Price,
+  "Lightly Played") wrap/elide against the wrong width. Fixed uniformly for
+  every clickable+centered field, not case-by-case.
+- Type's value now uses the same indent magic number (16px) as the
+  centered fields' effective content start, instead of an approximate guess.
+- Switching price source no longer resets your selected language — it was
+  being re-derived from print data on every refresh instead of just being
+  displayed from the tracked selection.
+- Added a real "Apply to Inventory" button: edition/language/condition/foil
+  changes now actually write back into the card's real collection entry
+  (previously these were preview-only with nowhere to commit to).
+- Mana Cost filtering redesigned again: unchecking a single color now
+  correctly hides multicolor cards containing it too (previously only an
+  exact mono-color match was excluded) — implemented via a dedicated
+  per-color-letter exclusion set rather than the generic value-checklist
+  mechanism, which structurally couldn't express "any card containing
+  this color."
+- Filter-menu search box: fully rewritten navigation — Up/Down now move
+  QMenu's highlight directly via `setActiveAction()` without ever
+  transferring real keyboard focus away from the search box (the previous
+  focus-handoff approach was fragile with QWidgetAction involved). Enter
+  applies the typed text as a real filter and closes the menu.
+- Tag-apply widget: restored a visible current-item indicator (the app's
+  global "remove focus rectangle" style was suppressing it here too) and
+  set initial focus/current-item so arrow-key navigation works immediately;
+  confirmed Space already natively toggles the current item's checkbox.
+- Table: added Excel-familiar shortcuts — F2 (Qty is now genuinely
+  editable), Shift+Space (select row), Ctrl+Space (select column),
+  Ctrl+Home/End, Ctrl+Shift+Arrow (extend selection to an edge, with known
+  simplifications noted in NOTES.md).
+
+## Alignment & interaction fixes (earlier round)
 - Detail popup: Type's value now has a left indent so short values ("Instant")
   don't look stranded far from the caption above them; Type and Condition
   wrap onto multiple lines instead of truncating; Language and Mana Cost

@@ -73,8 +73,24 @@ class TagApplyDialog(FramelessDialog):
         self.tag_tree = QTreeWidget()
         self.tag_tree.setHeaderHidden(True)
         self.tag_tree.itemChanged.connect(self._restyle_for_state)
+        # The app-wide stylesheet sets `outline: 0` on QTreeWidget globally
+        # (removing the native dashed focus rectangle elsewhere, which was
+        # wanted there) -- but here we DO want a visible "this is the
+        # keyboard cursor position" indicator, distinct from the bold/gold
+        # CHECKED-state highlighting, so arrow-key navigation has visible
+        # feedback. An instance-level style targeting the :focus pseudo-
+        # state directly (rather than fighting `outline`) restores that.
+        self.tag_tree.setStyleSheet(
+            "QTreeWidget::item:focus { border: 1px solid #4f8fc0; border-radius: 2px; }"
+        )
         self._build_checkbox_tree(tag_nodes)
         self.content_layout.addWidget(self.tag_tree)
+
+        # Keyboard navigation works immediately on open, without requiring
+        # a click into the tree first.
+        self.tag_tree.setFocus()
+        if self.tag_tree.topLevelItemCount() > 0:
+            self.tag_tree.setCurrentItem(self.tag_tree.topLevelItem(0))
 
         button_row = QHBoxLayout()
         button_row.addStretch()

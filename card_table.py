@@ -37,7 +37,10 @@ from PySide6.QtWidgets import (
     QTableView, QHeaderView, QStyledItemDelegate, QStyle, QAbstractItemView,
     QApplication, QMenu, QLineEdit, QWidgetAction,
 )
-from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, Signal, QTimer, QRect, QEvent
+from PySide6.QtCore import (
+    Qt, QAbstractTableModel, QModelIndex, Signal, QTimer, QRect, QEvent,
+    QItemSelection, QItemSelectionModel,
+)
 from PySide6.QtGui import QKeySequence, QPainter, QColor, QBrush
 
 from mock_data import RARITY_ORDER, PRICE_SOURCES
@@ -135,6 +138,7 @@ SUPERTYPES_TO_STRIP = ["Legendary", "Basic", "Snow", "World", "Ongoing", "Elite"
 # multicolor combinations consistently (e.g. always "U/B", never "B/U").
 COLOR_ORDER = ["W", "U", "B", "R", "G"]
 COLOR_NAMES = {"W": "White", "U": "Blue", "B": "Black", "R": "Red", "G": "Green"}
+NAME_TO_COLOR_LETTER = {name: letter for letter, name in COLOR_NAMES.items()}
 
 
 def _type_category(type_line):
@@ -222,6 +226,15 @@ class CardTableModel(QAbstractTableModel):
         # restrict to single-color cards, then still use the individual
         # White/Blue/.../Green checkboxes to narrow WHICH mono colors show.
         self.mana_mono_only = False
+        # Per-COLOR-LETTER exclusion (e.g. {"B", "U"}), NOT tied to the
+        # generic _column_filters exact-value-match mechanism. That
+        # distinction matters: unchecking "Black" needs to hide EVERY card
+        # containing black -- mono-black AND multicolor black-inclusive
+        # cards like a U/B card -- not just cards whose color category is
+        # the exact string "Black". A value-exclusion-set keyed on
+        # _color_category() strings could never express that, since a U/B
+        # card's category is "U/B", never "Black" or "Blue" individually.
+        self.mana_excluded_colors = set()
         self._display_rows = [{"type": "card", "card": c} for c in self._cards]
 
     # --- Required QAbstractTableModel overrides ---
@@ -247,6 +260,8 @@ class CardTableModel(QAbstractTableModel):
         base = Qt.ItemIsEnabled | Qt.ItemIsSelectable
         if index.column() == COL_SELECTED:
             base |= Qt.ItemIsUserCheckable
+        if index.column() == COL_QTY:
+            base |= Qt.ItemIsEditable
         return base
 
     def data(self, index, role=Qt.DisplayRole):
@@ -301,6 +316,14 @@ class CardTableModel(QAbstractTableModel):
         if role == Qt.CheckStateRole and index.column() == COL_SELECTED:
             entry["card"]["selected"] = (value == Qt.Checked)
             self.dataChanged.emit(index, index, [Qt.CheckStateRole])
+            return True
+        if role == Qt.EditRole and index.column() == COL_QTY:
+            try:
+                new_qty = max(0, int(value))
+            except (TypeError, ValueError):
+                return False  # reject non-numeric input rather than corrupting the count
+            entry["card"]["qty"] = new_qty
+            self.dataChanged.emit(index, index, [Qt.DisplayRole, Qt.EditRole])
             return True
         return False
 
@@ -409,12 +432,26 @@ class CardTableModel(QAbstractTableModel):
                 continue
             if self._raw_filter_value(card, column) in excluded:
                 return False
-        if self.mana_mono_only and len(card.get("colors", [])) != 1:
+        card_colors = card.get("colors", [])
+        # Colorless cards (card_colors == []) never intersect ANY excluded
+        # set, so they're structurally exempt here too -- same principle as
+        # the checklist never offering a "Colorless" checkbox in the first
+        # place: colorless just isn't part of this filtering dimension at all.
+        if self.mana_excluded_colors and any(c in self.mana_excluded_colors for c in card_colors):
+            return False
+        if self.mana_mono_only and len(card_colors) != 1:
             return False
         return True
 
     def set_mana_mono_only(self, value):
         self.mana_mono_only = value
+        self._commit_reorder()
+
+    def set_mana_color_excluded(self, color_letter, excluded):
+        if excluded:
+            self.mana_excluded_colors.add(color_letter)
+        else:
+            self.mana_excluded_colors.discard(color_letter)
         self._commit_reorder()
 
     def _commit_reorder(self):
@@ -473,24 +510,35 @@ class _StayOpenMenu(QMenu):
 class _MenuSearchBox(QLineEdit):
     """
     The Excel-style "narrow the checklist" search box embedded in a filter
-    menu. Two behaviors plain QLineEdit doesn't have, both needed for this
-    to feel like part of the menu rather than an isolated text field:
+    menu. Three behaviors plain QLineEdit doesn't have:
 
-    1. Up/Down arrow keys hand keyboard focus back to the MENU itself and
-       forward that same key event to it, rather than doing nothing (or
-       moving the text cursor, which QLineEdit doesn't even do for
-       vertical arrows). This is what lets someone type a few characters
-       to narrow the list, then immediately arrow-key down into the
-       results without an extra click first.
-    2. Distinct focused/unfocused border colors (grey when idle, accent
-       blue when focused) so it's visually obvious which control has
-       keyboard focus inside the menu -- otherwise a plain default-style
-       QLineEdit can look inert.
+    1. Up/Down arrow keys move QMenu's visual "active action" highlight
+       WITHOUT ever transferring real Qt keyboard focus away from this
+       search box. An earlier version tried handing focus to the menu
+       itself and forwarding the raw key event via QApplication.sendEvent()
+       -- in practice that's fragile with a QWidgetAction involved (Qt's
+       own menu/widget-action focus interplay can bounce focus straight
+       back to this search box, or land the highlight on a hidden action).
+       setActiveAction() is a direct, supported API for "highlight exactly
+       this action" that doesn't depend on who technically has keyboard
+       focus, so keeping focus right here on the search box the entire
+       time and driving the highlight manually sidesteps that whole class
+       of bug. Only VISIBLE, checkable actions are ever targeted, and
+       Up/Down are clamped at the top/bottom (Up when nothing is
+       highlighted yet does nothing; Down past the last item does nothing
+       further).
+    2. Enter applies the typed text as a real filter (excluding every
+       offered value that doesn't contain it) and closes the menu --
+       a fast path for "I know what I'm looking for" that doesn't require
+       manually finding and clicking the matching checkbox.
+    3. Distinct focused/unfocused border colors and left-padded
+       placeholder text.
     """
 
-    def __init__(self, menu):
+    def __init__(self, menu, on_enter=None):
         super().__init__()
         self._menu = menu
+        self._on_enter = on_enter
         self.setPlaceholderText("Search values...")
         self.setStyleSheet(
             "QLineEdit { border: 1px solid #6b6f76; border-radius: 3px; "
@@ -498,29 +546,37 @@ class _MenuSearchBox(QLineEdit):
             "QLineEdit:focus { border: 1px solid #4f8fc0; }"
         )
 
+    def _visible_checkable_actions(self):
+        return [a for a in self._menu.actions() if a.isVisible() and a.isCheckable()]
+
+    def _move_highlight(self, direction):
+        actions = self._visible_checkable_actions()
+        if not actions:
+            return
+        current = self._menu.activeAction()
+        if current in actions:
+            index = actions.index(current) + direction
+        else:
+            # Nothing highlighted yet: Down starts at the first item; Up
+            # stays clamped (there's nothing "above" the search box).
+            index = 0 if direction > 0 else -1
+        if index < 0:
+            self._menu.setActiveAction(None)  # back to "nothing highlighted" / clamped top
+            return
+        index = min(index, len(actions) - 1)  # clamp bottom
+        self._menu.setActiveAction(actions[index])
+
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Up:
-            # Clamped: there's nothing "above" the search box to navigate
-            # to, so this deliberately does nothing rather than bouncing
-            # focus somewhere unexpected.
+            self._move_highlight(-1)
             return
         if event.key() == Qt.Key_Down:
-            # Deliberately NOT using QApplication.sendEvent() to forward
-            # this keypress to the menu -- that re-dispatches a raw key
-            # event through Qt's whole event system, and in practice that
-            # could land the menu's internal "active action" on a HIDDEN
-            # action (one narrowed out of view by the search box above) or
-            # bounce focus straight back to this search box, since the
-            # first action in the menu (this very search box's own
-            # QWidgetAction) can reclaim focus as part of default
-            # navigation. Calling setActiveAction() directly is a real,
-            # supported QMenu API that highlights a SPECIFIC action
-            # immediately and unambiguously -- no event redispatch, no
-            # chance of landing on something invisible.
-            visible_actions = [a for a in self._menu.actions() if a.isVisible() and a.isCheckable()]
-            if visible_actions:
-                self._menu.setFocus()
-                self._menu.setActiveAction(visible_actions[0])
+            self._move_highlight(1)
+            return
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            if self._on_enter is not None:
+                self._on_enter(self.text())
+            self._menu.close()
             return
         super().keyPressEvent(event)
 
@@ -765,14 +821,29 @@ class SplitDropdownHeader(QHeaderView):
             header_action = menu.addAction(f"Filter by {label}")
             header_action.setEnabled(False)  # acts as a section label, not clickable
 
+            # Mana Cost is special-cased: its checklist ONLY offers the 5
+            # mono colors, never "Colorless" or a multicolor combo like
+            # "U/B". Colorless and multicolor cards are simply never
+            # excludable via these checkboxes at all -- colorless in
+            # particular isn't "filtered one way or another," by
+            # construction. "Monocolored only" is a SEPARATE, persistent,
+            # real toggle (model.mana_mono_only) -- checking it additionally
+            # excludes colorless AND multicolor outright; the checkboxes
+            # below still narrow WHICH mono colors show, whether or not the
+            # toggle is on.
+            if column == COL_MANA:
+                offered_values = [COLOR_NAMES[c] for c in COLOR_ORDER]  # White, Blue, Black, Red, Green -- WUBRG order
+            else:
+                offered_values = self.model().distinct_values_for_column(column)
+
             # Excel-style search box: narrows which checkboxes are VISIBLE
-            # as you type (case-insensitive substring match). This doesn't
-            # filter the table itself -- it's purely so a long value list
-            # (every quantity from 0-20, every distinct price, etc.) is
-            # something you can jump into by typing instead of scanning/
-            # clicking through every individual value. The table filter
-            # still comes from which boxes end up checked/unchecked below.
-            search_box = _MenuSearchBox(menu)
+            # as you type (case-insensitive substring match), and Enter
+            # applies the typed text as a real filter (see
+            # _apply_enter_filter) and closes the menu -- a fast path when
+            # you already know what you're looking for.
+            search_box = _MenuSearchBox(
+                menu, on_enter=lambda text: self._apply_enter_filter(column, offered_values, text)
+            )
             search_action = QWidgetAction(menu)
             search_action.setDefaultWidget(search_box)
             menu.addAction(search_action)
@@ -781,22 +852,6 @@ class SplitDropdownHeader(QHeaderView):
             # extra click into the box first.
             menu.aboutToShow.connect(search_box.setFocus)
 
-            # Mana Cost is special-cased: its checklist ONLY offers the 5
-            # mono colors, never "Colorless" or a multicolor combo like
-            # "U/B". Since a card's raw filter value is still its full
-            # color category (see _raw_filter_value), and exclusion only
-            # ever happens when that raw value matches an OFFERED checkbox,
-            # colorless and multicolor cards are simply never excludable
-            # via these checkboxes at all -- colorless in particular isn't
-            # "filtered one way or another," by construction, not because
-            # of a special-case skip. "Monocolored only" is a SEPARATE,
-            # persistent, real toggle (model.mana_mono_only) -- checking it
-            # additionally excludes colorless AND multicolor outright; the
-            # checkboxes below still narrow WHICH mono colors show, whether
-            # or not the toggle is on. This is what makes both workflows
-            # possible: uncheck all 5 colors to isolate multicolor (+
-            # colorless, unaffected either way), OR toggle "Monocolored
-            # only" on and uncheck specific colors to narrow within it.
             mono_action = None
             if column == COL_MANA:
                 mono_action = menu.addAction("Monocolored only")
@@ -806,19 +861,23 @@ class SplitDropdownHeader(QHeaderView):
                 menu.addSeparator()
 
             excluded = self.model()._column_filters.get(column, set())
-            if column == COL_MANA:
-                offered_values = [COLOR_NAMES[c] for c in COLOR_ORDER]  # White, Blue, Black, Red, Green -- WUBRG order
-            else:
-                offered_values = self.model().distinct_values_for_column(column)
+            excluded_colors = self.model().mana_excluded_colors if column == COL_MANA else None
 
             value_actions = []
             for value in offered_values:
                 action = menu.addAction(value)
                 action.setCheckable(True)
-                action.setChecked(value not in excluded)
-                action.toggled.connect(
-                    lambda checked, v=value, col=column: self._on_filter_toggled(col, v, checked)
-                )
+                if column == COL_MANA:
+                    letter = NAME_TO_COLOR_LETTER[value]
+                    action.setChecked(letter not in excluded_colors)
+                    action.toggled.connect(
+                        lambda checked, l=letter: self.model().set_mana_color_excluded(l, not checked)
+                    )
+                else:
+                    action.setChecked(value not in excluded)
+                    action.toggled.connect(
+                        lambda checked, v=value, col=column: self._on_filter_toggled(col, v, checked)
+                    )
                 value_actions.append((value, action))
 
             def _narrow_checklist(text):
@@ -851,6 +910,26 @@ class SplitDropdownHeader(QHeaderView):
         else:
             excluded.add(value)
         self.model().set_column_filter(column, excluded)
+
+    def _apply_enter_filter(self, column, offered_values, text):
+        """
+        Pressing Enter in a filter menu's search box applies the typed text
+        directly as a filter -- every offered value that DOESN'T contain it
+        gets excluded -- rather than requiring the user to find and click
+        the matching checkbox by hand. Empty text clears the filter entirely.
+        """
+        text = text.strip().lower()
+        if column == COL_MANA:
+            for value in offered_values:
+                letter = NAME_TO_COLOR_LETTER[value]
+                exclude_this = bool(text) and text not in value.lower()
+                self.model().set_mana_color_excluded(letter, exclude_this)
+        else:
+            if not text:
+                self.model().set_column_filter(column, set())
+            else:
+                non_matching = {v for v in offered_values if text not in v.lower()}
+                self.model().set_column_filter(column, non_matching)
 
 
 class ActionButtonDelegate(QStyledItemDelegate):
@@ -902,6 +981,11 @@ class CardTableView(QTableView):
 
         self.setSelectionBehavior(QAbstractItemView.SelectItems)
         self.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        # F2 (EditKeyPressed) only -- NOT DoubleClicked, since double-click
+        # already opens the detail popup; making DoubleClicked ALSO an edit
+        # trigger would race the two behaviors against each other on the
+        # editable Qty column.
+        self.setEditTriggers(QAbstractItemView.EditKeyPressed)
 
         column_keys = {COL_QTY: "qty", COL_CROSS_QTY: "cross_qty", COL_NAME: "name",
                        COL_TYPE: "type_line", COL_MANA: "mana_cost",
@@ -1032,14 +1116,95 @@ class CardTableView(QTableView):
         self._hover_timer.stop()
         self._popover.hide()
         self._hover_index = QModelIndex()
-        self._detail_dialog = CardDetailDialog(card["name"], parent=self)
+        self._detail_dialog = CardDetailDialog(
+            card["name"], collection_card=card, on_applied=self._on_card_applied, parent=self
+        )
         self._detail_dialog.show()
+
+    def _on_card_applied(self):
+        """
+        Called after the detail popup's Apply button writes changes
+        (edition/language/condition/foil) directly into the card dict the
+        table already holds a reference to. The mutation itself is already
+        done by the time this runs -- this just re-runs the sort/group/
+        filter pipeline so the table visually reflects it (e.g. a changed
+        Edition/Rarity should re-sort if that's the active sort column).
+        """
+        self.card_model._commit_reorder()
 
     def keyPressEvent(self, event):
         if event.matches(QKeySequence.Copy):
             self._copy_selection_to_clipboard()
             return
+
+        modifiers = event.modifiers()
+        key = event.key()
+
+        if key == Qt.Key_Space and modifiers == Qt.ShiftModifier:
+            # Excel: Shift+Space selects the entire current row.
+            current = self.currentIndex()
+            if current.isValid():
+                self.selectRow(current.row())
+            return
+
+        if key == Qt.Key_Space and modifiers == Qt.ControlModifier:
+            # Excel: Ctrl+Space selects the entire current column.
+            current = self.currentIndex()
+            if current.isValid():
+                self.selectColumn(current.column())
+            return
+
+        if modifiers == Qt.ControlModifier and key == Qt.Key_Home:
+            self.setCurrentIndex(self.card_model.index(0, 0))
+            return
+
+        if modifiers == Qt.ControlModifier and key == Qt.Key_End:
+            last_row = self.card_model.rowCount() - 1
+            last_col = self.card_model.columnCount() - 1
+            if last_row >= 0:
+                self.setCurrentIndex(self.card_model.index(last_row, last_col))
+            return
+
+        if modifiers == (Qt.ControlModifier | Qt.ShiftModifier) and key in (
+            Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right
+        ):
+            self._extend_selection_to_edge(key)
+            return
+
         super().keyPressEvent(event)
+
+    def _extend_selection_to_edge(self, key):
+        """
+        Excel-familiar Ctrl+Shift+Arrow: extends the selection from the
+        current cell toward an edge. SIMPLIFIED compared to real Excel,
+        which jumps to the edge of the current contiguous block of
+        non-empty cells (requires scanning for the nearest "gap" in the
+        data, not implemented here) -- this always jumps straight to the
+        table's actual edge (first/last row or column), which is still a
+        genuinely useful "select to the end" action even if it doesn't
+        replicate Excel's contiguous-block-aware jump precisely.
+        """
+        current = self.currentIndex()
+        if not current.isValid():
+            return
+        row, col = current.row(), current.column()
+        if key == Qt.Key_Up:
+            target = self.card_model.index(0, col)
+        elif key == Qt.Key_Down:
+            target = self.card_model.index(self.card_model.rowCount() - 1, col)
+        elif key == Qt.Key_Left:
+            target = self.card_model.index(row, 0)
+        else:  # Key_Right
+            target = self.card_model.index(row, self.card_model.columnCount() - 1)
+        self.selectionModel().select(QItemSelection(current, target), QItemSelectionModel.Select)
+        # NOT self.setCurrentIndex(target) -- that routes through the
+        # view's own selectionCommand() logic, which for a plain
+        # setCurrentIndex() call effectively clears and replaces the
+        # selection with just the new cell, wiping out the range we just
+        # selected above. Moving the current-cell cursor via the selection
+        # model directly, with an explicit NoUpdate command, repositions it
+        # without touching the selection at all.
+        self.selectionModel().setCurrentIndex(target, QItemSelectionModel.NoUpdate)
 
     def _copy_selection_to_clipboard(self):
         indexes = self.selectionModel().selectedIndexes()

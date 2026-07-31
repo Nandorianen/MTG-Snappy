@@ -151,6 +151,11 @@ def _with_collection_fields(cards, qty_values, cross_qty_values=None):
         card_copy["qty"] = qty
         card_copy["selected"] = False
         card_copy["cross_qty"] = cross_qty
+        # Per-copy attributes the detail popup's Apply button writes into --
+        # defaults match a freshly-added, ungraded, non-foil English copy.
+        card_copy.setdefault("language", "English")
+        card_copy.setdefault("foil", False)
+        card_copy.setdefault("condition", "Near Mint")
         result.append(card_copy)
     return result
 

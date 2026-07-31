@@ -2,6 +2,19 @@
 
 Things we've deliberately deferred, with enough context to pick back up later.
 
+## Full Excel keyboard parity (raised alongside the F2/Shift+Space/etc additions)
+This round added F2 (edit Qty), Shift+Space (select row), Ctrl+Space
+(select column), Ctrl+Home/End (jump to first/last cell), and Ctrl+Shift+
+Arrow (extend selection to an edge). Still missing, for whenever more
+Excel-familiarity is wanted: Ctrl+Arrow (jump, WITHOUT extending, to the
+edge of a contiguous block of non-empty cells -- what's implemented now
+always jumps to the table's actual edge, not the nearest "gap" in the
+data, which needs scanning logic this doesn't have yet); Tab/Enter moving
+the current cell after committing an edit; a formula-bar-style edit
+experience; and Ctrl+Z/Y (tracked separately under the undo/redo note
+below, since cell edits should probably feed the same history as
+everything else eventually).
+
 ## Theming: system accent colors + light/dark presets (raised while polishing colors)
 TODO, explicitly flagged rather than a quick fix. The current dark theme is
 a single hardcoded QSS string (`main.py`'s STYLE_SHEET) with literal hex
@@ -34,6 +47,22 @@ lists (see this round's changes to card_table.py) -- that's a smaller,
 separate thing from this: a real search engine needs cross-field queries,
 saved searches, and probably its own query-language-ish input, not just
 "narrow this one column's checklist."
+
+## Excel keyboard parity: what's still missing (raised alongside this round's shortcuts)
+Added this round: F2 edit mode (Qty column, now genuinely editable),
+Shift+Space (select row), Ctrl+Space (select column), Ctrl+Home/End (jump
+to first/last cell), Ctrl+Shift+Arrow (extend selection to an edge).
+Known gaps for a future pass, in rough priority order:
+- Ctrl+Shift+Arrow currently jumps to the table's actual edge, not Excel's
+  real behavior (jump to the edge of the current contiguous non-empty
+  block, stopping at the first gap) -- needs data-scanning logic.
+- Tab/Shift+Tab to move the edit cursor between cells while editing (F2
+  mode currently only supports Enter/Escape to end editing).
+- Ctrl+Arrow (without Shift) to jump without extending selection.
+- Delete key to clear editable cell contents (currently only Qty is
+  editable at all, so this is a small scope once more columns are).
+- Fill-handle / Ctrl+D "fill down" style operations -- much bigger scope,
+  probably its own feature rather than a keyboard-shortcut afterthought.
 
 ## Tag-apply widget: search/filter (raised as an explicit TODO)
 The tag tree in TagApplyDialog can get long once a real tag hierarchy

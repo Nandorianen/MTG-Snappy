@@ -46,8 +46,9 @@ FOUR PIECES OF CUSTOM MACHINERY WORTH CALLING OUT:
 from PySide6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame,
     QToolButton, QMenu, QListWidget, QListWidgetItem, QApplication, QSizePolicy,
+    QPushButton,
 )
-from PySide6.QtCore import Qt, Signal, QSize, QEvent
+from PySide6.QtCore import Qt, Signal, QSize, QEvent, QTimer
 from PySide6.QtGui import QFontMetrics, QColor, QPainter
 
 from frameless_dialog import FramelessDialog
@@ -139,6 +140,7 @@ class StatField(QWidget):
             self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self._clickable = clickable
         self._wrap = wrap
+        self._align = align
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 0, 4, 0)
         layout.setSpacing(2)
@@ -198,7 +200,18 @@ class StatField(QWidget):
     def set_text(self, full_text):
         target = self.value_button or self.value_label
         metrics = QFontMetrics(target.font())
-        reserve = self.ARROW_RESERVE if self._clickable else 0
+        # Centered clickable fields get SYMMETRIC padding (left AND right,
+        # both ARROW_RESERVE -- see __init__) so centering looks correct.
+        # That means the true usable content width subtracts the reserve
+        # TWICE, not once. Using a single reserve here (the previous bug)
+        # happened to look fine for text short enough to never approach the
+        # limit, then read as "off-center" or "wraps differently" for text
+        # that landed right at the threshold -- a per-case-looking glitch
+        # that was actually one consistent formula error.
+        if self._clickable:
+            reserve = (2 * self.ARROW_RESERVE) if self._align == Qt.AlignHCenter else self.ARROW_RESERVE
+        else:
+            reserve = 0
         # For fixed-width fields, self.width() is reliable immediately (it
         # was set explicitly in __init__). For stretch-governed fields
         # (width=None, e.g. Type/Mana in the gameplay row), self.width()
@@ -330,14 +343,25 @@ def _hline():
 
 
 class CardDetailDialog(FramelessDialog):
-    def __init__(self, card_name, parent=None):
+    def __init__(self, card_name, collection_card=None, on_applied=None, parent=None):
         super().__init__(card_name, parent)
         self.oracle = get_card_by_name(card_name)
         self.prints = get_card_prints(card_name)
         self.current_print_index = 0
         self.price_source = PRICE_SOURCES[0][0]
-        self.language = LANGUAGES[0]
-        self.condition = CONDITIONS[0]
+        # collection_card is the ACTUAL row dict the table holds -- Apply
+        # writes directly into it (see _apply_changes). It's distinct from
+        # self.oracle, which is the read-only oracle-level lookup. None
+        # when there's no real collection context (shouldn't normally
+        # happen given how this dialog is opened, but handled safely).
+        self.collection_card = collection_card
+        self.on_applied = on_applied
+        if collection_card is not None:
+            self.language = collection_card.get("language", LANGUAGES[0])
+            self.condition = collection_card.get("condition", CONDITIONS[0])
+        else:
+            self.language = LANGUAGES[0]
+            self.condition = CONDITIONS[0]
         self._zoom_widget = None  # keep a reference so it isn't garbage-collected while open
 
         self.resize(900, 560)
@@ -387,7 +411,7 @@ class CardDetailDialog(FramelessDialog):
         # deliberately no addStretch() after them, since the two fields
         # together ARE meant to fill the row.
         gameplay_row = QHBoxLayout()
-        self.type_field = StatField("Type", width=None, caption_half_width=True, wrap=True, value_left_margin=10)
+        self.type_field = StatField("Type", width=None, caption_half_width=True, wrap=True, value_left_margin=16)
         self.mana_field = StatField("Mana Cost", width=None, align=Qt.AlignHCenter, wrap=True)
         gameplay_row.addWidget(self.type_field, stretch=2)
         gameplay_row.addWidget(self.mana_field, stretch=1)
@@ -420,9 +444,29 @@ class CardDetailDialog(FramelessDialog):
         self.language_field = StatField("Language", width=None, clickable=True, align=Qt.AlignHCenter, wrap=True)
         self.condition_field = StatField("Condition", width=None, clickable=True, align=Qt.AlignHCenter, wrap=True)
         self.foil_toggle = FoilToggle()
+        if self.collection_card is not None:
+            self.foil_toggle.setChecked(self.collection_card.get("foil", False))
         for field in (self.language_field, self.condition_field, self.foil_toggle):
             collection_row.addWidget(field, stretch=1)
         layout.addLayout(collection_row)
+
+        # Applies the currently-selected Edition/Language/Condition/Foil
+        # back onto the actual collection entry (see _apply_changes) --
+        # without this there was no way to actually CHANGE what a card in
+        # Inventory/All Card Database is recorded as, only preview
+        # different options. Deliberately doesn't close the dialog
+        # afterward (unlike the tag-apply widget's one-shot Apply) -- this
+        # is more of a "preview, then commit, keep browsing" tool than a
+        # single decisive action.
+        apply_row = QHBoxLayout()
+        self.apply_feedback_label = QLabel("")
+        self.apply_feedback_label.setStyleSheet("color: #4caf50;")
+        apply_button = QPushButton("Apply to Inventory")
+        apply_button.clicked.connect(self._apply_changes)
+        apply_row.addWidget(self.apply_feedback_label)
+        apply_row.addStretch()
+        apply_row.addWidget(apply_button)
+        layout.addLayout(apply_row)
 
         layout.addSpacing(6)
         layout.addWidget(_hline())
@@ -532,7 +576,7 @@ class CardDetailDialog(FramelessDialog):
         self.type_field.set_text(self.oracle["type_line"])
         self.mana_field.set_text(self.oracle["mana_cost"])
         self.edition_field.set_text(print_info["set"].upper())
-        self.language_field.set_text(print_info.get("language", self.language))
+        self.language_field.set_text(self.language)
         self.condition_field.set_text(self.condition)
         self.rarity_field.set_text(print_info["rarity"].capitalize())
         self.price_field.set_text(f'${print_info.get(self.price_source, 0):.2f}')
@@ -560,3 +604,27 @@ class CardDetailDialog(FramelessDialog):
         color = swatch_for_card(self.oracle)
         self._zoom_widget = ImageZoomWidget(color)
         self._zoom_widget.show()
+
+    def _apply_changes(self):
+        """
+        Commits the currently-previewed Edition/Language/Condition/Foil back
+        onto the ACTUAL collection entry (self.collection_card is the same
+        dict object the table's model holds, so mutating it here is
+        immediately visible to the table once it redraws). Deliberately
+        does NOT close the dialog -- this is a "preview several options,
+        commit whichever one you land on, keep browsing" tool.
+        """
+        if self.collection_card is None:
+            return
+        print_info = self.prints[self.current_print_index]
+        self.collection_card["set"] = print_info["set"]
+        self.collection_card["rarity"] = print_info["rarity"]
+        self.collection_card["language"] = self.language
+        self.collection_card["condition"] = self.condition
+        self.collection_card["foil"] = self.foil_toggle.isChecked()
+
+        if self.on_applied is not None:
+            self.on_applied()
+
+        self.apply_feedback_label.setText("Applied ✓")
+        QTimer.singleShot(1800, lambda: self.apply_feedback_label.setText(""))

@@ -12,8 +12,16 @@ See _TitleBar and FramelessDialog.eventFilter for the two tricky bits:
 dragging without a native title bar, and telling "a click in the real main
 window" apart from "a click inside this dialog" or "inside a transient
 popup menu this dialog opened" (a QMenu's own `.window()` is the menu
-itself, not the main window, so choosing a dropdown option never
+itself, not the main window, so choosing an dropdown option never
 accidentally closes the dialog mid-click).
+
+show_title (new): the title bar is still needed everywhere as a drag
+handle + close button, but the TEXT it shows is now optional -- added so
+CardDetailDialog can put the card's name directly in the content pane
+(styled bigger/bolder, doubling as that pane's header) instead of showing
+the name twice, once in the OS-title-bar-substitute and again in the
+content below it. TagApplyDialog is unaffected -- it never passes this, so
+it defaults to True and keeps showing "Apply Tags" up top same as before.
 """
 
 from PySide6.QtWidgets import QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QToolButton, QApplication
@@ -25,18 +33,25 @@ class _TitleBar(QWidget):
     Stands in for the OS title bar: shows a name and a close button, and is
     itself the drag handle (press-and-drag anywhere on it moves the window,
     same as dragging a native title bar would).
+
+    When show_title=False, the name label is skipped entirely (not just
+    hidden -- never constructed) so the bar collapses down to just the
+    close button, still draggable via any of its remaining empty space.
     """
 
-    def __init__(self, title, on_close):
+    def __init__(self, title, on_close, show_title=True):
         super().__init__()
         self.setFixedHeight(34)
         self._drag_offset = None
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 0, 6, 0)
-        name_label = QLabel(title)
-        name_label.setStyleSheet("font-size: 15px; font-weight: 700;")
-        layout.addWidget(name_label)
+
+        if show_title:
+            name_label = QLabel(title)
+            name_label.setStyleSheet("font-size: 15px; font-weight: 700;")
+            layout.addWidget(name_label)
+
         layout.addStretch()
 
         close_button = QToolButton()
@@ -67,7 +82,7 @@ class FramelessDialog(QDialog):
     margined) rather than setting their own top-level layout on the dialog.
     """
 
-    def __init__(self, title, parent=None):
+    def __init__(self, title, parent=None, show_title=True):
         super().__init__(parent, Qt.Dialog | Qt.FramelessWindowHint)
 
         # Remembered so the click-outside-closes check in eventFilter() can
@@ -79,7 +94,7 @@ class FramelessDialog(QDialog):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
-        outer.addWidget(_TitleBar(title, self.close))
+        outer.addWidget(_TitleBar(title, self.close, show_title=show_title))
 
         self.content_layout = QVBoxLayout()
         self.content_layout.setContentsMargins(12, 8, 12, 12)

@@ -2,12 +2,12 @@
 card_detail_popup.py
 ---------------------
 The double-click detail view: a custom (frameless, no OS title bar) window
-with its own name+close title bar, a clickable art placeholder, two rows of
-fixed-position stats (gameplay: Type / Mana Cost -- metadata: Edition /
-Language / Condition / Foil / Rarity / Price), oracle + flavor text, then
-Legality and Rulings as side-by-side panes separated by thin vertical rules.
+with a clickable art placeholder, two rows of fixed-position stats
+(gameplay: Type / Mana Cost -- metadata: Edition / Language / Condition /
+Foil / Rarity / Price), oracle + flavor text, then Legality and Rulings as
+side-by-side panes separated by thin vertical rules.
 
-FOUR PIECES OF CUSTOM MACHINERY WORTH CALLING OUT:
+FIVE PIECES OF CUSTOM MACHINERY WORTH CALLING OUT:
 
 1. "FIXED POSITION even if text length changes" -- StatField fixes each
    stat to a constant pixel width and ELIDES (truncates with "…") any text
@@ -20,14 +20,21 @@ FOUR PIECES OF CUSTOM MACHINERY WORTH CALLING OUT:
    "format: status" string that can actually occur) rather than a
    proportional share of the dialog's width, with word-wrap as a fallback
    for anything that still doesn't fit (longer translated strings, larger
-   text-scaling settings, etc).
+   text-scaling settings, etc). Every pane's caption is centered with a
+   fixed gap before its content (_pane_layout) -- shared by all three so
+   Legality/Rulings/Card read as one consistent family of headers rather
+   than each pane inventing its own spacing.
 
-3. No system title bar: this is a frameless top-level QDialog with its own
-   thin title bar (name + a close button, styled to blend via the palette
-   rather than look like a separate app), draggable by that bar. KNOWN
-   LIMITATION: going frameless also loses the OS's native edge-drag resize;
-   this dialog is a fixed size for now rather than reimplementing resize
-   handles, which wasn't asked for.
+3. No system title bar, AND no redundant in-dialog title either: this is a
+   frameless top-level QDialog with only a thin CLOSE-button strip (see
+   FramelessDialog's show_title=False) -- the card's NAME is what used to
+   duplicate as both the window's title-bar text and a generic "Card" pane
+   caption; now it's shown exactly once, as the Card pane's own header,
+   styled the way a header should be (bold, larger, full-brightness) which
+   also happens to be the same visual weight the title bar used to use.
+   KNOWN LIMITATION: going frameless also loses the OS's native edge-drag
+   resize; this dialog is a fixed size for now rather than reimplementing
+   resize handles, which wasn't asked for.
    It also closes automatically the moment the user clicks anywhere in the
    MAIN application window -- checked via `watched.window() is <the main
    window>`, which is what correctly tells a genuine main-window click apart
@@ -41,6 +48,13 @@ FOUR PIECES OF CUSTOM MACHINERY WORTH CALLING OUT:
    hand since there's no OS title bar to drag by there either; "zoom" is
    implemented by resizing the window on wheelEvent. See NOTES.md for a
    parked idea about reticle-based zoom-to-region.
+
+5. StatField's clickable (dropdown) variant now CENTERS BY HUGGING ITS OWN
+   CONTENT rather than centering long text inside an artificially wide
+   button -- see StatField's docstring for why that distinction is what
+   actually fixes Edition/Price/Language/Condition's alignment, and why
+   the old "reserve the arrow's width twice" patch was treating a symptom
+   instead of the real cause.
 """
 
 from PySide6.QtWidgets import (
@@ -61,6 +75,26 @@ LEGALITY_COLORS = {
     "legal": "#4caf50", "not_legal": "#8a8d8f",
     "banned": "#d3202a", "restricted": "#e67e22",
 }
+
+# Reused for the Apply button so it reads as the same "confirm/primary
+# action" affordance CardDatabaseView's Inventory/Wishlist toggle buttons
+# already established elsewhere in the app, instead of inventing a second
+# visual language for "this button does something meaningful." Unlike
+# those two, this one is a plain QPushButton (not checkable) -- it's a
+# one-shot action, not a persistent on/off state -- so only the base +
+# hover rules apply; there's no :checked rule to borrow.
+APPLY_BUTTON_STYLE = """
+QPushButton {
+    padding: 5px 14px;
+    border: 1px solid #4f8fc0;
+    border-radius: 4px;
+    background-color: #3d6a8f;
+    font-weight: 600;
+}
+QPushButton:hover {
+    background-color: #4f8fc0;
+}
+"""
 
 
 def _wrap_to_pixel_width(text, pixel_width, font_metrics):
@@ -92,17 +126,39 @@ class StatField(QWidget):
     for a QToolButton with a popup menu -- used for Edition, Language,
     Condition, and Price.
 
-    The clickable variant reserves extra width for Qt's own menu-indicator
-    arrow (drawn automatically by the style for InstantPopup buttons) --
-    without that reservation, elided text is computed as if the full field
-    width were available for text, and the arrow ends up drawn directly on
-    top of the last few characters.
+    WHY THE CLICKABLE VARIANT USED TO DRIFT LEFT (and how this fixes it):
+    The old approach stretched the QToolButton to fill the ENTIRE field
+    width, then relied on the button's own `text-align: center` CSS plus
+    manually-reserved left/right padding to make the text land in the
+    middle. That's two independent systems fighting over the same pixels:
+    Qt's style engine positions the native dropdown-arrow subcontrol
+    (QToolButton::menu-indicator) according to its OWN geometry rules,
+    while our CSS `padding-left`/`padding-right` was a separate, hand-
+    guessed estimate of how much room that arrow actually needs. When the
+    two disagreed -- which they did, consistently -- the visible text sat
+    off-center by a fixed, structural amount, not a per-case glitch.
+    Condition looked worse than the others only because it's the one
+    field that also wraps onto multiple lines, so the same left-ward bias
+    applied to each line independently.
+
+    THE FIX: stop stretching the button to fill the field. Give it
+    QSizePolicy.Maximum so it sizes to its own sizeHint() (text + the
+    arrow's native reserve) and nothing more, then center THAT tight
+    button within the field using ordinary layout stretches (addStretch()
+    on both sides in a QHBoxLayout) -- see __init__ below. Centering
+    happens at the LAYOUT level now, which doesn't care what the native
+    style does internally with the arrow; the button is simply as wide as
+    it needs to be, and the stretches on either side make sure equal empty
+    space surrounds it. This also means the button's own CSS only needs a
+    right-side padding reserve (for the arrow) and plain left-aligned
+    text -- there's no longer a "content box" to keep symmetric, since the
+    box IS the content now.
     """
 
     ARROW_RESERVE = 16  # px reserved for the QToolButton's native dropdown arrow
 
     def __init__(self, title, width=None, clickable=False, align=Qt.AlignLeft,
-                 caption_half_width=False, wrap=False, value_left_margin=0):
+                 caption_half_width=False, wrap=False, dynamic_anchor=False):
         """
         width=None means "no fixed width -- let the containing layout's
         stretch factor govern my size instead" (used for the proportional
@@ -123,14 +179,15 @@ class StatField(QWidget):
         natively; QToolButton needs the manual _wrap_to_pixel_width() helper
         since it has no built-in word-wrap.
 
-        value_left_margin adds left padding to a (non-clickable) value
-        label -- used for Type, whose value is left-aligned flush against
-        the field's edge by default; a short value ("Instant") then looks
-        oddly far left compared to every OTHER row's centered content,
-        which visually begins somewhat indented. A small fixed indent here
-        gives Type's value the same "doesn't hug the absolute edge" feel
-        without actually centering it (long type lines still need to read
-        left-to-right from a consistent start point).
+        dynamic_anchor=True is Type's special case: instead of a fixed
+        pixel indent, the value is anchored to the midpoint of a notional
+        1/3-width slot (the same point a normal field's centered value
+        would occupy) and grows RIGHTWARD, unevenly, once text is too long
+        to sit centered around that point without spilling past the
+        field's own left edge. See set_text() for the actual formula --
+        it's one clamp, not a length-based branch, so short and long
+        values are really the same rule, not two different code paths that
+        happen to look similar.
         """
         super().__init__()
         self._fixed_width = width
@@ -141,6 +198,7 @@ class StatField(QWidget):
         self._clickable = clickable
         self._wrap = wrap
         self._align = align
+        self._dynamic_anchor = dynamic_anchor
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 0, 4, 0)
         layout.setSpacing(2)
@@ -166,22 +224,24 @@ class StatField(QWidget):
         if clickable:
             self.value_button = QToolButton()
             self.value_button.setPopupMode(QToolButton.InstantPopup)
-            align_css = "center" if align == Qt.AlignHCenter else "left"
-            # Symmetric padding is what makes text-align:center actually
-            # LOOK centered: with only padding-right reserved (needed so the
-            # arrow glyph doesn't overlap text), Qt centers within a content
-            # box that's shifted left by that same amount, which reads as
-            # visibly off-center. Matching padding-left restores a truly
-            # symmetric content box for the center-aligned case; left-
-            # aligned fields don't need it since they were never centered
-            # in the first place.
-            left_padding = self.ARROW_RESERVE if align == Qt.AlignHCenter else 0
+            # Hug content, don't fill the field -- this is the whole fix
+            # (see class docstring). Only Maximum-vs-Preferred matters here;
+            # the actual centering happens via the addStretch() pair below.
+            self.value_button.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
+            # Plain left-aligned text now -- there's no wide box to center
+            # WITHIN anymore, so text-align:center would have nothing to do.
+            # Only a right-side reserve is still needed, for the arrow.
             self.value_button.setStyleSheet(
-                f"QToolButton {{ text-align: {align_css}; border: none; font-weight: 600; "
-                f"padding-left: {left_padding}px; padding-right: {self.ARROW_RESERVE}px; }} "
+                f"QToolButton {{ text-align: left; border: none; font-weight: 600; "
+                f"padding-right: {self.ARROW_RESERVE}px; }} "
                 "QToolButton::menu-indicator { subcontrol-position: right center; }"
             )
-            layout.addWidget(self.value_button)
+            button_row = QHBoxLayout()
+            button_row.setContentsMargins(0, 0, 0, 0)
+            button_row.addStretch(1)
+            button_row.addWidget(self.value_button)
+            button_row.addStretch(1)
+            layout.addLayout(button_row)
             self.value_label = None
         else:
             self.value_label = QLabel()
@@ -189,8 +249,6 @@ class StatField(QWidget):
             self.value_label.setStyleSheet("font-weight: 600;")
             if wrap:
                 self.value_label.setWordWrap(True)
-            if value_left_margin:
-                self.value_label.setContentsMargins(value_left_margin, 0, 0, 0)
             layout.addWidget(self.value_label)
             self.value_button = None
 
@@ -200,18 +258,7 @@ class StatField(QWidget):
     def set_text(self, full_text):
         target = self.value_button or self.value_label
         metrics = QFontMetrics(target.font())
-        # Centered clickable fields get SYMMETRIC padding (left AND right,
-        # both ARROW_RESERVE -- see __init__) so centering looks correct.
-        # That means the true usable content width subtracts the reserve
-        # TWICE, not once. Using a single reserve here (the previous bug)
-        # happened to look fine for text short enough to never approach the
-        # limit, then read as "off-center" or "wraps differently" for text
-        # that landed right at the threshold -- a per-case-looking glitch
-        # that was actually one consistent formula error.
-        if self._clickable:
-            reserve = (2 * self.ARROW_RESERVE) if self._align == Qt.AlignHCenter else self.ARROW_RESERVE
-        else:
-            reserve = 0
+
         # For fixed-width fields, self.width() is reliable immediately (it
         # was set explicitly in __init__). For stretch-governed fields
         # (width=None, e.g. Type/Mana in the gameplay row), self.width()
@@ -220,6 +267,46 @@ class StatField(QWidget):
         # over-eliding before the real layout has ever run.
         available = self.width() if (self._fixed_width is not None or self.width() > 40) else 260
 
+        if self._dynamic_anchor:
+            # Type's rule: anchor the value to the midpoint of a notional
+            # 1/3-width slot (self.width() is Type's OWN width, which is
+            # 2/3 of the row -- so a normal 1/3 slot's center, expressed in
+            # Type's own coordinate space, sits at width/4: half of
+            # Type's width to reach the boundary of that notional slot,
+            # then half of THAT to reach its center).
+            #
+            # indent = distance from Type's left edge to where the text
+            # should START if it's centered around that anchor point.
+            # Clamped at 0 (never negative): once text is wide enough that
+            # centering it would require starting to the LEFT of the
+            # field's own edge -- room that doesn't exist -- the indent
+            # just stops shrinking, and every additional pixel of text
+            # length is forced to overflow rightward instead. Short values
+            # still look centered around the same point every other
+            # field's value would occupy; long values grow asymmetrically
+            # without ever needing a separate branch for "long" vs "short."
+            anchor_center = self.width() / 4
+            text_width = metrics.horizontalAdvance(full_text)
+            indent = max(0, int(anchor_center - text_width / 2))
+            target.setContentsMargins(indent, 0, 0, 0)
+
+            if self._wrap:
+                # QLabel wraps natively -- no eliding needed, the indent
+                # above still applies as a left margin on the wrapped block.
+                target.setText(full_text)
+            else:
+                elided = metrics.elidedText(full_text, Qt.ElideRight, available - indent - 12)
+                target.setText(elided)
+            target.setToolTip(full_text)
+            return
+
+        # Every clickable field now hugs its own content (see __init__), so
+        # the only space to reserve is the arrow's, and only once -- the
+        # old "reserve twice for symmetric padding" logic doesn't apply
+        # anymore because there's no artificially wide box to keep
+        # symmetric within.
+        reserve = self.ARROW_RESERVE if self._clickable else 0
+
         if self._wrap:
             if self._clickable:
                 # QToolButton has no native word-wrap -- break it ourselves
@@ -227,8 +314,6 @@ class StatField(QWidget):
                 wrapped = _wrap_to_pixel_width(full_text, available - 12 - reserve, metrics)
                 target.setText(wrapped)
             else:
-                # QLabel wraps natively once setWordWrap(True) is set (done
-                # in __init__) -- no eliding, no manual line-breaking needed.
                 target.setText(full_text)
             target.setToolTip(full_text)
             return
@@ -243,6 +328,10 @@ class FoilToggle(QToolButton):
     A simple checkable toggle for the Foil attribute -- styled like the
     other metadata fields (small caption above, bold value below) but as
     one clickable unit rather than a dropdown, since "foil" is binary.
+    Not affected by the StatField centering fix above: there's no dropdown
+    arrow here to reserve space for, and this button already legitimately
+    fills its field (it IS the clickable surface, not a value next to one),
+    so text-align:center already centered it correctly before and still does.
     """
 
     def __init__(self):
@@ -344,7 +433,11 @@ def _hline():
 
 class CardDetailDialog(FramelessDialog):
     def __init__(self, card_name, collection_card=None, on_applied=None, parent=None):
-        super().__init__(card_name, parent)
+        # show_title=False: the window's own thin top strip is now JUST the
+        # close button -- the card's name is shown once, as the Card pane's
+        # own header (see _build_card_pane), instead of being duplicated
+        # into both the title bar AND a generic "Card" pane caption.
+        super().__init__(card_name, parent, show_title=False)
         self.oracle = get_card_by_name(card_name)
         self.prints = get_card_prints(card_name)
         self.current_print_index = 0
@@ -384,16 +477,39 @@ class CardDetailDialog(FramelessDialog):
         self._populate_rulings()
 
     def _pane_layout(self, title):
+        """
+        Shared caption treatment for every pane: centered text, then a
+        fixed gap before whatever content gets added next. Centering was
+        the missing piece before (title_label defaulted to AlignLeft);
+        without it, "Legality" and "Rulings" read as left-hugging labels
+        rather than headers. The addSpacing(8) after the label is what
+        gives content a bit of breathing room instead of starting flush
+        against the caption's own text.
+        """
         layout = QVBoxLayout()
         layout.setContentsMargins(10, 4, 10, 4)
         header = QLabel(title)
         header.setStyleSheet("color: #a8adb5; font-size: 11px; font-weight: 600;")
+        header.setAlignment(Qt.AlignHCenter)
         layout.addWidget(header)
+        layout.addSpacing(8)
         return layout
 
     def _build_card_pane(self):
-        layout = self._pane_layout("Card")
+        # NOT using self._pane_layout() here -- the Card pane's header is
+        # the card's NAME now, not a generic caption, and it gets a
+        # visually heavier style (bold, larger, full-brightness) to match
+        # what the window's title bar used to look like, since this is
+        # replacing that text rather than sitting alongside it.
+        layout = QVBoxLayout()
         layout.setContentsMargins(4, 4, 10, 4)
+
+        name_label = QLabel(self.oracle["name"])
+        name_label.setAlignment(Qt.AlignHCenter)
+        name_label.setWordWrap(True)
+        name_label.setStyleSheet("font-size: 16px; font-weight: 700; color: #e3e3e3;")
+        layout.addWidget(name_label)
+        layout.addSpacing(8)
 
         self.art_box = ClickableArt()
         self.art_box.setFixedSize(220, 306)
@@ -402,16 +518,18 @@ class CardDetailDialog(FramelessDialog):
         layout.addSpacing(14)  # a bit more breathing room before the stats start
 
         # GAMEPLAY row: only what matters while playing. Type gets 2/3 of the
-        # row (left-aligned, since type lines read left-to-right and can run
-        # long), Mana Cost gets the remaining 1/3 (centered, since mana costs
-        # are short symbol clusters that read fine centered in their space).
-        # Stretch factors (not fixed pixel widths) are what make this an
-        # actual 2:1 PROPORTION of whatever width the row ends up with,
-        # rather than two fixed sizes with leftover blank space -- there's
-        # deliberately no addStretch() after them, since the two fields
-        # together ARE meant to fill the row.
+        # row (dynamically anchored -- see StatField's dynamic_anchor docs --
+        # so short values sit centered on the same point a normal field
+        # would, while long values expand rightward instead of truncating
+        # awkwardly), Mana Cost gets the remaining 1/3 (centered, since mana
+        # costs are short symbol clusters that read fine centered in their
+        # space). Stretch factors (not fixed pixel widths) are what make
+        # this an actual 2:1 PROPORTION of whatever width the row ends up
+        # with, rather than two fixed sizes with leftover blank space --
+        # there's deliberately no addStretch() after them, since the two
+        # fields together ARE meant to fill the row.
         gameplay_row = QHBoxLayout()
-        self.type_field = StatField("Type", width=None, caption_half_width=True, wrap=True, value_left_margin=16)
+        self.type_field = StatField("Type", width=None, caption_half_width=True, wrap=True, dynamic_anchor=True)
         self.mana_field = StatField("Mana Cost", width=None, align=Qt.AlignHCenter, wrap=True)
         gameplay_row.addWidget(self.type_field, stretch=2)
         gameplay_row.addWidget(self.mana_field, stretch=1)
@@ -420,12 +538,10 @@ class CardDetailDialog(FramelessDialog):
         # METADATA row 1: Edition / Rarity / Price -- collection/shopping
         # info, separated from gameplay info above. Each field is
         # width=None + equal stretch=1, same technique as the gameplay row's
-        # 2:1 split -- this is what actually makes them 1/3 of the row each;
-        # fixed pixel widths plus a trailing addStretch() (the previous
-        # approach) left them left-packed with blank space at the end,
-        # which is also why centering the TEXT inside each field didn't
-        # look like it was doing anything -- the fields themselves weren't
-        # occupying an even share of the row to be centered within.
+        # 2:1 split -- this is what actually makes them 1/3 of the row each.
+        # Edition and Price are clickable dropdowns -- see StatField's
+        # docstring for why they now center correctly (hug-content +
+        # layout stretches, not text-align CSS fighting the native arrow).
         metadata_row = QHBoxLayout()
         self.edition_field = StatField("Edition", width=None, clickable=True, align=Qt.AlignHCenter)
         self.rarity_field = StatField("Rarity", width=None, align=Qt.AlignHCenter)
@@ -450,6 +566,11 @@ class CardDetailDialog(FramelessDialog):
             collection_row.addWidget(field, stretch=1)
         layout.addLayout(collection_row)
 
+        # A bit of dedicated space between the last stat row and the Apply
+        # button, so Apply reads as its own distinct action rather than
+        # crowding directly under Language/Condition/Foil.
+        layout.addSpacing(10)
+
         # Applies the currently-selected Edition/Language/Condition/Foil
         # back onto the actual collection entry (see _apply_changes) --
         # without this there was no way to actually CHANGE what a card in
@@ -457,11 +578,15 @@ class CardDetailDialog(FramelessDialog):
         # different options. Deliberately doesn't close the dialog
         # afterward (unlike the tag-apply widget's one-shot Apply) -- this
         # is more of a "preview, then commit, keep browsing" tool than a
-        # single decisive action.
+        # single decisive action. Styled to match CardDatabaseView's
+        # Inventory/Wishlist buttons (bright fill, rounded border) rather
+        # than a flat default QPushButton, so it reads as the primary
+        # action in this pane instead of blending into the background.
         apply_row = QHBoxLayout()
         self.apply_feedback_label = QLabel("")
         self.apply_feedback_label.setStyleSheet("color: #4caf50;")
-        apply_button = QPushButton("Apply to Inventory")
+        apply_button = QPushButton("Apply")
+        apply_button.setStyleSheet(APPLY_BUTTON_STYLE)
         apply_button.clicked.connect(self._apply_changes)
         apply_row.addWidget(self.apply_feedback_label)
         apply_row.addStretch()
@@ -515,11 +640,7 @@ class CardDetailDialog(FramelessDialog):
         self.rulings_list.setWordWrap(True)
         # At least as wide as the Legality pane -- previously it only got
         # whatever the 3:2 stretch split left over, which could shrink
-        # below Legality's content-driven width. The border-looking-missing
-        # complaint was actually QListWidget not being included in the
-        # app's bordered/backgrounded style rule at all (fixed in main.py's
-        # STYLE_SHEET) -- both panes' QListWidgets get the same visible
-        # border now, this width floor is the separate "at least as wide" ask.
+        # below Legality's content-driven width.
         self.rulings_list.setMinimumWidth(self._legality_column_width())
         layout.addWidget(self.rulings_list)
         return layout

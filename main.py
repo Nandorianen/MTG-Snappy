@@ -167,6 +167,41 @@ QHeaderView::section {
     border: 1px solid #3a3c41;
     padding: 4px;
 }
+QMenu {
+    /* Nothing styled QMenu at all before this -- once ANY QSS is applied
+       to the application (as main.py does via app.setStyleSheet below),
+       Qt's style engine stops relying on the native platform style's
+       automatic hover/selected rendering for widgets it hasn't been told
+       about. A menu's "currently active/highlighted action" (whether set
+       by real mouse hover OR programmatically via QMenu.setActiveAction(),
+       as card_table.py's _MenuSearchBox does for keyboard navigation) had
+       no visible effect under the app's stylesheet without a matching
+       ::item:selected rule below -- the navigation logic itself could be
+       working perfectly and still look like nothing was happening.
+       Background/border here match QTableView/QTreeWidget's own styling
+       above for visual consistency with the rest of the app. */
+    background-color: #2b2d31;
+    border: 1px solid #3a3c41;
+}
+QMenu::item {
+    padding: 4px 24px 4px 8px;
+    background-color: transparent;
+}
+QMenu::item:selected {
+    /* Same selection color QTableView/QTreeWidget already use above --
+       this is the rule that makes arrow-key navigation in the filter-menu
+       search box (and ordinary mouse hover in every other menu in the
+       app) actually visible. */
+    background-color: #3d6a8f;
+}
+QMenu::item:disabled {
+    color: #6b6f76;
+}
+QMenu::separator {
+    height: 1px;
+    background-color: #3a3c41;
+    margin: 4px 0px;
+}
 SideNav QPushButton {
     text-align: left;
     padding: 8px;

@@ -639,6 +639,24 @@ class _MenuSearchBox(QLineEdit):
             if event.key() == Qt.Key_Down:
                 self._move_highlight(1)
                 return True
+            if event.key() == Qt.Key_Space:
+                # Real QMenu only toggles a checkable action on Space when
+                # the MENU ITSELF has actual keyboard focus -- which we
+                # deliberately never hand over (focus stays on this search
+                # box the whole time, so typing keeps narrowing the list).
+                # Without this, Space was always just a literal character
+                # typed into the field, never reaching any toggle logic at
+                # all -- not a regression, just never implemented.
+                # Only intercepted once an action is actually highlighted
+                # (i.e. Up/Down has been pressed at least once) -- before
+                # that, Space still types normally, so a multi-word search
+                # term like "Lightly Played" isn't broken by this.
+                active = self._menu.activeAction()
+                if active is not None and active.isCheckable():
+                    active.trigger()  # toggles without closing -- same as
+                                       # _StayOpenMenu's own click handling
+                    return True
+                # No action highlighted yet -- fall through to normal typing.
             if event.key() in (Qt.Key_Return, Qt.Key_Enter):
                 if self._on_enter is not None:
                     self._on_enter(self.text())

@@ -60,20 +60,40 @@ get the interaction design right before the real data layer exists.
    module docstring for the reasoning), and why grouping/filtering
    re-derives a display list rather than mutating widgets in place.
 
-## A mid-project architectural pivot worth knowing about
+## A mid-project architectural pivot worth knowing about — and its sequel
 
 Wishlist was originally its own tab, always filtered to "cards you want."
 Partway through, we recognized Wishlist and Inventory are really the same
 underlying data shape (a card row with a Have count and a Want count),
 just different default lenses on it. **Wishlist as a standalone tab was
-removed.** It's now "All Card Database" (the full browsable catalog,
+removed.** It became "All Card Database" (the full browsable catalog,
 showing Have + Want for every card) plus Inventory (the same shape,
-conceptually filtered to Have > 0 — though in the current tiny mock
-dataset every card happens to have some Have count, so this distinction
-isn't visually obvious yet). Isolating "what I want" is just: right-click
-the Want column, uncheck "0". This is why `card_table.py`'s model has
-`qty_label`/`cross_qty_label` as per-instance-configurable strings rather
-than hardcoded column names.
+conceptually filtered to Have > 0). This is why `card_table.py`'s model
+has `qty_label`/`cross_qty_label` as per-instance-configurable strings
+rather than hardcoded column names.
+
+**The same realization happened again, one round later, about Inventory
+itself**: it turned out to be exactly the same pattern as Wishlist had
+been — `mock_data.py`'s `get_inventory_cards()` and `get_all_cards()` were
+returning identically-shaped data (same source lists) under two different
+function names, purely because the mock dataset is too small for the
+"Have > 0" filter to ever actually exclude anything. **All Card Database
+and Inventory are now ALSO merged, into one tab called "Card Database."**
+`get_inventory_cards()` is gone. Isolating "what I own" / "what I want" is
+now: click the **Inventory** / **Wishlist** toggle buttons above the table
+(new `card_database_view.py` — `CardDatabaseView` wraps a `CardTableView`
+with this button row), which is a faster path to the exact same underlying
+filter the header's own right-click checklist already offered — right-click
+the Have or Want column and uncheck "0" still does the identical thing, and
+the two UIs stay in sync in both directions (see `card_database_view.py`'s
+module docstring for why that sync has to be bidirectional, not just
+button-to-model).
+
+**Pattern worth remembering for next time**: whenever a new "lens" on the
+same data starts feeling like it deserves its own tab or its own fetch
+function, check whether it's actually just a filter on data that already
+exists elsewhere first. Two collapses in a row on the exact same instinct
+suggests this is a recurring shape in this app, not a one-off.
 
 ## Data source decision
 
@@ -98,11 +118,17 @@ held up well; no reason to revisit it.
 ## Current status — what's real vs. mock vs. missing
 
 **Real, working, tested (headless via `QT_QPA_PLATFORM=offscreen`):**
-- Full spreadsheet UI (All Card Database, Inventory) — sorting, grouping
-  with Deckbox-style sub-headers, per-column filtering with an
-  Excel-style search-narrow box, column visibility, cell-range
-  selection + Ctrl+C copy, Excel-familiar keyboard shortcuts (F2 edit,
-  Shift+Space/Ctrl+Space row/column select, Ctrl+Home/End,
+- Full spreadsheet UI (one merged "Card Database" tab, replacing the old
+  separate All Card Database + Inventory tabs — see the architectural
+  pivot section above) — sorting, grouping with Deckbox-style sub-headers,
+  per-column filtering with an Excel-style search-narrow box (keyboard nav
+  now fully working: Up/Down/Tab/Shift+Tab move the highlight, Space
+  toggles, Enter applies typed text — see NOTES.md's debugging-journey
+  entry if this regresses again), column visibility via a standalone
+  Columns dropdown button, Inventory/Wishlist filter-preset toggle buttons
+  (two-way synced with the header's own right-click filter state), cell-
+  range selection + Ctrl+C copy, Excel-familiar keyboard shortcuts (F2
+  edit, Shift+Space/Ctrl+Space row/column select, Ctrl+Home/End,
   Ctrl+Shift+Arrow).
 - Card detail popup — frameless, edition/language/condition/foil
   selectors with an Apply-to-Inventory button that actually writes back
@@ -130,14 +156,32 @@ undo/redo, internationalization.
 ## File map
 
 - `main.py` — entry point, `MainWindow`, tab wiring (`SideNav` + a
-  `QStackedWidget`), the app-wide QSS stylesheet.
+  `QStackedWidget` — now 3 tabs: Tag Database, Card Database, Deck
+  Viewer), the app-wide QSS stylesheet (now includes `QMenu` styling —
+  see NOTES.md if a "the logic runs but nothing visible happens" bug
+  shows up again in some other custom-painted/menu-driven widget).
 - `mock_data.py` — **the seam**. Every function here is what gets
   reimplemented against real SQLite later; calling code elsewhere
-  shouldn't need to change when that happens.
+  shouldn't need to change when that happens. Down to one dataset
+  function now (`get_all_cards()`) — Inventory's separate function was
+  removed as a redundant duplicate (see the architectural-pivot section
+  above).
+- `card_database_view.py` — `CardDatabaseView`, the wrapper that composes
+  a `CardTableView` with the Inventory/Wishlist/Columns button row above
+  it. This is what replaced the separate Inventory tab — main.py now
+  builds ONE of these instead of two `CardTableView`s.
 - `card_table.py` — the spreadsheet: `CardTableModel` (data + sort/group/
-  filter logic), `SplitDropdownHeader` (custom header painting/menus),
-  `CardTableView` (selection, copy, hotkeys, right-click tag menu).
-  Biggest, most iterated-on file — read its module docstring.
+  filter logic, plus `is_value_excluded()`/`set_value_excluded()` — the
+  shared single-value-exclusion toggle both the header checklist and
+  `CardDatabaseView`'s buttons route through), `SplitDropdownHeader`
+  (custom header painting/menus, plus `build_show_columns_menu()` — the
+  column-visibility menu, now built here but SHOWN from
+  `CardDatabaseView`'s Columns button rather than duplicated per-column),
+  `CardTableView` (selection, copy, hotkeys, right-click tag menu),
+  `_MenuSearchBox` (the filter-menu search box — Up/Down/Tab/Shift+Tab/
+  Space/Enter keyboard handling; see NOTES.md if this ever regresses,
+  the debugging journey there is worth reading before re-diagnosing from
+  scratch). Biggest, most iterated-on file — read its module docstring.
 - `card_detail_popup.py` — `CardDetailDialog`, `StatField` (the
   fixed-width/wrapping/centering label+dropdown widget used throughout),
   `ImageZoomWidget`.
@@ -181,20 +225,38 @@ directions, roughly in order of how much they'd unblock:
    real cards yet; needs a per-deck `CardTableView` reusing existing
    infrastructure.
 3. **Search pane / Ctrl+F** (see NOTES.md for the scope split between
-   this and the smaller per-column search boxes already built).
+   this and the smaller per-column search boxes already built) —
+   `card_database_view.py`'s button row already reserves layout space for
+   this via `addStretch()` after the Inventory/Wishlist/Columns buttons,
+   so this has a concrete landing spot now rather than an open "where does
+   this even go" question.
 4. Everything else in NOTES.md, roughly in the order it's listed there.
 
 ## Known testing gaps (verified via headless offscreen Qt — some things can't be)
 
 `QT_QPA_PLATFORM=offscreen` doesn't support real OS keyboard
-focus-grabbing or real mouse drag simulation. These have been tested as
-thoroughly as the harness allows (direct method calls, mocked event
-dispatch) but **not** via genuine windowed interaction:
-- Filter-menu search box Up/Down navigation in a real window.
+focus-grabbing, real mouse drag simulation, or actual pixel rendering.
+These have been tested as thoroughly as the harness allows (direct method
+calls, mocked event dispatch) but **not** via genuine windowed interaction:
 - F2 edit-commit/cancel flow (Enter/Escape) on the Qty column.
 - Real mouse drag-and-drop reordering in the tag/deck trees (the
   underlying reparenting logic is unit-tested; the actual drag gesture
   isn't).
+
+**Filter-menu search box Up/Down/Tab/Space navigation** was on this list
+for a while and took three rounds to actually fix — confirmed working in a
+real window now, but the debugging path is worth knowing before touching
+this area again: two of the three attempts fixed real (but not THE) bugs
+in event-filter routing, and both looked correct in headless testing
+because headless tests that manually construct/send events can't
+distinguish "the logic works" from "the logic works AND is visible" — the
+actual root cause was that `QMenu` had no explicit `::item:selected`
+styling in `main.py`'s stylesheet, so a correctly-updating internal
+highlight state was rendering with zero visible difference. Headless mode
+can verify state changes; it can't verify anything about whether a human
+would actually SEE the state change. Full writeup in NOTES.md and
+README.md's changelog for this round if this general class of "my code
+runs but nothing visibly happens" bug recurs elsewhere.
 
 If something in one of these areas looks subtly wrong when actually run,
 start there — it's the area least covered by automated testing so far.

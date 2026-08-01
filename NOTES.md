@@ -2,6 +2,68 @@
 
 Things we've deliberately deferred, with enough context to pick back up later.
 
+## Debugging lesson: "the logic runs but nothing visibly happens" (from the filter-menu keyboard-nav fix)
+Not a parked TODO -- a worked example worth keeping, because it took three
+real attempts to actually fix and the first two were each individually
+reasonable-looking dead ends.
+
+**Symptom**: `_MenuSearchBox` (the search box embedded via `QWidgetAction`
+in every filterable column's right-click menu, `card_table.py`) had
+Up/Down arrow-key navigation that visibly did nothing at all in a real
+window -- no highlight moved, Space didn't toggle anything, focus never
+left the box.
+
+**Attempt 1**: hypothesized `QMenu`'s own internal arrow-key handling was
+intercepting the keys before `_MenuSearchBox.keyPressEvent()` ever ran --
+a real, documented category of Qt bug (`collapsible_pane.py`'s Tab-
+interception fix is exactly this same shape). Moved the handling into an
+app-level `eventFilter`. Verified via a headless test that called
+`app.sendEvent(box, ev)` directly and confirmed `activeAction()` moved
+correctly. **Still didn't work in the real window.** The test was flawed:
+forcing the event's receiver via `sendEvent(box, ...)` never actually
+exercised the real ambiguity of Qt's popup keyboard-grab routing -- it
+proved the LOGIC was correct, not that it would ever actually GET CALLED
+for real popup-routed events.
+
+**Attempt 2**: hypothesized Qt's real popup routing doesn't necessarily
+report the search box itself as the event filter's `watched` parameter
+(unlike the artificial `sendEvent(box, ...)` test). Dropped the
+`watched is self` condition entirely, reacting to the key code alone
+instead. Verified this time with a test that deliberately passed an
+UNRELATED decoy object as `watched`, proving the broadened filter no
+longer depended on receiver identity. **Still didn't work.**
+
+**The actual fix**: reframed the symptom instead of the mechanism. "Arrow
+keys visibly do nothing" does NOT mean "the events aren't arriving" --
+it's equally consistent with "the events arrive, the internal state
+updates correctly, and there's simply no VISIBLE difference to see."
+`main.py`'s global stylesheet had never included a single `QMenu` rule.
+Once ANY custom QSS is applied to a Qt application, the style engine
+stops relying on the native platform style's automatic hover/selected
+rendering for widgets not explicitly covered -- so `QMenu.setActiveAction()`
+may have been working correctly all along, just invisibly. Adding explicit
+`QMenu` / `QMenu::item:selected` styling (reusing the app's existing
+`#3d6a8f` selection color) was the actual fix. Separately, "Space doesn't
+toggle" turned out to be a real, distinct gap rather than a routing bug:
+real `QMenu` only handles Space when the MENU ITSELF holds actual keyboard
+focus, which this design deliberately never grants (focus stays on the
+search box the whole time, so typing keeps narrowing the list) -- so
+Space needed its own explicit handler, scoped to only fire once an action
+is already highlighted (so a space typed as part of "Lightly Played"
+still works before any arrow-navigation has happened).
+
+**The general lesson**: headless/offscreen Qt testing (`QT_QPA_PLATFORM=
+offscreen`, used throughout this project's testing) can verify that STATE
+changed correctly. It cannot verify whether a human would actually SEE
+that state change, because it never renders real pixels. When a fix looks
+provably correct in a headless test but a person reports "still doesn't
+work" in the real app, seriously consider whether the bug is actually in
+RENDERING/VISIBILITY rather than in the LOGIC/ROUTING the test was capable
+of checking -- especially anywhere a custom global stylesheet is in play
+(this app's `main.py` applies one to the whole `QApplication`), since that
+specifically disables automatic native-style state rendering for anything
+not explicitly re-declared in QSS.
+
 ## Full Excel keyboard parity (raised alongside the F2/Shift+Space/etc additions)
 This round added F2 (edit Qty), Shift+Space (select row), Ctrl+Space
 (select column), Ctrl+Home/End (jump to first/last cell), and Ctrl+Shift+
@@ -31,10 +93,13 @@ The Qt-friendly path, when we get here:
 - A real light/dark (and possibly "system") preset switcher belongs in the
   Options window (see the options/i18n TODO above) -- likely 2-3 named
   QPalette presets plus a "follow system" option, with the custom-painted
-  bits (SplitDropdownHeader's HEADER_BG, CardPopover, ImageZoomWidget, etc.)
-  needing to read from whichever preset/palette is active rather than a
-  single hardcoded constant, which is the main reason this is a real
-  refactor and not a one-line change.
+  bits (SplitDropdownHeader's HEADER_BG, CardPopover, ImageZoomWidget, and
+  now also the QMenu / QMenu::item:selected rules added this round to fix
+  filter-menu keyboard-nav visibility -- easy to forget since it's plain
+  QSS rather than a custom paintEvent, but it's exactly as hardcoded as
+  everything else on this list) needing to read from whichever
+  preset/palette is active rather than a single hardcoded constant, which
+  is the main reason this is a real refactor and not a one-line change.
 
 ## Flexible search engine (raised as an explicit TODO)
 A proper search pane -- its own view, not just column filters -- covering
@@ -47,6 +112,12 @@ lists (see this round's changes to card_table.py) -- that's a smaller,
 separate thing from this: a real search engine needs cross-field queries,
 saved searches, and probably its own query-language-ish input, not just
 "narrow this one column's checklist."
+UPDATE: this now has a concrete home. `card_database_view.py`'s
+`CardDatabaseView` puts a button row (Inventory/Wishlist/Columns) above
+the Card Database table, with a deliberate `addStretch()` after those
+three buttons reserving the rest of that row -- that's where the Ctrl+F
+popup trigger belongs when this gets built, rather than an open "does
+this live inside or outside the table" question.
 
 ## Excel keyboard parity: what's still missing (raised alongside this round's shortcuts)
 Added this round: F2 edit mode (Qty column, now genuinely editable),

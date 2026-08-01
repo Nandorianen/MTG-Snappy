@@ -1,6 +1,94 @@
 # MTG Local Database — Prototype
 
-## Detail popup, mono-color, and keyboard-parity fixes (this round)
+## Card Database merge + filter-menu keyboard navigation fixed (this round)
+- **All Card Database and Inventory are now ONE tab, "Card Database."**
+  Same realization as the earlier Wishlist collapse: Inventory was always
+  just "the full catalog, filtered to Have > 0" — `mock_data.py` had two
+  functions (`get_all_cards()`, `get_inventory_cards()`) returning
+  identically-shaped data under different names. `get_inventory_cards()` is
+  gone; there's one dataset now, with Have/Want filtering applied live via
+  the UI instead of baked into which function got called.
+- New `card_database_view.py` / `CardDatabaseView` wraps a `CardTableView`
+  with a button row above it: **Inventory** and **Wishlist** toggle
+  buttons (shortcuts for excluding Have/Want == 0 — identical in effect to
+  right-clicking that column and unchecking "0," just faster, and both can
+  be on at once since they filter independent columns), plus a **Columns**
+  dropdown for column visibility. `CardTableView` itself didn't need to
+  change at all for this — the button row lives in a wrapper composing a
+  table, the same shape `DeckViewerView`/`TagTreePanel` already use for
+  composing a `TreePane`. This also gives the still-parked flexible search
+  engine (see NOTES.md) an obvious future home: `CardDatabaseView`'s button
+  row already reserves space for it via `addStretch()`.
+- **Inventory/Wishlist buttons are real two-way toggles**, not one-shot
+  actions: clicking one updates the model; a filter change from ANY source
+  (the button, or manually via the header's own right-click checklist)
+  updates both — so the buttons never silently show a state that isn't
+  actually applied. Implemented via two new generic `CardTableModel`
+  methods, `is_value_excluded()` / `set_value_excluded()`, that the header
+  checklist's own toggle handler now also routes through (one
+  add/discard-from-set implementation instead of two copies that could
+  drift).
+- **"Show Columns" is no longer duplicated into every column's right-click
+  menu** — it was rebuilt identically inside each one. It's now the
+  standalone Columns button above, built via a new
+  `SplitDropdownHeader.build_show_columns_menu()`; right-clicking a
+  non-filterable column header (Checkbox, Actions) now correctly shows no
+  menu at all instead of an empty popup.
+- **Filter-menu search box keyboard navigation, actually fixed this time**
+  — this took several real dead ends worth recording (see "Debugging
+  journey" below): Up/Down/Tab/Shift+Tab now all move the highlighted
+  checklist value (Tab and Shift+Tab share the exact same logic as Up/Down,
+  which is what makes them automatically skip the disabled "Filter by X"
+  label and any submenu-opening action — that logic already only
+  considers checkable actions), clamped at both ends, correctly skipping
+  values hidden by the search-narrowing text. Space toggles the currently
+  highlighted value once you've navigated to one (typing a space before
+  that still works normally, e.g. for "Lightly Played"). Enter still
+  applies the typed text directly as a filter, as before.
+- Added real `QMenu` / `QMenu::item:selected` styling to `main.py`'s global
+  stylesheet — previously absent entirely, which turned out to be the root
+  cause behind the keyboard-nav symptoms (see below).
+
+### Debugging journey (worth keeping — this was genuinely tricky)
+Three fix attempts, in order, each ruled something out:
+1. **First attempt**: moved Up/Down/Enter handling from `_MenuSearchBox
+   .keyPressEvent()` to an app-level `eventFilter`, hypothesizing `QMenu`'s
+   own internal arrow-key handling was intercepting the keys before
+   `keyPressEvent` ever ran (mirroring how `collapsible_pane.py` already
+   solves an analogous Tab-interception problem). Verified correct in
+   isolation (a headless test confirmed `activeAction()` moved through
+   visible actions correctly) — but the test was flawed: it called
+   `app.sendEvent(box, ev)` directly, which *forces* the event's receiver
+   to be the search box by construction. That never actually exercised the
+   real ambiguity, and the fix had no effect in a real window.
+2. **Second attempt**: dropped the `watched is self` condition in the
+   event filter entirely, hypothesizing Qt's real popup keyboard-grab
+   routing might not report the search box as `watched` the way a manually
+   constructed test event does. Verified this time with a test that
+   deliberately passed an unrelated decoy object as `watched` — proving
+   the broadened filter no longer depended on receiver identity. Still had
+   no effect in the real window.
+3. **The actual fix**: reframed the symptom. "Nothing happens" didn't
+   necessarily mean the events weren't arriving — `main.py`'s global
+   stylesheet had never styled `QMenu` at all, and once *any* custom QSS is
+   applied to an application, Qt's style engine stops relying on the
+   native platform style's automatic hover/selected rendering for anything
+   not explicitly re-declared. So `setActiveAction()` may have been
+   working correctly the entire time, just invisibly. Adding explicit
+   `QMenu::item:selected` styling (reusing the app's existing `#3d6a8f`
+   selection color) made the — already-correct — navigation logic visible.
+   Separately, Space-to-toggle had never been implemented at all: real
+   `QMenu` only handles Space when the menu itself holds actual keyboard
+   focus, which this design deliberately never grants (focus stays on the
+   search box so typing keeps narrowing the list) — so Space was always
+   just a literal character typed into the field.
+- **Takeaway for next time a "the events must not be reaching my handler"
+  bug shows up**: check whether the logic is actually running and simply
+  invisible (missing QSS state styling is an easy thing to overlook once
+  *any* custom stylesheet is in play) before assuming the event routing
+  itself is broken.
+
+## Detail popup, mono-color, and keyboard-parity fixes (earlier round)
 - Fixed the actual bug behind the "inconsistent" alignment complaint: the
   reserved-width calculation for centered dropdown fields only subtracted
   the arrow's space ONCE, when symmetric padding means it needed subtracting
@@ -230,9 +318,10 @@
   on it, press Tab, or click into the right-hand content area.
 
 ## What this is
-A Deckbox-style layout: a tab strip (Tag Database / All Card Database /
-Inventory / Deck Viewer) on the left driving swappable central views. All
-Card Database and Inventory are spreadsheets; Tag Database and Deck Viewer
+A Deckbox-style layout: a tab strip (Tag Database / Card Database / Deck
+Viewer) on the left driving swappable central views. Card Database is a
+spreadsheet (the full catalog, with Inventory/Wishlist/Columns toggle
+buttons above the table as filter shortcuts); Tag Database and Deck Viewer
 are collapsible folder/item trees. Runs on mock data — no real database or
 images yet.
 
@@ -242,16 +331,28 @@ pip install PySide6
 python main.py
 ```
 
-## Try — spreadsheet tabs (All Card Database / Inventory)
-- **Ctrl+2 / Ctrl+3** — jump to All Card Database / Inventory.
+## Try — spreadsheet tab (Card Database)
+- **Ctrl+2** — jump to Card Database.
+- **Inventory / Wishlist buttons** (top of the table) — toggle excluding
+  Have == 0 / Want == 0; both can be on at once. Same effect as
+  right-clicking the Have or Want column and unchecking "0," just faster,
+  and the buttons stay in sync either way — toggle one on, then manually
+  uncheck "0" again via the header's own right-click menu, and the button
+  un-highlights to match.
+- **Columns button** — dropdown to toggle any column's visibility (used to
+  be duplicated into every column's own right-click menu; now lives here
+  only).
 - **Click / Ctrl+click / Shift+click** cells — Excel-like multi-selection.
 - **Ctrl+C** — copy the selection as tab/newline-separated text.
 - **"Edition / Rarity" header** — click left half to sort by set, right half
   by rarity.
 - **"Price" header** — click the ▾ to pick a price source; click elsewhere
   to sort by price.
-- **"Have" / "Want" columns** — right-click, uncheck "0" to isolate cards
-  you own / cards you've wishlisted.
+- **Right-click any filterable column header** — a search-narrowable value
+  checklist; type to narrow, **Up/Down or Tab/Shift+Tab** to move the
+  highlighted value (clamped at both ends, skips anything hidden by the
+  search text), **Space** to toggle the highlighted value once you've
+  navigated to one, **Enter** to apply the typed text directly as a filter.
 - **⋯ button** — stub actions menu. **Hover a card's Name** — popover with
   placeholder art + text.
 - **Right-click a card row** (or a multi-selection of rows) — opens the
@@ -259,7 +360,7 @@ python main.py
   every selected card at once.
 
 ## Try — tree tabs (Tag Database / Deck Viewer)
-- **Ctrl+1 / Ctrl+4** — jump to Tag Database / Deck Viewer.
+- **Ctrl+1 / Ctrl+3** — jump to Tag Database / Deck Viewer.
 - **Ctrl+N / Ctrl+Shift+N** — create a new item/folder; it's immediately
   renameable with all text pre-selected, so typing replaces the name right
   away. (Also available via right-click.)

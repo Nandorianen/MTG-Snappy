@@ -36,77 +36,141 @@ when we do the real import later, we're not renaming fields for no reason.
 #                       dropdown header will switch between.
 MOCK_CARDS = [
     {
-        "name": "Lightning Bolt", "mana_cost": "{R}", "cmc": 1,
-        "type_line": "Instant", "colors": ["R"],
+        "name": "Lightning Bolt",
+        "mana_cost": "{R}",
+        "cmc": 1,
+        "type_line": "Instant",
+        "colors": ["R"],
         "oracle_text": "Lightning Bolt deals 3 damage to any target.",
-        "set": "LEA", "rarity": "common", "keywords": [],
-        "power": None, "toughness": None,
-        "price_tcg": 45.00, "price_ck": 39.99, "price_cm": 41.50,
+        "set": "LEA",
+        "rarity": "common",
+        "keywords": [],
+        "power": None,
+        "toughness": None,
+        "price_tcg": 45.00,
+        "price_ck": 39.99,
+        "price_cm": 41.50,
     },
     {
-        "name": "Swords to Plowshares", "mana_cost": "{W}", "cmc": 1,
-        "type_line": "Instant", "colors": ["W"],
+        "name": "Swords to Plowshares",
+        "mana_cost": "{W}",
+        "cmc": 1,
+        "type_line": "Instant",
+        "colors": ["W"],
         "oracle_text": "Exile target creature. Its controller gains life equal to its power.",
-        "set": "LEA", "rarity": "uncommon", "keywords": [],
-        "power": None, "toughness": None,
-        "price_tcg": 22.00, "price_ck": 19.50, "price_cm": 20.75,
+        "set": "LEA",
+        "rarity": "uncommon",
+        "keywords": [],
+        "power": None,
+        "toughness": None,
+        "price_tcg": 22.00,
+        "price_ck": 19.50,
+        "price_cm": 20.75,
     },
     {
-        "name": "Tarmogoyf", "mana_cost": "{1}{G}", "cmc": 2,
-        "type_line": "Creature — Lhurgoyf", "colors": ["G"],
+        "name": "Tarmogoyf",
+        "mana_cost": "{1}{G}",
+        "cmc": 2,
+        "type_line": "Creature — Lhurgoyf",
+        "colors": ["G"],
         "oracle_text": (
             "Tarmogoyf's power is equal to the number of card types among cards in "
             "all graveyards and its toughness is equal to that number plus 1."
         ),
-        "set": "FUT", "rarity": "rare", "keywords": [],
-        "power": 4, "toughness": 5,
-        "price_tcg": 38.00, "price_ck": 34.99, "price_cm": 36.20,
+        "set": "FUT",
+        "rarity": "rare",
+        "keywords": [],
+        "power": 4,
+        "toughness": 5,
+        "price_tcg": 38.00,
+        "price_ck": 34.99,
+        "price_cm": 36.20,
     },
     {
-        "name": "Baleful Strix", "mana_cost": "{U}{B}", "cmc": 2,
-        "type_line": "Artifact Creature — Bird", "colors": ["U", "B"],
+        "name": "Baleful Strix",
+        "mana_cost": "{U}{B}",
+        "cmc": 2,
+        "type_line": "Artifact Creature — Bird",
+        "colors": ["U", "B"],
         "oracle_text": "Flying, deathtouch. When Baleful Strix enters the battlefield, draw a card.",
-        "set": "DGM", "rarity": "rare", "keywords": ["Flying", "Deathtouch"],
-        "power": 1, "toughness": 1,
-        "price_tcg": 6.00, "price_ck": 5.25, "price_cm": 5.75,
+        "set": "DGM",
+        "rarity": "rare",
+        "keywords": ["Flying", "Deathtouch"],
+        "power": 1,
+        "toughness": 1,
+        "price_tcg": 6.00,
+        "price_ck": 5.25,
+        "price_cm": 5.75,
     },
     {
-        "name": "Goblin Guide", "mana_cost": "{R}", "cmc": 1,
-        "type_line": "Creature — Goblin Scout", "colors": ["R"],
+        "name": "Goblin Guide",
+        "mana_cost": "{R}",
+        "cmc": 1,
+        "type_line": "Creature — Goblin Scout",
+        "colors": ["R"],
         "oracle_text": (
             "Haste. Whenever Goblin Guide attacks, defending player reveals the top "
             "card of their library."
         ),
-        "set": "ZEN", "rarity": "rare", "keywords": ["Haste"],
-        "power": 2, "toughness": 2,
-        "price_tcg": 18.00, "price_ck": 15.99, "price_cm": 16.80,
+        "set": "ZEN",
+        "rarity": "rare",
+        "keywords": ["Haste"],
+        "power": 2,
+        "toughness": 2,
+        "price_tcg": 18.00,
+        "price_ck": 15.99,
+        "price_cm": 16.80,
     },
     {
-        "name": "Serra Angel", "mana_cost": "{3}{W}{W}", "cmc": 5,
-        "type_line": "Creature — Angel", "colors": ["W"],
+        "name": "Serra Angel",
+        "mana_cost": "{3}{W}{W}",
+        "cmc": 5,
+        "type_line": "Creature — Angel",
+        "colors": ["W"],
         "oracle_text": "Flying, vigilance.",
-        "set": "LEA", "rarity": "uncommon", "keywords": ["Flying", "Vigilance"],
-        "power": 4, "toughness": 4,
-        "price_tcg": 12.00, "price_ck": 10.50, "price_cm": 11.25,
+        "set": "LEA",
+        "rarity": "uncommon",
+        "keywords": ["Flying", "Vigilance"],
+        "power": 4,
+        "toughness": 4,
+        "price_tcg": 12.00,
+        "price_ck": 10.50,
+        "price_cm": 11.25,
     },
     {
-        "name": "Thragtusk", "mana_cost": "{3}{G}{G}", "cmc": 5,
-        "type_line": "Creature — Beast", "colors": ["G"],
+        "name": "Thragtusk",
+        "mana_cost": "{3}{G}{G}",
+        "cmc": 5,
+        "type_line": "Creature — Beast",
+        "colors": ["G"],
         "oracle_text": (
             "When Thragtusk enters the battlefield, you gain 5 life. When Thragtusk "
             "leaves the battlefield, create a 3/3 green Beast creature token."
         ),
-        "set": "AVR", "rarity": "rare", "keywords": [],
-        "power": 5, "toughness": 3,
-        "price_tcg": 3.50, "price_ck": 2.99, "price_cm": 3.10,
+        "set": "AVR",
+        "rarity": "rare",
+        "keywords": [],
+        "power": 5,
+        "toughness": 3,
+        "price_tcg": 3.50,
+        "price_ck": 2.99,
+        "price_cm": 3.10,
     },
     {
-        "name": "Thalia, Guardian of Thraben", "mana_cost": "{1}{W}", "cmc": 2,
-        "type_line": "Legendary Creature — Human Soldier", "colors": ["W"],
+        "name": "Thalia, Guardian of Thraben",
+        "mana_cost": "{1}{W}",
+        "cmc": 2,
+        "type_line": "Legendary Creature — Human Soldier",
+        "colors": ["W"],
         "oracle_text": "First strike. Noncreature spells cost {1} more to cast.",
-        "set": "ISD", "rarity": "rare", "keywords": ["First strike"],
-        "power": 2, "toughness": 1,
-        "price_tcg": 8.00, "price_ck": 6.99, "price_cm": 7.40,
+        "set": "ISD",
+        "rarity": "rare",
+        "keywords": ["First strike"],
+        "power": 2,
+        "toughness": 1,
+        "price_tcg": 8.00,
+        "price_ck": 6.99,
+        "price_cm": 7.40,
     },
     {
         # Deliberately included to exercise variable power/toughness ("*"),
@@ -114,16 +178,24 @@ MOCK_CARDS = [
         # int -- this is what makes the Have/Want/Power/Toughness column
         # filtering's "(none)"/"*" handling something that's actually
         # tested against real data, not just claimed to work.
-        "name": "Endless One", "mana_cost": "{X}", "cmc": 0,
-        "type_line": "Artifact Creature — Shapeshifter", "colors": [],
+        "name": "Endless One",
+        "mana_cost": "{X}",
+        "cmc": 0,
+        "type_line": "Artifact Creature — Shapeshifter",
+        "colors": [],
         "oracle_text": (
             "Endless One enters the battlefield with X +1/+1 counters on it. "
             "Endless One's power and toughness are each equal to the number "
             "of +1/+1 counters on it."
         ),
-        "set": "NPH", "rarity": "mythic", "keywords": [],
-        "power": "*", "toughness": "*",
-        "price_tcg": 1.50, "price_ck": 1.20, "price_cm": 1.35,
+        "set": "NPH",
+        "rarity": "mythic",
+        "keywords": [],
+        "power": "*",
+        "toughness": "*",
+        "price_tcg": 1.50,
+        "price_ck": 1.20,
+        "price_cm": 1.35,
     },
 ]
 
@@ -164,7 +236,7 @@ def _with_collection_fields(cards, qty_values, cross_qty_values=None):
 # column and Wishlist's "Have" column are always cross-referencing the SAME
 # numbers rather than two independently-typed-out lists that could drift.
 _INVENTORY_QTY = [4, 1, 2, 1, 3, 1, 2, 1, 0]
-_WISHLIST_QTY = [1, 2, 1, 1, 1, 1, 1, 1, 1]
+_WISHLIST_QTY = [1, 2, 1, 0, 1, 1, 1, 1, 1]
 
 
 def get_all_cards():
@@ -236,34 +308,74 @@ def swatch_for_card(card):
 # see the Language StatField's comment in card_detail_popup.py.
 CARD_PRINTS = {
     "Lightning Bolt": [
-        {"set": "LEA", "rarity": "common", "language": "English",
-         "flavor_text": "A red mage's first and favorite lesson.",
-         "price_tcg": 45.00, "price_ck": 39.99, "price_cm": 41.50},
-        {"set": "2XM", "rarity": "common", "language": "English",
-         "flavor_text": "Simple, direct, and always in style.",
-         "price_tcg": 3.50, "price_ck": 2.99, "price_cm": 3.10},
+        {
+            "set": "LEA",
+            "rarity": "common",
+            "language": "English",
+            "flavor_text": "A red mage's first and favorite lesson.",
+            "price_tcg": 45.00,
+            "price_ck": 39.99,
+            "price_cm": 41.50,
+        },
+        {
+            "set": "2XM",
+            "rarity": "common",
+            "language": "English",
+            "flavor_text": "Simple, direct, and always in style.",
+            "price_tcg": 3.50,
+            "price_ck": 2.99,
+            "price_cm": 3.10,
+        },
     ],
     "Swords to Plowshares": [
-        {"set": "LEA", "rarity": "uncommon", "language": "English",
-         "flavor_text": "Those who beat their swords into plowshares will plow for those who don't.",
-         "price_tcg": 22.00, "price_ck": 19.50, "price_cm": 20.75},
-        {"set": "DMR", "rarity": "rare", "language": "English",
-         "flavor_text": "Peace, at a cost.",
-         "price_tcg": 8.00, "price_ck": 6.50, "price_cm": 7.10},
+        {
+            "set": "LEA",
+            "rarity": "uncommon",
+            "language": "English",
+            "flavor_text": "Those who beat their swords into plowshares will plow for those who don't.",
+            "price_tcg": 22.00,
+            "price_ck": 19.50,
+            "price_cm": 20.75,
+        },
+        {
+            "set": "DMR",
+            "rarity": "rare",
+            "language": "English",
+            "flavor_text": "Peace, at a cost.",
+            "price_tcg": 8.00,
+            "price_ck": 6.50,
+            "price_cm": 7.10,
+        },
     ],
 }
 
 # Selectable in the detail popup alongside Edition/Price. Real per-language
 # card data (art, text) isn't modeled yet -- see CARD_PRINTS note above.
-LANGUAGES = ["English", "Japanese", "German", "French", "Italian",
-             "Spanish", "Portuguese", "Korean", "Russian",
-             "Chinese Simplified", "Chinese Traditional"]
+LANGUAGES = [
+    "English",
+    "Japanese",
+    "German",
+    "French",
+    "Italian",
+    "Spanish",
+    "Portuguese",
+    "Korean",
+    "Russian",
+    "Chinese Simplified",
+    "Chinese Traditional",
+]
 
 # Selectable condition grades, standard TCG shorthand. These describe a
 # COLLECTION ENTRY (a specific copy you own), not the card or print itself
 # -- surfaced in the detail popup as a preview/selector, but not yet wired
 # to actually saving a condition against an owned copy (see NOTES.md).
-CONDITIONS = ["Near Mint", "Lightly Played", "Moderately Played", "Heavily Played", "Damaged"]
+CONDITIONS = [
+    "Near Mint",
+    "Lightly Played",
+    "Moderately Played",
+    "Heavily Played",
+    "Damaged",
+]
 
 # Formats tracked for the Legality tab. This list and the statuses below are
 # illustrative/mock -- NOT accurate real-world legality data -- purely to
@@ -287,7 +399,9 @@ CARD_LEGALITIES = {
     "Goblin Guide": _legal_in("Modern", "Legacy", "Vintage", "Commander"),
     "Serra Angel": _legal_in("Pioneer", "Modern", "Legacy", "Vintage", "Commander"),
     "Thragtusk": _legal_in("Pioneer", "Modern", "Legacy", "Vintage", "Commander"),
-    "Thalia, Guardian of Thraben": _legal_in("Modern", "Legacy", "Vintage", "Commander"),
+    "Thalia, Guardian of Thraben": _legal_in(
+        "Modern", "Legacy", "Vintage", "Commander"
+    ),
 }
 
 # Short, ORIGINALLY-WRITTEN mock rulings (not transcribed from any real
@@ -341,11 +455,17 @@ def get_card_prints(name):
     card = get_card_by_name(name)
     if card is None:
         return []
-    return [{
-        "set": card["set"], "rarity": card["rarity"], "language": "English",
-        "flavor_text": "",
-        "price_tcg": card["price_tcg"], "price_ck": card["price_ck"], "price_cm": card["price_cm"],
-    }]
+    return [
+        {
+            "set": card["set"],
+            "rarity": card["rarity"],
+            "language": "English",
+            "flavor_text": "",
+            "price_tcg": card["price_tcg"],
+            "price_ck": card["price_ck"],
+            "price_cm": card["price_cm"],
+        }
+    ]
 
 
 def get_card_legalities(name):

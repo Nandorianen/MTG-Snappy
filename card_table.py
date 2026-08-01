@@ -619,11 +619,20 @@ class _MenuSearchBox(QLineEdit):
         self._menu.update()  # belt-and-suspenders repaint if setActiveAction doesn't force one
 
     def eventFilter(self, watched, event):
-        # Only ever act on key presses targeted at THIS search box -- the
-        # filter is global, so every keypress in the whole application
-        # passes through here while this menu is open, and we only care
-        # about the tiny slice that's actually ours.
-        if watched is self and event.type() == QEvent.KeyPress:
+        # Deliberately NOT checking `watched is self` here. That condition
+        # holds when an event is manually constructed and sent straight at
+        # this widget (e.g. via QApplication.sendEvent(box, ...) in a test),
+        # but there's no guarantee it holds for Qt's REAL popup keyboard-grab
+        # routing -- a live QMenu grabs the keyboard for the whole
+        # application while showing, and which object Qt reports as
+        # `watched` for that routed event is an internal implementation
+        # detail, not something this code should depend on. Since this
+        # filter's entire lifetime is scoped to exactly one popup being open
+        # (installed in __init__, torn down via aboutToHide below), and
+        # nothing else in the app can legitimately be receiving keyboard
+        # input while a popup has the grab, it's safe to react to the KEY
+        # CODE alone rather than insisting on a specific receiver identity.
+        if event.type() == QEvent.KeyPress:
             if event.key() == Qt.Key_Up:
                 self._move_highlight(-1)
                 return True   # consumed: stop it reaching QMenu's own handling

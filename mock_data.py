@@ -167,31 +167,23 @@ _INVENTORY_QTY = [4, 1, 2, 1, 3, 1, 2, 1, 0]
 _WISHLIST_QTY = [1, 2, 1, 1, 1, 1, 1, 1, 1]
 
 
-def get_inventory_cards():
-    """
-    Owned-copies dataset. Conceptually "SELECT * FROM cards JOIN collection
-    WHERE have > 0" against the real schema -- a filtered SUBSET of the full
-    catalog. In this mock, all 8 cards happen to have nonzero Have counts,
-    since we don't have a large enough fake catalog to include cards you
-    own none of -- so right now this looks identical to get_all_cards()'s
-    data. That's a limitation of the mock's small size, not a design
-    decision; the distinction (and the point of filtering by Have > 0 to
-    get from one to the other) becomes real once there's an actual
-    thousands-of-cards catalog behind this.
-    """
-    return _with_collection_fields(MOCK_CARDS, _INVENTORY_QTY, _WISHLIST_QTY)
-
-
 def get_all_cards():
     """
     The master card catalog -- every card, each showing both how many you
-    own (Have) and how many you've wishlisted (Want). This replaces having
-    a separate, always-filtered "Wishlist" view: rather than a tab that only
-    ever shows wishlisted cards, this is the same browsable "all cards" list
-    Inventory pulls from, and the user filters/sorts by the Have or Want
-    column themselves (right-click either column -> uncheck "0") to isolate
-    "what I own" or "what I want" on demand, instead of needing a dedicated
-    tab per lens.
+    own (Have) and how many you've wishlisted (Want). This is the ONLY
+    dataset function now (Inventory was folded in here too, alongside
+    Wishlist's earlier collapse -- see PROJECT_CONTEXT.md's "mid-project
+    architectural pivot" section): Inventory and Wishlist are both just
+    "Have > 0" / "Want > 0" filter LENSES on this same catalog, applied
+    live via CardDatabaseView's toggle buttons (card_database_view.py),
+    not separate pre-filtered datasets fetched under a different function
+    name. "Have > 0" isolation used to mean calling a second function
+    (get_inventory_cards(), now removed) that happened to return identical
+    data in this small mock -- collapsing it here removes a redundant seam
+    that would only have grown more confusing once a real, larger dataset
+    made the two functions' results actually diverge in places they
+    shouldn't (a card should isolate the same way regardless of which
+    function fetched it).
     """
     return _with_collection_fields(MOCK_CARDS, _INVENTORY_QTY, _WISHLIST_QTY)
 

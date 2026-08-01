@@ -3,13 +3,15 @@ main.py
 -------
 Entry point. Assembles the Deckbox-style layout: a narrow tab strip on the
 left (SideNav) driving a QStackedWidget on the right that swaps between
-Tag Database, All Card Database, Inventory, and Deck Viewer.
+Tag Database, Card Database, and Deck Viewer.
 
-All Card Database is the full browsable catalog (every card, showing both
-Have and Want counts); Inventory is the same underlying kind of data
-filtered down to what you actually own. There's no separate always-filtered
-"Wishlist" view anymore -- right-click the Have or Want column and uncheck
-"0" to get that lens on demand, from either table.
+Card Database is the full browsable catalog (every card, showing both Have
+and Want counts) -- there's no separate always-filtered "Inventory" or
+"Wishlist" tab anymore; both are just filter LENSES on this same catalog.
+CardDatabaseView (card_database_view.py) puts Inventory/Wishlist toggle
+buttons above the table as a shortcut for excluding qty == 0 on the Have or
+Want column -- the exact same effect as right-clicking that column's header
+and unchecking "0" manually, just faster and with visible on/off state.
 
 This replaces the earlier three-panel-with-persistent-detail-panel design --
 the detail view now lives in card_table.py's hover popover instead of a
@@ -26,8 +28,8 @@ from PySide6.QtGui import QKeySequence, QShortcut
 from side_nav import SideNav, TABS
 from tag_tree import TagTreePanel
 from deck_viewer import DeckViewerView
-from card_table import CardTableView
-from mock_data import get_inventory_cards, get_all_cards
+from card_database_view import CardDatabaseView
+from mock_data import get_all_cards
 
 
 class MainWindow(QMainWindow):
@@ -38,25 +40,25 @@ class MainWindow(QMainWindow):
 
         # --- Build the views that live in the stack ---
         self.tag_panel = TagTreePanel()
-        self.all_cards_table = CardTableView(get_all_cards(), qty_label="Have", cross_qty_label="Want")
-        self.inventory_table = CardTableView(get_inventory_cards(), qty_label="Have", cross_qty_label="Want")
+        self.card_database = CardDatabaseView(get_all_cards())
         self.deck_viewer = DeckViewerView()
 
         # Right-click-to-tag needs a reference to the Tag Database's tree --
-        # wired here (after both exist) rather than passed into CardTableView's
-        # constructor, matching the late-bound tag_source attribute pattern.
-        self.all_cards_table.tag_source = self.tag_panel.tree_pane
-        self.inventory_table.tag_source = self.tag_panel.tree_pane
+        # wired here (after both exist) rather than passed into
+        # CardDatabaseView's constructor, matching the late-bound tag_source
+        # attribute pattern. Goes through .table since CardDatabaseView
+        # WRAPS the real CardTableView rather than being one itself (see
+        # card_database_view.py's module docstring for why).
+        self.card_database.table.tag_source = self.tag_panel.tree_pane
 
         self.stack = QStackedWidget()
         # Order here defines the stack INDEX for each view; self._tab_indexes
         # below maps the SideNav's string keys to these indexes, so the two
         # never need to be kept in sync by hand elsewhere.
-        self.stack.addWidget(self.tag_panel)          # index 0
-        self.stack.addWidget(self.all_cards_table)     # index 1
-        self.stack.addWidget(self.inventory_table)      # index 2
-        self.stack.addWidget(self.deck_viewer)           # index 3
-        self._tab_indexes = {"tags": 0, "all_cards": 1, "inventory": 2, "decks": 3}
+        self.stack.addWidget(self.tag_panel)        # index 0
+        self.stack.addWidget(self.card_database)     # index 1
+        self.stack.addWidget(self.deck_viewer)         # index 2
+        self._tab_indexes = {"tags": 0, "cards": 1, "decks": 2}
 
         # --- Side nav ---
         self.side_nav = SideNav()
@@ -83,17 +85,19 @@ class MainWindow(QMainWindow):
     def _focus_current_view(self):
         """
         Gives a specific, sensible widget keyboard focus whenever a tab
-        becomes active. Tag Database and Deck Viewer focus their tree;
-        Inventory/Wishlist focus the table itself. This matters beyond
-        general keyboard-UX niceness: it's what makes Tab reliably collapse
-        the tree pane on the very FIRST press rather than only from the
-        second press onward (see TreePane.focus_tree's docstring).
+        becomes active. Tag Database and Deck Viewer focus their tree; Card
+        Database focuses the table itself (reached via .table, since
+        CardDatabaseView wraps a CardTableView rather than being one -- see
+        card_database_view.py). This matters beyond general keyboard-UX
+        niceness: it's what makes Tab reliably collapse the tree pane on
+        the very FIRST press rather than only from the second press onward
+        (see TreePane.focus_tree's docstring).
         """
         current = self.stack.currentWidget()
         if hasattr(current, "tree_pane"):
             current.tree_pane.focus_tree()
-        elif isinstance(current, CardTableView):
-            current.setFocus()
+        elif hasattr(current, "table"):
+            current.table.setFocus()
 
     def _build_menu_bar(self):
         menu_bar = self.menuBar()
@@ -119,8 +123,8 @@ class MainWindow(QMainWindow):
 
     def _refresh_status_bar(self):
         current = self.stack.currentWidget()
-        if isinstance(current, CardTableView):
-            count = current.card_model.rowCount()
+        if hasattr(current, "table"):
+            count = current.table.card_model.rowCount()
             self.status_bar.showMessage(f"{count} cards")
         else:
             self.status_bar.showMessage("Tag database")

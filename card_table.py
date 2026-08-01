@@ -367,6 +367,34 @@ class CardTableModel(QAbstractTableModel):
         self._column_filters[column] = set(excluded_values)
         self._commit_reorder()
 
+    def is_value_excluded(self, column, value):
+        """
+        Whether a single value is currently excluded from `column`'s filter
+        -- e.g. is_value_excluded(COL_QTY, "0") answers "is the Inventory
+        preset currently active." Read by anything that needs to REFLECT
+        filter state (the header checklist's checkboxes, and
+        CardDatabaseView's Inventory/Wishlist toggle buttons) rather than
+        just set it, so both stay honest about what's actually applied
+        instead of tracking their own separate assumption of it.
+        """
+        return value in self._column_filters.get(column, set())
+
+    def set_value_excluded(self, column, value, excluded):
+        """
+        Adds or removes exactly ONE value from a column's exclusion set,
+        leaving every other manually-set exclusion on that same column
+        untouched. This is the single code path both the header checklist
+        (_on_filter_toggled) and the Inventory/Wishlist preset buttons
+        route through -- one add/discard-from-set implementation instead of
+        two copies that could quietly drift apart.
+        """
+        current = set(self._column_filters.get(column, set()))
+        if excluded:
+            current.add(value)
+        else:
+            current.discard(value)
+        self.set_column_filter(column, current)  # already calls _commit_reorder()
+
     def distinct_values_for_column(self, column):
         values = set()
         for card in self._source_cards:
@@ -514,11 +542,21 @@ class _MenuSearchBox(QLineEdit):
 
     1. Up/Down arrow keys move QMenu's visual "active action" highlight
        WITHOUT ever transferring real Qt keyboard focus away from this
-       search box. An earlier version tried handing focus to the menu
-       itself and forwarding the raw key event via QApplication.sendEvent()
-       -- in practice that's fragile with a QWidgetAction involved (Qt's
-       own menu/widget-action focus interplay can bounce focus straight
-       back to this search box, or land the highlight on a hidden action).
+       search box. CAUGHT VIA AN APPLICATION-LEVEL eventFilter, not
+       keyPressEvent -- QMenu has its own internal arrow-key handling for
+       navigating actions (including ones hosted via QWidgetAction), and
+       that handling runs as part of Qt's event-filter/notify chain BEFORE
+       a focused child widget's own keyPressEvent override ever sees the
+       key (Qt delivers to installed event filters first, target's own
+       event handling last). A keyPressEvent override here was therefore
+       never actually reached -- QMenu's own navigation ate the key first,
+       and its own idea of "next item" doesn't account for our
+       search-narrowed HIDDEN actions, which is why it looked like nothing
+       moved at all. Same root cause, same fix shape, as the Tab-key
+       interception documented in collapsible_pane.py's module docstring:
+       install the filter at the APPLICATION level so it runs ahead of
+       Qt's own internal handling, rather than trying to out-prioritize it
+       from inside the widget's own event methods.
        setActiveAction() is a direct, supported API for "highlight exactly
        this action" that doesn't depend on who technically has keyboard
        focus, so keeping focus right here on the search box the entire
@@ -545,6 +583,19 @@ class _MenuSearchBox(QLineEdit):
             "padding: 3px 6px; background-color: #2b2d31; color: #e3e3e3; } "
             "QLineEdit:focus { border: 1px solid #4f8fc0; }"
         )
+        # Installed on the APPLICATION, not on self -- this is what makes
+        # our handling run before QMenu's own internal arrow-key navigation
+        # gets a chance to consume Up/Down first (see class docstring point
+        # 1). A fresh _MenuSearchBox is created every time a filter menu is
+        # right-clicked into existence (see SplitDropdownHeader._build_
+        # context_menu), so the filter is torn down via aboutToHide below --
+        # without that, every right-click would leak one more permanent
+        # global filter that outlives the menu it was built for.
+        QApplication.instance().installEventFilter(self)
+        menu.aboutToHide.connect(self._remove_app_filter)
+
+    def _remove_app_filter(self):
+        QApplication.instance().removeEventFilter(self)
 
     def _visible_checkable_actions(self):
         return [a for a in self._menu.actions() if a.isVisible() and a.isCheckable()]
@@ -565,20 +616,26 @@ class _MenuSearchBox(QLineEdit):
             return
         index = min(index, len(actions) - 1)  # clamp bottom
         self._menu.setActiveAction(actions[index])
+        self._menu.update()  # belt-and-suspenders repaint if setActiveAction doesn't force one
 
-    def keyPressEvent(self, event):
-        if event.key() == Qt.Key_Up:
-            self._move_highlight(-1)
-            return
-        if event.key() == Qt.Key_Down:
-            self._move_highlight(1)
-            return
-        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
-            if self._on_enter is not None:
-                self._on_enter(self.text())
-            self._menu.close()
-            return
-        super().keyPressEvent(event)
+    def eventFilter(self, watched, event):
+        # Only ever act on key presses targeted at THIS search box -- the
+        # filter is global, so every keypress in the whole application
+        # passes through here while this menu is open, and we only care
+        # about the tiny slice that's actually ours.
+        if watched is self and event.type() == QEvent.KeyPress:
+            if event.key() == Qt.Key_Up:
+                self._move_highlight(-1)
+                return True   # consumed: stop it reaching QMenu's own handling
+            if event.key() == Qt.Key_Down:
+                self._move_highlight(1)
+                return True
+            if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+                if self._on_enter is not None:
+                    self._on_enter(self.text())
+                self._menu.close()
+                return True
+        return super().eventFilter(watched, event)
 
 
 
@@ -904,12 +961,10 @@ class SplitDropdownHeader(QHeaderView):
         return menu
 
     def _on_filter_toggled(self, column, value, checked):
-        excluded = set(self.model()._column_filters.get(column, set()))
-        if checked:
-            excluded.discard(value)
-        else:
-            excluded.add(value)
-        self.model().set_column_filter(column, excluded)
+        # checked=True means "keep this value visible" -- i.e. NOT excluded
+        # -- so the boolean passed to set_value_excluded is the inverse of
+        # the checkbox's own checked state.
+        self.model().set_value_excluded(column, value, excluded=not checked)
 
     def _apply_enter_filter(self, column, offered_values, text):
         """

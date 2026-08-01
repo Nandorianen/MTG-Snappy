@@ -16,8 +16,7 @@ from PySide6.QtCore import Signal
 # and is what main.py uses to decide which widget to show in the QStackedWidget.
 TABS = [
     ("tags", "Tag Database"),
-    ("all_cards", "All Card Database"),
-    ("inventory", "Inventory"),
+    ("cards", "Card Database"),
     ("decks", "Deck Viewer"),
 ]
 

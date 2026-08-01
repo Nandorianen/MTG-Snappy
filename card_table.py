@@ -8,7 +8,9 @@ pair, plus custom machinery layered on top:
    column as two independently-sortable halves; draws a dropdown arrow on
    Price/Type/Mana Cost that opens a menu instead of sorting (price source,
    or "group by" for Type/Mana); and handles RIGHT-click for a per-column
-   value filter plus a "Show Columns" visibility picker.
+   value filter. Also builds the "Show Columns" visibility-picker menu
+   (build_show_columns_menu below), though that's no longer shown FROM the
+   header itself -- see CardDatabaseView's standalone Columns button.
 
 2. ActionButtonDelegate (QStyledItemDelegate subclass) -- draws a small
    button-looking cell in the rightmost column and reacts to clicks, WITHOUT
@@ -639,6 +641,28 @@ class _MenuSearchBox(QLineEdit):
             if event.key() == Qt.Key_Down:
                 self._move_highlight(1)
                 return True
+            if event.key() == Qt.Key_Backtab or (
+                event.key() == Qt.Key_Tab and event.modifiers() & Qt.ShiftModifier
+            ):
+                # Shift+Tab -- Qt reports this as a distinct Key_Backtab on
+                # most platforms rather than Key_Tab with ShiftModifier set,
+                # so both forms are checked to be safe.
+                self._move_highlight(-1)
+                return True
+            if event.key() == Qt.Key_Tab:
+                # Previously unhandled -- fell through to QMenu's own
+                # default Tab navigation, which walks EVERY action
+                # (including the disabled "Filter by X" header label and
+                # the Show Columns submenu trigger), neither of which
+                # should ever be a navigable stop. Routing through the
+                # same _move_highlight() Up/Down already use fixes this for
+                # free: it already filters to isCheckable() actions only
+                # (see _visible_checkable_actions()), and neither the
+                # disabled header label nor a submenu-opening action is
+                # checkable, so both are already excluded by the exact
+                # logic that's already proven correct for arrow-key nav.
+                self._move_highlight(1)
+                return True
             if event.key() == Qt.Key_Space:
                 # Real QMenu only toggles a checkable action on Space when
                 # the MENU ITSELF has actual keyboard focus -- which we
@@ -674,8 +698,12 @@ class SplitDropdownHeader(QHeaderView):
         a menu (price source, or group-by) instead of sorting; clicking
         elsewhere in these headers still sorts normally.
       - RIGHT-click anywhere: a context menu with a per-column value
-        checklist filter (where applicable) and a "Show Columns" submenu
-        for toggling column visibility live.
+        checklist filter (where applicable); empty (and shown as no menu
+        at all) for columns with nothing to filter. Column-visibility
+        toggling ("Show Columns") lives in a separate top-level button now
+        (CardDatabaseView), not duplicated into every column's own menu --
+        build_show_columns_menu() below still builds that menu's contents,
+        just no longer wires it in HERE.
       - A few pixels at each section border are reserved EXCLUSIVELY for
         drag-to-resize, checked first, before any of the above.
 
@@ -890,7 +918,15 @@ class SplitDropdownHeader(QHeaderView):
 
     # --- Right-click: per-column filter + column visibility ------------------
     def _show_context_menu(self, column, global_pos):
-        self._build_context_menu(column).exec(global_pos)
+        menu = self._build_context_menu(column)
+        # Show Columns used to live here too, so EVERY column's right-click
+        # menu had at least one item even when nothing was filterable
+        # (Checkbox, Actions). Now that it's a standalone button (see
+        # CardDatabaseView), those columns have nothing left to show --
+        # better to show no menu at all than an empty popup box.
+        if menu.isEmpty():
+            return
+        menu.exec(global_pos)
 
     def _build_context_menu(self, column):
         menu = _StayOpenMenu(self)
@@ -970,9 +1006,24 @@ class SplitDropdownHeader(QHeaderView):
                     action.setVisible(needle in value.lower())
             search_box.textChanged.connect(_narrow_checklist)
 
-            menu.addSeparator()
+        return menu
 
-        columns_menu = menu.addMenu("Show Columns")
+    def build_show_columns_menu(self):
+        """
+        Standalone "Show Columns" visibility-toggle menu -- pulled out of
+        _build_context_menu (where it used to be rebuilt IDENTICALLY inside
+        every single column's right-click menu, the exact same "same lens,
+        rebuilt N times" redundancy already resolved elsewhere in this app
+        for Inventory/Wishlist/All-Card-Database). Now built exactly once,
+        on demand, for the single "Columns" button CardDatabaseView puts in
+        its button row alongside Inventory/Wishlist.
+
+        Returns a _StayOpenMenu (not built inline by the caller) so
+        toggling several columns' visibility in one sitting doesn't require
+        reopening the menu between each click -- same stay-open behavior
+        the per-column value checklists already have.
+        """
+        menu = _StayOpenMenu(self)
         for index, (_key, label, _kind) in enumerate(COLUMNS):
             if index == COL_QTY:
                 display_label = self.model().qty_label
@@ -980,11 +1031,10 @@ class SplitDropdownHeader(QHeaderView):
                 display_label = self.model().cross_qty_label
             else:
                 display_label = label or MENU_COLUMN_LABELS.get(index, f"Column {index}")
-            action = columns_menu.addAction(display_label)
+            action = menu.addAction(display_label)
             action.setCheckable(True)
             action.setChecked(not self.isSectionHidden(index))
             action.toggled.connect(lambda checked, i=index: self.setSectionHidden(i, not checked))
-
         return menu
 
     def _on_filter_toggled(self, column, value, checked):

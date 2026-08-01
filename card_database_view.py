@@ -1,13 +1,14 @@
 """
 card_database_view.py
 ----------------------
-Wraps a CardTableView with an outer button row -- currently just the
-Inventory/Wishlist filter-preset toggles, but this is deliberately the same
-architectural slot NOTES.md's "Flexible search engine" entry describes
-wanting later (a Ctrl+F popup living ABOVE whichever table has focus).
-Building that outer layer now, even for just two buttons, means the future
-search box has an obvious home instead of forcing another "does this belong
-inside or outside CardTableView" decision when it arrives.
+Wraps a CardTableView with an outer button row -- Inventory/Wishlist filter-
+preset toggles plus a Columns visibility dropdown (replacing what used to be
+a "Show Columns" submenu duplicated into every column's own right-click
+menu). This is deliberately the same architectural slot NOTES.md's
+"Flexible search engine" entry describes wanting later (a Ctrl+F popup
+living ABOVE whichever table has focus). Building that outer layer now
+means the future search box has an obvious home instead of forcing another
+"does this belong inside or outside CardTableView" decision when it arrives.
 
 WHY THIS IS A SEPARATE WIDGET RATHER THAN CHANGING CardTableView ITSELF:
 CardTableView's job (per its own module docstring) is the table: model,
@@ -85,6 +86,18 @@ class CardDatabaseView(QWidget):
             button.setCheckable(True)
             button.setStyleSheet(TOGGLE_STYLE)
 
+        # Not checkable -- this is a plain dropdown-opening button, not a
+        # persistent on/off state like the two toggles either side of it.
+        # Reuses the SAME menu-building code that used to be duplicated
+        # into every column's own right-click menu (SplitDropdownHeader.
+        # build_show_columns_menu) -- one shared instance now, rebuilt
+        # fresh on each click (same pattern card_table.py's own price-
+        # source dropdown already uses) so it can never show a stale
+        # snapshot of which columns are currently visible.
+        self.columns_button = QPushButton("Columns \u25be")
+        self.columns_button.setStyleSheet(TOGGLE_STYLE)
+        self.columns_button.clicked.connect(self._show_columns_menu)
+
         # Direction 1: button -> model. Each button only ever adds/removes
         # the single "0" value from its own column's exclusion set (via
         # set_value_excluded), leaving any OTHER manual exclusion a user
@@ -108,6 +121,7 @@ class CardDatabaseView(QWidget):
         button_row.setContentsMargins(8, 6, 8, 6)
         button_row.addWidget(self.inventory_toggle)
         button_row.addWidget(self.wishlist_toggle)
+        button_row.addWidget(self.columns_button)
         button_row.addStretch()  # reserved space -- future search box lands here
 
         layout = QVBoxLayout(self)
@@ -115,6 +129,10 @@ class CardDatabaseView(QWidget):
         layout.setSpacing(0)
         layout.addLayout(button_row)
         layout.addWidget(self.table)
+
+    def _show_columns_menu(self):
+        menu = self.table.header.build_show_columns_menu()
+        menu.exec(self.columns_button.mapToGlobal(self.columns_button.rect().bottomLeft()))
 
     def _sync_toggle_buttons(self):
         for button, column in (

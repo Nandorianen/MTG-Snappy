@@ -206,9 +206,15 @@ class StatField(QWidget):
         StatField sensitive enough to pre-layout width staleness to
         actually need a follow-up refresh once real geometry exists (see
         CardDetailDialog.__init__'s QTimer.singleShot call).
+
+        The "notional 1/3-width slot" above is deliberately NOT derived
+        from Type's own width by itself -- see set_anchor_reference()
+        below for why, and for how the real column-1 alignment target
+        gets wired in after construction.
         """
         super().__init__()
         self._fixed_width = width
+        self._anchor_reference = None  # see set_anchor_reference()
         if width is not None:
             self.setFixedWidth(width)
         else:
@@ -223,12 +229,29 @@ class StatField(QWidget):
 
         title_label = QLabel(title)
         title_label.setStyleSheet("color: #a8adb5; font-size: 10px;")
-        if caption_half_width:
-            # The caption gets HALF the field's width (a stand-in for "a
-            # normal 1/3-of-the-row slot," since this field itself is 2/3 of
-            # the row), centered within that half, with the remaining half
-            # left as blank space -- rather than centering across the
-            # field's full (much wider) width.
+        self.title_label = title_label  # kept so dynamic_anchor fields can reposition it in set_text()
+
+        if dynamic_anchor:
+            # Positioned via the exact same anchor-point/indent-margin
+            # mechanism the VALUE uses below (see set_text()), rather than
+            # the separate stretch-based half-width trick the old
+            # caption_half_width path used. Sharing one mechanism for both
+            # is what guarantees the caption and the value can never drift
+            # apart from each other -- and, since that mechanism reads a
+            # real sibling column's measured width (set_anchor_reference),
+            # it's also what fixes the caption landing on a different
+            # point than column 1 elsewhere: the old stretch-row approach
+            # had no way to consult a sibling field's width at all, so it
+            # could only ever approximate "a normal third" from Type's own
+            # 2-column-row geometry -- the same wrong-gap-count mistake
+            # set_anchor_reference()'s docstring explains for the value.
+            title_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            layout.addWidget(title_label)
+        elif caption_half_width:
+            # Retained for any future field that wants a half-width
+            # caption WITHOUT a live sibling-width reference to anchor
+            # against -- Type itself no longer takes this path now that
+            # dynamic_anchor covers its case more precisely (see above).
             title_label.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
             caption_row = QHBoxLayout()
             caption_row.setContentsMargins(0, 0, 0, 0)
@@ -274,6 +297,31 @@ class StatField(QWidget):
     def set_menu(self, menu):
         self.value_button.setMenu(menu)
 
+    def set_anchor_reference(self, widget):
+        """
+        Only meaningful for the dynamic_anchor (Type) field. Points this
+        field at a REAL column-1 field from one of the genuine 3-column
+        rows (e.g. Edition, from the Edition/Rarity/Price row) so Type's
+        caption and value can align against that field's ACTUAL measured
+        width, rather than reconstructing an approximation of "1/3 of a
+        row" from Type's own 2-column row geometry.
+
+        WHY THE APPROXIMATION WAS WRONG, NOT JUST IMPRECISE: gameplay_row
+        (Type + Mana) has exactly ONE inter-column gap in it. metadata_row
+        and collection_row (three fields each) have TWO. Computing "1/3 of
+        a row" as (Type's own width, which already has ONE gap subtracted
+        out of the row total) / 2 bakes in the WRONG gap count -- it's not
+        that the arithmetic rounds differently, it's that it's answering a
+        subtly different question ("1/2 of a 2-column row's larger share")
+        than "1/3 of a 3-column row," and the two only coincidentally look
+        close. Reading a real sibling field's width sidesteps the whole
+        question: whatever gap accounting metadata_row's layout actually
+        does internally, self.edition_field.width() already reflects it
+        correctly by the time a real layout pass has run -- there's
+        nothing left to approximate.
+        """
+        self._anchor_reference = widget
+
     def set_text(self, full_text):
         target = self.value_button or self.value_label
         metrics = QFontMetrics(target.font())
@@ -286,30 +334,54 @@ class StatField(QWidget):
         # over-eliding before the real layout has ever run.
         available = self.width() if (self._fixed_width is not None or self.width() > 40) else 260
 
+        # Hard ceiling on the button's own width, independent of whatever
+        # Qt's internal multi-line size calculation thinks it needs for
+        # the embedded "\n" breaks _wrap_to_pixel_width() inserts. Without
+        # this, a genuinely wide two-line value (e.g. "Chinese" /
+        # "Simplified") could report a sizeHint a few pixels past what our
+        # own wrap budget intended, and since nothing was capping the
+        # button, the containing row would dutifully grow to accommodate
+        # it -- visibly shifting every OTHER column in that row too, since
+        # they all share equal stretch off the same row width. Explicit
+        # setMaximumWidth() is a hard cap Qt layouts always respect (never
+        # allocates more, even if the widget's own minimumSizeHint would
+        # prefer more) -- worst case for an unrealistically long unbroken
+        # word is the text overflowing/clipping visually, which is a far
+        # smaller problem than the whole row resizing under you. Applied
+        # to every clickable field uniformly (not just the wrap-enabled
+        # ones) since it's a no-op for the already-elided single-line
+        # fields -- their elided text width is already bounded well under
+        # this same ceiling by construction.
+        if self._clickable:
+            self.value_button.setMaximumWidth(max(20, int(available)))
+
         if self._dynamic_anchor:
             # Type's rule: anchor the value to the midpoint of a notional
-            # 1/3-width slot (Type's OWN width is 2/3 of the row -- so a
-            # normal 1/3 slot's center, expressed in Type's own coordinate
-            # space, sits at width/4: half of Type's width reaches the
-            # boundary of that notional slot, half of THAT again reaches
-            # its center).
+            # 1/3-width slot -- the SAME point column 1 of the Edition/
+            # Rarity/Price row (or Language/Condition/Foil row) centers
+            # its own value on, so Type's caption/value visually line up
+            # with those columns instead of landing at a plausible-looking
+            # but structurally different point.
             #
-            # IMPORTANT: uses `available`, not raw self.width(), for this.
-            # self.width() is only trustworthy once a real layout pass has
-            # happened; on the very first call (from __init__, before the
-            # dialog has ever been shown) it can report a small stale
-            # value that has nothing to do with the eventual 2/3-of-row
-            # width. `available` already carries the same "self.width() >
-            # 40, else fall back to a sane estimate" guard the eliding
-            # path below uses -- reusing it here (rather than trusting
-            # self.width() directly) is what stops the anchor point from
-            # collapsing toward the field's own left edge on first paint,
-            # which is what was actually producing "centers on 2/3 width"
-            # and "wraps too eagerly": both symptoms of computing this
-            # formula against a too-small width. See __init__'s deferred
-            # re-refresh (in CardDetailDialog) for the other half of this
-            # fix -- correcting the math here still needs a SECOND call
-            # once the real layout has actually run at least once.
+            # PREFERRED PATH: if a real sibling has been wired in via
+            # set_anchor_reference() (CardDetailDialog does this right
+            # after building metadata_row), use THAT field's actual
+            # measured width directly -- it already reflects however many
+            # inter-column gaps a genuine 3-column row's layout consumes,
+            # which is a DIFFERENT number of gaps than gameplay_row's own
+            # 2-column geometry has. Reconstructing that from Type's own
+            # width alone was the earlier bug (see set_anchor_reference's
+            # docstring for the full explanation) -- reading the sibling's
+            # width sidesteps needing to reconstruct anything.
+            #
+            # FALLBACK PATH: only reachable in the brief window before a
+            # real layout pass has run (the reference field's own
+            # self.width() is just as stale as this field's would be) --
+            # same self.width()>40 staleness guard `available` already
+            # uses. This approximation is corrected within one event-loop
+            # tick by CardDetailDialog's deferred re-refresh, so it's only
+            # ever visible for a single frame at most, not a steady-state
+            # answer.
             #
             # indent = distance from Type's left edge to where the text
             # should START if it's centered around that anchor point.
@@ -321,7 +393,23 @@ class StatField(QWidget):
             # still look centered around the same point every other
             # field's value would occupy; long values grow asymmetrically
             # without ever needing a separate branch for "long" vs "short."
-            anchor_center = available / 4
+            if self._anchor_reference is not None and self._anchor_reference.width() > 40:
+                anchor_center = self._anchor_reference.width() / 2
+            else:
+                anchor_center = available / 4
+
+            # Caption gets the SAME anchor_center, same clamp-at-0 rule --
+            # just measured against its own (short, static, e.g. "Type")
+            # text width instead of the value's. This is what keeps the
+            # caption and the value pinned to one shared point rather than
+            # two independently-approximated ones. Uses the caption
+            # label's own font (smaller, gray) for its metrics, not the
+            # value's -- the two fonts aren't the same size.
+            caption_metrics = QFontMetrics(self.title_label.font())
+            caption_width = caption_metrics.horizontalAdvance(self.title_label.text())
+            caption_indent = max(0, int(anchor_center - caption_width / 2))
+            self.title_label.setContentsMargins(caption_indent, 0, 0, 0)
+
             text_width = metrics.horizontalAdvance(full_text)
             indent = max(0, int(anchor_center - text_width / 2))
             target.setContentsMargins(indent, 0, 0, 0)
@@ -574,7 +662,7 @@ class CardDetailDialog(FramelessDialog):
         # there's deliberately no addStretch() after them, since the two
         # fields together ARE meant to fill the row.
         gameplay_row = QHBoxLayout()
-        self.type_field = StatField("Type", width=None, caption_half_width=True, wrap=True, dynamic_anchor=True)
+        self.type_field = StatField("Type", width=None, wrap=True, dynamic_anchor=True)
         self.mana_field = StatField("Mana Cost", width=None, align=Qt.AlignHCenter, wrap=True)
         gameplay_row.addWidget(self.type_field, stretch=2)
         gameplay_row.addWidget(self.mana_field, stretch=1)
@@ -596,6 +684,14 @@ class CardDetailDialog(FramelessDialog):
             metadata_row.addWidget(field, stretch=1)
         layout.addLayout(metadata_row)
         layout.addSpacing(STAT_ROW_SPACING)
+
+        # Wired up here, right after edition_field exists: Type's caption
+        # and value both align against edition_field's REAL measured width
+        # (a genuine column-1 field from a genuine 3-column row) instead of
+        # approximating "1/3 of a row" from gameplay_row's own 2-column
+        # geometry -- see StatField.set_anchor_reference()'s docstring for
+        # why those two things aren't actually the same calculation.
+        self.type_field.set_anchor_reference(self.edition_field)
 
         # METADATA row 2: Language / Condition / Foil -- kept off row 1 so
         # that row doesn't get cramped; these three also describe a specific

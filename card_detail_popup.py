@@ -45,9 +45,16 @@ FIVE PIECES OF CUSTOM MACHINERY WORTH CALLING OUT:
 
 4. The zoomable/draggable image window is a separate frameless top-level
    QWidget of its own (see ImageZoomWidget) -- dragging is implemented by
-   hand since there's no OS title bar to drag by there either; "zoom" is
-   implemented by resizing the window on wheelEvent. See NOTES.md for a
-   parked idea about reticle-based zoom-to-region.
+   hand since there's no OS title bar to drag by there either; wheel-zoom
+   scales the window uniformly on wheelEvent. Ctrl+drag adds a SECOND,
+   independent zoom mechanism: a reticle-select that crops to a region and
+   fills the current screen (see ImageZoomWidget's own docstring for why
+   this is deliberately kept separate from wheel-zoom rather than unified
+   into one "zoom level," and for the normalized _view_rect tracking that
+   makes repeated reticle zooms compose correctly instead of each one
+   re-measuring against the full original image). This resolves the
+   reticle-zoom idea that used to be parked in NOTES.md -- see README.md's
+   changelog entry for this round for the full design writeup.
 
 5. StatField's clickable (dropdown) variant now CENTERS BY HUGGING ITS OWN
    CONTENT rather than centering long text inside an artificially wide
@@ -62,7 +69,7 @@ from PySide6.QtWidgets import (
     QToolButton, QMenu, QListWidget, QListWidgetItem, QApplication, QSizePolicy,
     QPushButton,
 )
-from PySide6.QtCore import Qt, Signal, QSize, QEvent, QTimer
+from PySide6.QtCore import Qt, Signal, QSize, QEvent, QTimer, QRect, QRectF, QPoint
 from PySide6.QtGui import QFontMetrics, QColor, QPainter
 
 from frameless_dialog import FramelessDialog
@@ -517,48 +524,210 @@ class ImageZoomWidget(QWidget):
     A separate, frameless, always-on-top-of-itself window showing the
     (placeholder) art at a user-adjustable zoom, draggable anywhere on
     screen. Closes on right-click or Escape.
+
+    TWO INDEPENDENT ZOOM MECHANISMS:
+    1. Mouse wheel -- scales the WHOLE box uniformly around its current
+       pixel size (see wheelEvent). Doesn't change which part of the
+       image is framed, just how big the frame is on screen.
+    2. Ctrl+drag ("reticle zoom") -- draw a rectangle directly on the
+       image; on release, that rectangle becomes the new framed region,
+       and the window jumps to fill the CURRENT screen's available area
+       (see _finish_reticle). Kept deliberately separate from wheel zoom:
+       wheel zoom is a physical window-size preference, reticle zoom is a
+       content-crop decision. Unifying them into one "zoom level" would
+       mean a plain zoom-out also silently widened the framed region.
+
+    WHY grabMouse() DURING A RETICLE DRAG: the window starts small
+    (BASE_SIZE, 300x420) -- a real drag gesture will often cross outside
+    its bounds before the button comes up. Without an explicit mouse
+    grab, Qt simply stops delivering mouseMoveEvent/mouseReleaseEvent the
+    instant the cursor leaves the widget, silently abandoning the drag.
+    grabMouse()/releaseMouse() bracket the gesture so it tracks correctly
+    all the way to wherever the button is actually released -- same
+    "Qt's default per-widget delivery isn't enough here" problem shape as
+    collapsible_pane.py needing an app-level event filter for Tab.
     """
 
     BASE_SIZE = QSize(300, 420)
     MIN_ZOOM, MAX_ZOOM = 0.3, 4.0
+    # Below this pixel size (either dimension), a Ctrl+drag is treated as
+    # an aborted/accidental selection (a near-stationary Ctrl+click) rather
+    # than a real reticle -- avoids "zooming" into an effectively-zero-sized
+    # region nobody meant to select.
+    MIN_RETICLE_SIZE = 8
 
     def __init__(self, color):
         super().__init__(None, Qt.Window | Qt.FramelessWindowHint)
         self._color = QColor(color)
         self._zoom = 1.0
+        # Wheel zoom's own zoom-neutral reference size. Starts as a COPY of
+        # the class constant (not the constant itself) because a reticle
+        # zoom re-anchors this to whatever size reticle zoom just set the
+        # window to -- from that point on, wheel zoom scales relative to
+        # the NEW baseline instead of snapping back to the original small
+        # box on the very next scroll (see _finish_reticle).
+        self._base_size = QSize(self.BASE_SIZE)
         self._drag_offset = None
-        self.resize(self.BASE_SIZE)
+
+        # Which portion of the (eventual, real) source image this window
+        # currently frames, in normalized 0..1 image-space coordinates --
+        # (0,0,1,1) = the whole image. Only reticle zoom ever narrows this.
+        # The placeholder swatch is one flat color with no sub-regions, so
+        # this has no visible effect on painting today (see paintEvent) --
+        # it's tracked now so real art later needs one new line (a
+        # QPixmap.copy() using this exact rect, marked below) instead of a
+        # redesign. It also drives the zoom-multiplier readout, which IS
+        # visible today.
+        self._view_rect = QRectF(0.0, 0.0, 1.0, 1.0)
+
+        # Reticle drag state -- None whenever a Ctrl+drag isn't active.
+        # Local (widget) pixel coords, since that's what paintEvent needs.
+        self._reticle_start = None   # QPoint -- where the Ctrl+drag began
+        self._reticle_rect = None    # QRect -- current drag extent, for the overlay
+
+        self.resize(self._base_size)
         self.setFocusPolicy(Qt.StrongFocus)
 
     def paintEvent(self, event):
         painter = QPainter(self)
+        # --- Real-art hook-in point ---
+        # Once real card images exist, this flat fillRect becomes:
+        #   painter.drawPixmap(self.rect(), self._pixmap, self._denormalized_source_rect())
+        # where _denormalized_source_rect() just multiplies self._view_rect
+        # by the pixmap's own size. Everything else in this class already
+        # produces the right self._view_rect for that call to be correct.
         painter.fillRect(self.rect(), self._color)
         painter.setPen(QColor("#e3e3e3"))
         painter.drawRect(self.rect().adjusted(0, 0, -1, -1))
 
+        if self._reticle_rect is not None:
+            self._paint_reticle_overlay(painter)
+
+        zoom_multiplier = 1.0 / min(self._view_rect.width(), self._view_rect.height())
+        if zoom_multiplier > 1.01:  # only once a reticle zoom has actually happened
+            self._paint_zoom_label(painter, zoom_multiplier)
+
+    def _paint_reticle_overlay(self, painter):
+        painter.save()
+        # Same accent blue used for selection everywhere else in the app
+        # (table row selection, tag-tree focus ring) -- reusing it here
+        # keeps this reading as the same KIND of affordance, not a new one.
+        painter.setPen(QColor("#4f8fc0"))
+        painter.setBrush(QColor(79, 143, 192, 60))  # same blue, translucent
+        painter.drawRect(self._reticle_rect)
+        painter.restore()
+
+    def _paint_zoom_label(self, painter, zoom_multiplier):
+        painter.save()
+        label = f"{zoom_multiplier:.1f}\u00d7"  # e.g. "3.2×"
+        pad = 6
+        text_rect = painter.fontMetrics().boundingRect(label).adjusted(-pad, -pad, pad, pad)
+        text_rect.moveTopLeft(self.rect().topLeft() + QPoint(10, 10))
+        painter.setBrush(QColor(20, 21, 23, 200))
+        painter.setPen(Qt.NoPen)
+        painter.drawRoundedRect(text_rect, 4, 4)
+        painter.setPen(QColor("#e3e3e3"))
+        painter.drawText(text_rect, Qt.AlignCenter, label)
+        painter.restore()
+
     def wheelEvent(self, event):
         factor = 1.1 if event.angleDelta().y() > 0 else (1 / 1.1)
         self._zoom = max(self.MIN_ZOOM, min(self.MAX_ZOOM, self._zoom * factor))
-        self.resize(int(self.BASE_SIZE.width() * self._zoom),
-                    int(self.BASE_SIZE.height() * self._zoom))
+        self.resize(int(self._base_size.width() * self._zoom),
+                    int(self._base_size.height() * self._zoom))
 
     def mousePressEvent(self, event):
         if event.button() == Qt.RightButton:
             self.close()
             return
-        if event.button() == Qt.LeftButton:
+        if event.button() != Qt.LeftButton:
+            return
+        if event.modifiers() & Qt.ControlModifier:
+            self._reticle_start = event.position().toPoint()
+            self._reticle_rect = QRect(self._reticle_start, self._reticle_start)
+            self.grabMouse()
+        else:
             self._drag_offset = event.globalPosition().toPoint() - self.pos()
 
     def mouseMoveEvent(self, event):
+        if self._reticle_start is not None:
+            self._reticle_rect = QRect(self._reticle_start, event.position().toPoint()).normalized()
+            self.update()
+            return
         if self._drag_offset is not None and (event.buttons() & Qt.LeftButton):
             self.move(event.globalPosition().toPoint() - self._drag_offset)
 
     def mouseReleaseEvent(self, event):
+        if self._reticle_start is not None:
+            self.releaseMouse()
+            rect = self._reticle_rect
+            global_release_pos = event.globalPosition().toPoint()
+            self._reticle_start = None
+            self._reticle_rect = None
+            big_enough = rect is not None and rect.width() >= self.MIN_RETICLE_SIZE and rect.height() >= self.MIN_RETICLE_SIZE
+            if big_enough:
+                self._finish_reticle(rect, global_release_pos)
+            else:
+                self.update()  # clear the overlay even when the drag was too small to act on
+            return
         self._drag_offset = None
+
+    def _finish_reticle(self, local_rect, global_release_pos):
+        """
+        Commits a completed reticle drag: narrows self._view_rect to the
+        selected region (composed against whatever was already framed --
+        see below), then resizes+moves the window to fill the current
+        screen's available area in one call.
+
+        WHY COMPOSED, NOT REPLACED: a SECOND reticle zoom should crop
+        further into the first one, not restart measuring from the full
+        original image. Expressing the new selection as a FRACTION of the
+        current window, then scaling that fraction by the OLD view_rect,
+        is what makes repeated zooms stack correctly instead of each one
+        silently discarding the previous crop.
+
+        WHY availableGeometry(), NOT geometry(): geometry() includes the
+        taskbar/dock; availableGeometry() excludes it, so the zoomed
+        window doesn't end up partly hidden behind system UI. Setting the
+        window's geometry to exactly this rect IS the centering: a window
+        sized to the whole usable screen is centered on it by
+        construction, so there's no separate "now center it" step that
+        could disagree with the sizing step.
+        """
+        w, h = self.width(), self.height()
+        frac = QRectF(local_rect.x() / w, local_rect.y() / h,
+                       local_rect.width() / w, local_rect.height() / h)
+
+        old = self._view_rect
+        self._view_rect = QRectF(
+            old.x() + frac.x() * old.width(),
+            old.y() + frac.y() * old.height(),
+            frac.width() * old.width(),
+            frac.height() * old.height(),
+        )
+
+        screen = QApplication.screenAt(global_release_pos) or self.screen() or QApplication.primaryScreen()
+        target = screen.availableGeometry()
+        self.setGeometry(target)
+
+        # Re-anchor wheel zoom's baseline -- without this, the next
+        # scroll would recompute from the original small BASE_SIZE and
+        # immediately snap back down, undoing the reticle zoom.
+        self._base_size = target.size()
+        self._zoom = 1.0
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:
-            self.close()
+            if self._reticle_start is not None:
+                # Cancel just the in-progress selection, not the whole
+                # viewer -- Escape mid-drag reads as "never mind this
+                # selection," not "close the window."
+                self.releaseMouse()
+                self._reticle_start = None
+                self._reticle_rect = None
+                self.update()
+            else:
+                self.close()
         else:
             super().keyPressEvent(event)
 

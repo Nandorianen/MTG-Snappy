@@ -1,6 +1,76 @@
 # MTG Local Database — Prototype
 
-## Card detail popup: Type-column alignment overhaul, QGridLayout rewrite (this round)
+## Reticle-select zoom on the card image (this round)
+Resolves the idea parked in NOTES.md — all three open questions there now
+have answers, recorded here rather than left as design notes since the
+feature's built:
+
+- **Layers on top of the existing wheel-zoom, doesn't replace it.**
+  Ctrl+drag on the image draws a reticle rectangle; releasing crops the
+  view to that region and jumps the window to fill the CURRENT screen's
+  available area (`QScreen.availableGeometry()`, not `geometry()` — the
+  latter includes the taskbar/dock, which would leave part of the zoomed
+  window hidden behind it). Plain click+drag (no Ctrl) still just moves
+  the window, unchanged. Kept deliberately separate from wheel-zoom
+  rather than unified into one "zoom level": wheel-zoom is a physical
+  window-SIZE preference (scales the box uniformly), reticle-zoom is a
+  content-FRAMING decision (changes which region is shown) — conflating
+  them would mean a plain scroll-to-zoom-out also silently un-cropped
+  whatever region a reticle zoom had just framed.
+- **"Use the whole screen, selection goes to center" turned out to be ONE
+  step, not two.** Setting the window's geometry to exactly the screen's
+  available rect already centers it, by construction — there's no
+  separate centering calculation to independently get wrong.
+- **Transform-tracked (a normalized `_view_rect`), not pixel-cropped yet**
+  — the current art is a flat placeholder color with no sub-regions to
+  crop, so an actual `QPixmap.copy()` would have nothing real to
+  demonstrate. `ImageZoomWidget._view_rect` tracks which fraction of the
+  (eventual) source image is currently framed, in 0..1 normalized
+  coordinates, and composes correctly across repeated reticle zooms (a
+  second reticle crops further into the first, rather than each one
+  independently re-measuring against the full original image). The real
+  hook-in point for actual art is marked with a comment directly in
+  `paintEvent()` — swapping the placeholder `fillRect` for a real
+  `drawPixmap()` call using this same rect is a one-line change, not a
+  redesign, once real images exist.
+- **Overlay stays visible while dragging** (translucent blue rectangle,
+  same accent color used for row/tree selection elsewhere, so it reads as
+  the same KIND of affordance rather than a new visual language).
+  **Escape cancels an in-progress reticle selection specifically** rather
+  than closing the whole zoom window — only falls through to
+  close-the-window when no drag is active. A drag smaller than
+  `MIN_RETICLE_SIZE` (8px either dimension) on release is treated as an
+  aborted/accidental Ctrl+click and quietly does nothing, rather than
+  "zooming" into an effectively-zero-sized region.
+- Wheel-zoom's own baseline (`_base_size`) re-anchors to the new
+  screen-filling size after a reticle zoom completes — without this, the
+  very next scroll would recompute relative to the original small
+  `BASE_SIZE` and immediately snap the window back down, silently
+  undoing the reticle zoom that just happened.
+- A small on-screen zoom-multiplier readout (e.g. "3.2×") appears once a
+  reticle zoom has actually happened, computed from `_view_rect`'s own
+  size rather than tracked as a separate counter — one fewer piece of
+  state that could drift out of sync with what's actually framed.
+- **Simplification made deliberately, not an oversight**: each reticle
+  zoom resets the wheel-zoom baseline to treat the new screen-filling
+  size as a fresh 100%, rather than composing zoom LEVEL the way
+  `_view_rect` composes zoom REGION. A version where scrolling back out
+  afterward gradually reveals the un-cropped surroundings is possible,
+  but adds real complexity for a box that's currently one flat color with
+  nothing to reveal yet — worth revisiting once real card art makes that
+  visually meaningful, not before.
+- **Mechanism note, not a design decision**: a reticle drag uses
+  `grabMouse()`/`releaseMouse()` around the gesture. Without it, Qt stops
+  delivering move/release events the instant the cursor leaves the
+  widget's bounds — a real concern here since the zoom window can start
+  as small as 300×420, well within reach of a normal drag gesture. Same
+  underlying shape as `collapsible_pane.py`'s Tab-interception fix and
+  the filter-menu's arrow-key routing: Qt's default per-widget event
+  delivery isn't sufficient for a gesture that's expected to cross the
+  widget's own boundary, so it needs to be explicitly grabbed/filtered at
+  a wider scope instead.
+
+## Card detail popup: Type-column alignment overhaul, QGridLayout rewrite (earlier round)
 Three rounds of alignment fixes on the same underlying complaint ("Type's
 caption/value don't visually line up with Edition/Language's column"),
 the first two of which didn't actually work despite looking correct on

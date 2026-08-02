@@ -1,6 +1,131 @@
 # MTG Local Database — Prototype
 
-## Card Database merge + filter-menu keyboard navigation fixed (this round)
+## Card detail popup: Type-column alignment overhaul, QGridLayout rewrite (this round)
+Three rounds of alignment fixes on the same underlying complaint ("Type's
+caption/value don't visually line up with Edition/Language's column"),
+the first two of which didn't actually work despite looking correct on
+paper — worth reading in full if this class of bug shows up again
+elsewhere, since the general lesson generalizes past this one dialog.
+
+- **The fix that actually worked**: all three stat rows (Type/Mana,
+  Edition/Rarity/Price, Language/Condition/Foil) now live in ONE
+  `QGridLayout` instead of three independent `QHBoxLayout`s. A
+  `QGridLayout` guarantees every cell in the same COLUMN shares the exact
+  same pixel width across every row — a hard invariant Qt itself enforces
+  — instead of something reconstructed via a formula that has to
+  correctly guess how a DIFFERENT, independently-laid-out row divides up
+  its own width. Type's own grid cell spans columns 0+1
+  (`columnSpan=2`), giving a long type line (e.g. Thalia's "Legendary
+  Creature — Human Soldier") room to grow rightward into column 1's
+  otherwise-empty space before it needs to wrap, instead of wrapping
+  early or truncating. Confirmed via actual headless instantiation +
+  measuring real rendered pixel positions (`QFontMetrics.boundingRect`,
+  `.mapTo()`), not just re-deriving the algebra again — see "Debugging
+  journey" below for why that mattered.
+- **Column widths are explicitly LOCKED** to a fixed pixel value shortly
+  after the dialog's first real layout pass
+  (`CardDetailDialog._lock_column_widths()`), rather than left to
+  `QGridLayout`'s own stretch-based sizing. Necessary, not just tidy:
+  `QGridLayout` apparently consults a cell's uncapped `minimumSizeHint()`
+  when deciding how wide a COLUMN itself needs to be, even when every
+  individual cell already has an explicit `setMaximumWidth()` — so
+  selecting a long Language/Condition value could still widen the whole
+  column, a failure mode the OLD per-row `QHBoxLayout` structure never
+  had (each row solved its own width independently, with nothing to
+  reconcile against a different row's content). Locking BOTH
+  `setColumnMinimumWidth()` and `setMaximumWidth()` to the identical
+  number removes that degree of freedom entirely. **This fix is
+  explicitly justified by the dialog being a fixed-size window (900x560,
+  never resized)** — see NOTES.md's new "variable text scaling & DPI"
+  entry for why this needs revisiting before the app can support
+  different font sizes / accessibility scaling / DPI settings.
+- Value buttons (Edition/Price/Language/Condition) no longer draw a
+  dropdown arrow at all — the earlier fix reserved space for one via
+  `padding-right` + a `menu-indicator` CSS rule, which was itself the
+  root cause of an even earlier "text drifts left" bug two rounds ago.
+  Removed entirely; the value text itself is the click target.
+- Apply button restyled to match `CardDatabaseView`'s Inventory/Wishlist
+  toggle buttons (bright fill, rounded border) instead of a flat default
+  `QPushButton`, renamed from "Apply to Inventory" to just "Apply," and
+  given explicit spacing above it matching the gap between stat rows.
+- Card pane header text removed from the window's own
+  title-bar-substitute (`frameless_dialog.py`'s `_TitleBar` gained a
+  `show_title` parameter) — the card's NAME is now shown once, styled as
+  the Card pane's own header, instead of duplicated in both places.
+- Every pane's caption ("Legality", "Rulings") is now horizontally
+  centered with a fixed gap before its content (shared via
+  `_pane_layout()`), instead of defaulting to left-aligned with no gap.
+- Two named spacing constants (`CAPTION_VALUE_SPACING`,
+  `STAT_ROW_SPACING`) replace what used to be inconsistent hardcoded
+  literals, specifically so "gap between a caption and its own value" and
+  "gap between one stat row and the next" can never drift back to being
+  the wrong way around relative to each other.
+
+### Debugging journey (worth keeping — three attempts before the real fix)
+1. **First attempt**: derive Type's anchor point purely from Type's own
+   width (`width / 4`). Wrong because gameplay_row (Type + Mana, one
+   inter-column gap) and a real 3-column row (two gaps) divide up their
+   width differently — "1/4 of Type's own width" answers a structurally
+   DIFFERENT question than "half of a real column's width," even though
+   the two numbers looked deceptively close.
+2. **Second attempt**: read a live sibling widget's width directly
+   (`edition_field.width()`) at the exact moment of computing the
+   anchor. Reasonable in principle, but timing-fragile in practice — it
+   depended on a completely separate, independently-laid-out widget
+   having already settled into its FINAL geometry, and nothing actually
+   guaranteed that ordering relative to a deferred
+   `QTimer.singleShot(0, ...)` refresh (Qt doesn't promise a 0ms timer
+   fires after every pending layout pass). The person testing this
+   confirmed it made no visible difference.
+3. **Third attempt**: an analytical correction formula
+   (`anchor_center = width/4 - spacing/6`) derived from first principles
+   to account for the different gap counts between the two row shapes.
+   Checked out exactly on paper — and STILL didn't fix the visible
+   problem, because it depended on an assumption (Qt's actual default
+   inter-column spacing matching what the code assumed) that had never
+   actually been verified against a real render.
+4. **The actual fix** required two separate things working together: (a)
+   restructuring to a real `QGridLayout` so column-1 width became ONE
+   authoritative number instead of something independently re-derived
+   per row, confirmed via `QGridLayout.cellRect()`; and (b) — critically
+   — actually instantiating the dialog headlessly
+   (`QT_QPA_PLATFORM=offscreen`) and measuring REAL rendered pixel
+   positions instead of trusting the derivation a fourth time. That
+   measurement caught a genuinely separate, previously invisible bug:
+   the anchor math was being applied via `setContentsMargins()` on a
+   label whose own coordinate origin was already shifted ~4px by
+   `StatField`'s own inner layout margin — a real, exact, measured error
+   that no amount of re-deriving the algebra would have caught, since
+   the algebra itself was internally consistent; the bug was in a
+   completely different, uninspected coordinate-space assumption.
+- **General takeaway**: alignment bugs across independently-laid-out Qt
+  layouts (two separate `QHBoxLayout`s, in this case) resist being fixed
+  by formula alone, however carefully re-derived — two layouts computing
+  "the same" quantity independently can silently disagree for reasons
+  (a hidden margin, an unverified spacing assumption, a coordinate-space
+  mismatch) invisible to algebra done on paper. When the bug IS
+  alignment specifically, prefer giving the two things a SINGLE SHARED
+  AUTHORITY to agree with (one real shared layout, not two independent
+  ones computing matching-but-separate answers) over trying to reconcile
+  two calculations — and verify any pixel-level claim against actual
+  rendered widget geometry (`.geometry()`, `.mapTo()`,
+  `QFontMetrics.boundingRect()`), not just re-checked math. This
+  generalizes the existing "logic runs but nothing visibly happens"
+  lesson from the filter-menu keyboard-nav saga (see NOTES.md) to a new
+  failure class: logic that LOOKS provably correct on paper and still
+  isn't, because the paper version omitted a real coordinate-space detail
+  only actual rendering reveals.
+- **Separate, smaller lesson worth keeping on its own**: `setMaximumWidth()`
+  on a widget doesn't reliably stop `QGridLayout` from wanting to grow
+  that widget's COLUMN based on the widget's own uncapped
+  `minimumSizeHint()` — a failure mode the old independent-per-row
+  structure never had. If a `QGridLayout` column mysteriously grows
+  despite an apparent per-widget max-width cap anywhere else in this app
+  later, this is the mechanism to suspect first; the fix is locking BOTH
+  `setColumnMinimumWidth()` and `setMaximumWidth()` to the identical
+  value, not just capping the widget.
+
+## Card Database merge + filter-menu keyboard navigation fixed (earlier round)
 - **All Card Database and Inventory are now ONE tab, "Card Database."**
   Same realization as the earlier Wishlist collapse: Inventory was always
   just "the full catalog, filtered to Have > 0" — `mock_data.py` had two
@@ -386,4 +511,3 @@ python main.py
 - Drag-to-resize specifically on the Edition/Rarity and Price header cells
   (documented limitation in `card_table.py`).
 - Delete confirmation dialogs (documented limitation in `tree_pane.py`).
-

@@ -2,6 +2,122 @@
 
 Things we've deliberately deferred, with enough context to pick back up later.
 
+## Revisit: fixed-pixel UI assumptions vs. variable text scaling & DPI (raised explicitly this round, NOT addressed)
+Flagged by the user as an important future direction after the card detail
+popup's Type-column alignment work — explicitly NOT something to solve
+right now, but important enough to not lose track of. The concern, in the
+user's own words: fixed window sizes and pixel-precise layout assumptions
+aren't viable across all systems and configurations (different default
+DPI, OS-level accessibility text-scaling settings, different default
+fonts/font substitution across platforms).
+
+**Where this is currently baked in, concretely:**
+- `card_detail_popup.py`'s `CardDetailDialog` is a genuinely fixed-size
+  window (`resize(900, 560)` called once in `__init__`, never resized
+  by the user — frameless windows lose native edge-drag resize, a
+  documented limitation in `frameless_dialog.py` that was deliberately
+  not solved). Everything about its current stat-grid layout assumes this.
+- The just-shipped column-width-locking fix
+  (`CardDetailDialog._lock_column_widths()`) is EXPLICITLY justified by
+  "this dialog never resizes" — it measures the real column width ONCE,
+  after the first layout pass, and freezes it there permanently via
+  matching `setColumnMinimumWidth()`/`setMaximumWidth()` calls. If the
+  window ever became resizable, or if the OS/user's font-scaling setting
+  changed AFTER that lock ran, the columns would stay frozen at whatever
+  was correct for the very first render and never adapt — this is a
+  real, deliberate trade-off made to fix an immediate bug, not an
+  oversight, but it's exactly the kind of fixed-pixel assumption that
+  needs revisiting before real scaling support exists.
+- More broadly, several other places assume roughly-consistent text
+  metrics across fonts/platforms/DPI without an adaptation mechanism:
+  `StatField`'s eliding/wrapping width targets, the Legality pane's
+  `_legality_column_width()` (sized to the widest string THIS font
+  produces, which changes under a different font/scale), and likely
+  `card_table.py`'s column widths too (not audited this round).
+- Related to the ALREADY-parked "Theming: system accent colors +
+  light/dark presets" entry below — that entry critiques the app's
+  hardcoded QSS hex colors as "the OPPOSITE of how Qt normally adapts to
+  the OS" (QSS color rules override `QPalette`, which would otherwise
+  reflect OS theme automatically). The exact same critique applies here,
+  just for SIZE instead of color: hardcoded pixel dimensions are the
+  opposite of letting Qt's own font-metric-derived sizing adapt
+  automatically. Worth treating as ONE audit pass covering both axes
+  when this gets picked up, since they're the same underlying pattern
+  (assuming a specific rendering environment instead of querying it) —
+  not two unrelated pieces of work.
+
+**Open questions for when this gets designed for real:**
+- Does `CardDetailDialog` become a genuinely resizable window first
+  (reversing the "fixed size for now" decision in `frameless_dialog.py`),
+  or does it stay fixed-size but re-measure/re-lock its column widths
+  reactively (e.g. a `resizeEvent` handler re-running
+  `_lock_column_widths()`, or re-running it if a Qt
+  `QGuiApplication.fontChanged`-style signal ever fires)? The two are
+  different amounts of work and probably should be decided together,
+  not layered on independently.
+- Should `StatField`'s hardcoded pixel constants (`CAPTION_VALUE_SPACING`,
+  `STAT_ROW_SPACING`, `ROW_COLUMN_SPACING`, `FIELD_INNER_MARGIN`) become
+  DPI-aware (e.g. derived from `QFontMetrics` or a scale factor) rather
+  than literal pixel counts? This is the same category of question
+  `card_table.py`'s and `tree_pane.py`'s various fixed pixel dimensions
+  would eventually need answered too — worth answering it once, as a
+  reusable pattern, rather than per-widget.
+- Does this intersect with the parked Options/Settings window
+  (see below) — e.g. a user-facing "text size" preference independent of
+  the OS's own scaling — or is OS-level DPI/accessibility scaling the
+  only axis that actually matters for a desktop app like this?
+
+## Debugging lesson: alignment across independent layouts needs a shared authority, not a better formula (from the card detail popup Type-column saga)
+Not a parked TODO — a worked example worth keeping, same spirit as the
+existing "the logic runs but nothing visibly happens" lesson below, but a
+distinct failure class. Full blow-by-blow (three failed attempts before
+the real fix) lives in README.md's changelog entry for this round; this
+entry is the distilled, generalizable version for whenever a similar bug
+shows up somewhere else in the app.
+
+**Symptom shape**: two structurally different layouts (in this case, two
+independent `QHBoxLayout`s with different column counts/stretch ratios)
+each needed to agree on where "column 1" is, so a widget in one could
+visually align with a widget in the other. Every attempt to compute that
+agreement via a formula — first a naive one, then a careful analytical
+derivation that checked out exactly on paper — LOOKED correct and still
+wasn't, because each formula depended on an assumption (Qt's actual
+default spacing value, or which coordinate space a margin was measured
+relative to) that was never actually verified against a real render.
+
+**What actually worked**: two changes together, not one. (1) Stop trying
+to make two independent layouts agree via calculation — restructure so
+there's only ONE shared layout (a `QGridLayout`) whose column widths are a
+single authoritative number by construction, not something reconstructed
+per-row. (2) Actually instantiate the dialog headlessly
+(`QT_QPA_PLATFORM=offscreen`) and measure REAL rendered pixel positions
+(`QFontMetrics.boundingRect()` for text-aware centers, `.mapTo()` for
+cross-widget coordinate comparison) rather than trusting a derivation,
+however carefully re-checked. That measurement step caught a genuinely
+separate bug — a margin being applied relative to the wrong coordinate
+origin — that no amount of re-deriving the same algebra would have found,
+since the algebra itself was internally consistent; the actual error was
+in an unexamined assumption the algebra never touched.
+
+**General takeaway**: when a bug is specifically about two things needing
+to align, and a formula-based fix doesn't visibly work even though it
+checks out on paper, stop refining the formula and ask whether the two
+things have any single shared source of truth they could both read from
+instead (a shared parent layout, a shared measured widget, a shared
+constant) — and verify any fix candidate against real rendered geometry,
+not just re-checked math, before concluding it worked.
+
+**Narrower, reusable gotcha from the same saga**: `setMaximumWidth()` on a
+widget does not reliably stop `QGridLayout` from growing that widget's
+COLUMN based on the widget's own uncapped `minimumSizeHint()` — a
+difference from `QHBoxLayout`, where each row solves its own width
+independently and has nothing to reconcile against another row's content.
+If a grid column mysteriously grows elsewhere in this app later despite an
+apparent per-widget max-width cap, this is the mechanism to suspect;
+locking BOTH `setColumnMinimumWidth()` and `setMaximumWidth()` to the
+identical value (rather than capping only the widget) is what actually
+fixed it.
+
 ## Debugging lesson: "the logic runs but nothing visibly happens" (from the filter-menu keyboard-nav fix)
 Not a parked TODO -- a worked example worth keeping, because it took three
 real attempts to actually fix and the first two were each individually
@@ -64,6 +180,15 @@ of checking -- especially anywhere a custom global stylesheet is in play
 specifically disables automatic native-style state rendering for anything
 not explicitly re-declared in QSS.
 
+**UPDATE (this round)**: a related but distinct lesson showed up in the
+card detail popup's alignment work — see the new entry above. That
+saga's headless tests DID render real pixels (unlike this one, which was
+purely about state vs. visibility) and still needed actual geometry
+measurement to catch the bug, because the failure was in a coordinate-
+space assumption, not a rendering/visibility gap. Different failure
+class, same underlying moral: don't trust a test that didn't actually
+check the specific thing the bug turned out to be about.
+
 ## Full Excel keyboard parity (raised alongside the F2/Shift+Space/etc additions)
 This round added F2 (edit Qty), Shift+Space (select row), Ctrl+Space
 (select column), Ctrl+Home/End (jump to first/last cell), and Ctrl+Shift+
@@ -83,6 +208,9 @@ a single hardcoded QSS string (`main.py`'s STYLE_SHEET) with literal hex
 colors everywhere -- this is the OPPOSITE of how Qt normally adapts to the
 OS: QSS color rules completely override `QPalette`, which is what would
 otherwise reflect the OS's accent color and light/dark setting automatically.
+**See the new "variable text scaling & DPI" entry above** -- the same
+critique applies to hardcoded pixel dimensions, not just colors; worth
+treating as one combined audit pass rather than two separate efforts.
 The Qt-friendly path, when we get here:
 - Stop hardcoding colors in QSS; either don't set a palette at all (let the
   OS/style provide one) or set one derived from `QGuiApplication` theme

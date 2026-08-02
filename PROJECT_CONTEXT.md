@@ -28,7 +28,12 @@ get the interaction design right before the real data layer exists.
    full keyboard control, hotkeys throughout, image enlarge-on-hover,
    mouse-wheel print switching. This is *why* so much of the work so far
    has been interaction-detail passes (alignment, focus behavior,
-   keyboard parity) rather than breadth.
+   keyboard parity) rather than breadth. **Emerging corollary, flagged
+   explicitly by the user but not yet acted on**: this UX-first goal
+   also implies the UI should work across variable text scaling and DPI
+   settings, not just look right at one fixed window size on one
+   reference machine — see NOTES.md's "variable text scaling & DPI"
+   entry.
 3. **A unified master card database**: id, name, print editions, image
    ids/links, oracle text, rulings, mana cost, types, keywords, etc. —
    this is the eventual real Scryfall-backed table `mock_data.py` stands
@@ -95,6 +100,14 @@ function, check whether it's actually just a filter on data that already
 exists elsewhere first. Two collapses in a row on the exact same instinct
 suggests this is a recurring shape in this app, not a one-off.
 
+**Second pattern worth remembering, from the card detail popup's alignment
+work**: whenever two independently-laid-out UI pieces need to visually
+agree on something (a column boundary, in that case), check whether they
+can share ONE real authority (a shared layout, a shared measured value)
+before reaching for a formula to reconcile two separate calculations.
+Formulas that check out on paper still went through two failed rounds
+before the actual fix — see NOTES.md's new debugging-lesson entry.
+
 ## Data source decision
 
 **Scryfall**, not Wizards' official Gatherer (which has no public API).
@@ -130,16 +143,31 @@ held up well; no reason to revisit it.
   range selection + Ctrl+C copy, Excel-familiar keyboard shortcuts (F2
   edit, Shift+Space/Ctrl+Space row/column select, Ctrl+Home/End,
   Ctrl+Shift+Arrow).
-- Card detail popup — frameless, edition/language/condition/foil
-  selectors with an Apply-to-Inventory button that actually writes back
-  into the card's data, legality/rulings panes, a placeholder zoomable
-  image window.
+- Card detail popup — frameless (no window title text; the card's own
+  NAME is styled as the Card pane's header instead), a `QGridLayout`-based
+  stat area (Type/Mana Cost, Edition/Rarity/Price, Language/Condition/Foil
+  all share ONE grid so column widths are structurally guaranteed to
+  match across rows, rather than reconstructed per-row — see NOTES.md's
+  debugging-lesson entry for why this replaced an earlier, formula-based
+  approach that looked correct but wasn't), edition/language/condition/
+  foil selectors with an Apply button (styled like CardDatabaseView's
+  Inventory/Wishlist toggles) that actually writes back into the card's
+  data, legality/rulings panes, a placeholder zoomable image window.
+  **Known limitation carried forward from this round**: the stat grid's
+  column widths are explicitly LOCKED to a fixed pixel value shortly
+  after first layout, which is only safe because the dialog is a fixed-
+  size window (900x560) that's never resized — see NOTES.md's "variable
+  text scaling & DPI" entry before touching this area on a differently-
+  scaled system or if the dialog ever becomes resizable.
 - Tag Database tree + tag-apply workflow (right-click → check tags →
   apply to selection, tri-state for mixed selections).
 - Deck Viewer tree (folders/decks) — full CRUD, drag-drop, clipboard,
   hotkeys — but **no real per-deck card contents table yet** (its right
   pane is still a placeholder label).
-- Collapsible/resizable side panes, shared frameless-dialog base.
+- Collapsible/resizable side panes, shared frameless-dialog base (now
+  with an optional `show_title` flag — see `frameless_dialog.py` — so a
+  dialog can keep the draggable title-bar/close-button chrome without
+  duplicating a title the content pane already shows).
 
 **Entirely mock (`mock_data.py`)**: 9 hand-written cards, not real
 Scryfall data. No real card images anywhere — everything visual is a
@@ -151,7 +179,9 @@ module-level lists/dicts, `tag_assignments.py`'s in-memory dict).
 (local storage or API-fetch-with-caching), the keyword filter database
 (goal #4), export/import (goal #7), a proper search engine/pane, an
 options/settings window, theming (light mode / system accent colors),
-undo/redo, internationalization.
+**variable text scaling / DPI awareness** (newly flagged, see NOTES.md —
+related to but distinct from theming; both stem from the same "hardcoded
+instead of Qt/OS-derived" pattern), undo/redo, internationalization.
 
 ## File map
 
@@ -183,13 +213,24 @@ undo/redo, internationalization.
   the debugging journey there is worth reading before re-diagnosing from
   scratch). Biggest, most iterated-on file — read its module docstring.
 - `card_detail_popup.py` — `CardDetailDialog`, `StatField` (the
-  fixed-width/wrapping/centering label+dropdown widget used throughout),
-  `ImageZoomWidget`.
+  labeled-stat widget used throughout; clickable dropdown variants hug
+  their own content and center via layout stretches rather than CSS
+  text-align — see the class docstring if a field's alignment ever looks
+  off again), `ImageZoomWidget`. The stat area (Type/Mana Cost,
+  Edition/Rarity/Price, Language/Condition/Foil) is built as ONE
+  `QGridLayout` in `CardDetailDialog._build_card_pane()`, with column
+  widths explicitly locked post-layout via `_lock_column_widths()` — read
+  that method's docstring AND NOTES.md's debugging-lesson entry before
+  changing this area; two earlier formula-based approaches to the same
+  alignment problem looked correct and weren't, for non-obvious reasons.
 - `card_popover.py` — the lightweight hover-preview popup (distinct from
   the full detail dialog).
 - `frameless_dialog.py` — shared base (`FramelessDialog`) for popups that
   shouldn't show an OS title bar; used by both the card detail popup and
-  the tag-apply dialog.
+  the tag-apply dialog. `_TitleBar` now takes an optional `show_title`
+  flag (default True) — `CardDetailDialog` passes `False` since the
+  card's name is shown once, as the Card pane's own header, instead of
+  being duplicated into the title bar too.
 - `tag_apply_dialog.py` / `tag_assignments.py` — the tag-apply workflow
   and its backing store.
 - `tree_pane.py` — the **generic**, reusable folder/item tree (CRUD,
@@ -205,10 +246,10 @@ undo/redo, internationalization.
 - `README.md` — run instructions plus a **rolling changelog** (newest
   round at the top of each file's relevant section).
 - `NOTES.md` — **parked features with design specifics already worked
-  out** (theming approach, search engine scope, options/i18n plan,
-  undo/redo open questions, tag hotkey-sequence idea, Excel-parity gaps,
-  etc.) — check here before re-deriving a design that's already been
-  thought through.
+  out** (theming approach, variable text scaling & DPI, search engine
+  scope, options/i18n plan, undo/redo open questions, tag hotkey-sequence
+  idea, Excel-parity gaps, etc.) — check here before re-deriving a design
+  that's already been thought through.
 
 ## Suggested roadmap / where to pick up
 
@@ -230,7 +271,12 @@ directions, roughly in order of how much they'd unblock:
    this via `addStretch()` after the Inventory/Wishlist/Columns buttons,
    so this has a concrete landing spot now rather than an open "where does
    this even go" question.
-4. Everything else in NOTES.md, roughly in the order it's listed there.
+4. **Variable text scaling & DPI audit** (newly parked, see NOTES.md) —
+   not urgent, but worth doing BEFORE much more pixel-precise layout work
+   gets built on top of the current fixed-size-window assumptions,
+   since retrofitting scale-awareness onto more accumulated fixed-pixel
+   code later is more work than designing for it going forward.
+5. Everything else in NOTES.md, roughly in the order it's listed there.
 
 ## Known testing gaps (verified via headless offscreen Qt — some things can't be)
 
@@ -257,6 +303,22 @@ can verify state changes; it can't verify anything about whether a human
 would actually SEE the state change. Full writeup in NOTES.md and
 README.md's changelog for this round if this general class of "my code
 runs but nothing visibly happens" bug recurs elsewhere.
+
+**Card detail popup alignment bugs (card_detail_popup.py) were a
+DIFFERENT failure class worth distinguishing from the one above**: two
+formula-based fixes each looked mathematically correct and STILL didn't
+fix the visible problem, because headless offscreen Qt CAN actually
+render real widget geometry (unlike the "state vs. visibility" gap above)
+— the missing step was querying that real geometry
+(`widget.geometry()`, `QFontMetrics.boundingRect()`, `.mapTo()`) to check
+a pixel-level claim, rather than trusting a derivation that had never
+actually been checked against a render. Once real widget positions were
+measured this way, the fix (and a second, previously invisible bug in a
+coordinate-space assumption) became obvious quickly. **Takeaway for any
+future "these two things don't visually line up" bug**: headless Qt CAN
+answer this — instantiate the real dialog, call `.show()` +
+`app.processEvents()`, and measure actual widget/text positions — don't
+rely on re-checking the math alone, even when the math seems airtight.
 
 If something in one of these areas looks subtly wrong when actually run,
 start there — it's the area least covered by automated testing so far.

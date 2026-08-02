@@ -88,6 +88,15 @@ LEGALITY_COLORS = {
 # the layout code below.
 CAPTION_VALUE_SPACING = 4
 STAT_ROW_SPACING = 9
+# Gap between adjacent columns WITHIN a stat row (Type|Mana, or
+# Edition|Rarity|Price, etc). Explicitly set on every row's QHBoxLayout
+# (rather than left as Qt's implicit style-default spacing) specifically
+# so Type's dynamic-anchor formula in StatField.set_text() can use this
+# EXACT, KNOWN value to compute where column 1 of a real 3-column row
+# centers -- see that formula's comment for the derivation. Leaving this
+# as an unstated implicit default would make that formula a guess instead
+# of an exact answer.
+ROW_COLUMN_SPACING = 8
 
 # Reused for the Apply button so it reads as the same "confirm/primary
 # action" affordance CardDatabaseView's Inventory/Wishlist toggle buttons
@@ -202,19 +211,23 @@ class StatField(QWidget):
         field's own left edge. See set_text() for the actual formula --
         it's one clamp, not a length-based branch, so short and long
         values are really the same rule, not two different code paths that
-        happen to look similar. This formula is also the one place in
-        StatField sensitive enough to pre-layout width staleness to
-        actually need a follow-up refresh once real geometry exists (see
-        CardDetailDialog.__init__'s QTimer.singleShot call).
+        happen to look similar.
 
-        The "notional 1/3-width slot" above is deliberately NOT derived
-        from Type's own width by itself -- see set_anchor_reference()
-        below for why, and for how the real column-1 alignment target
-        gets wired in after construction.
+        The "notional 1/3-width slot" is computed ANALYTICALLY from Type's
+        own width plus ROW_COLUMN_SPACING (see set_text()'s derivation) --
+        deliberately NOT by reading a sibling field's live width at
+        runtime. An earlier version tried that (read edition_field.width()
+        directly), which was correct in principle but timing-fragile in
+        practice: it depended on a sibling widget having already been laid
+        out with its FINAL geometry at the exact moment this ran, and nothing
+        actually guaranteed that ordering (a QTimer.singleShot(0, ...)
+        deferred refresh doesn't reliably run after every pending layout
+        pass -- Qt doesn't promise that ordering). The analytical formula
+        only ever depends on THIS widget's own width and a spacing constant
+        we set ourselves, so there's nothing left to be stale about.
         """
         super().__init__()
         self._fixed_width = width
-        self._anchor_reference = None  # see set_anchor_reference()
         if width is not None:
             self.setFixedWidth(width)
         else:
@@ -237,14 +250,7 @@ class StatField(QWidget):
             # the separate stretch-based half-width trick the old
             # caption_half_width path used. Sharing one mechanism for both
             # is what guarantees the caption and the value can never drift
-            # apart from each other -- and, since that mechanism reads a
-            # real sibling column's measured width (set_anchor_reference),
-            # it's also what fixes the caption landing on a different
-            # point than column 1 elsewhere: the old stretch-row approach
-            # had no way to consult a sibling field's width at all, so it
-            # could only ever approximate "a normal third" from Type's own
-            # 2-column-row geometry -- the same wrong-gap-count mistake
-            # set_anchor_reference()'s docstring explains for the value.
+            # apart from each other.
             title_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             layout.addWidget(title_label)
         elif caption_half_width:
@@ -297,31 +303,6 @@ class StatField(QWidget):
     def set_menu(self, menu):
         self.value_button.setMenu(menu)
 
-    def set_anchor_reference(self, widget):
-        """
-        Only meaningful for the dynamic_anchor (Type) field. Points this
-        field at a REAL column-1 field from one of the genuine 3-column
-        rows (e.g. Edition, from the Edition/Rarity/Price row) so Type's
-        caption and value can align against that field's ACTUAL measured
-        width, rather than reconstructing an approximation of "1/3 of a
-        row" from Type's own 2-column row geometry.
-
-        WHY THE APPROXIMATION WAS WRONG, NOT JUST IMPRECISE: gameplay_row
-        (Type + Mana) has exactly ONE inter-column gap in it. metadata_row
-        and collection_row (three fields each) have TWO. Computing "1/3 of
-        a row" as (Type's own width, which already has ONE gap subtracted
-        out of the row total) / 2 bakes in the WRONG gap count -- it's not
-        that the arithmetic rounds differently, it's that it's answering a
-        subtly different question ("1/2 of a 2-column row's larger share")
-        than "1/3 of a 3-column row," and the two only coincidentally look
-        close. Reading a real sibling field's width sidesteps the whole
-        question: whatever gap accounting metadata_row's layout actually
-        does internally, self.edition_field.width() already reflects it
-        correctly by the time a real layout pass has run -- there's
-        nothing left to approximate.
-        """
-        self._anchor_reference = widget
-
     def set_text(self, full_text):
         target = self.value_button or self.value_label
         metrics = QFontMetrics(target.font())
@@ -363,25 +344,38 @@ class StatField(QWidget):
             # with those columns instead of landing at a plausible-looking
             # but structurally different point.
             #
-            # PREFERRED PATH: if a real sibling has been wired in via
-            # set_anchor_reference() (CardDetailDialog does this right
-            # after building metadata_row), use THAT field's actual
-            # measured width directly -- it already reflects however many
-            # inter-column gaps a genuine 3-column row's layout consumes,
-            # which is a DIFFERENT number of gaps than gameplay_row's own
-            # 2-column geometry has. Reconstructing that from Type's own
-            # width alone was the earlier bug (see set_anchor_reference's
-            # docstring for the full explanation) -- reading the sibling's
-            # width sidesteps needing to reconstruct anything.
+            # DERIVATION (why it's `available/4 - ROW_COLUMN_SPACING/6`,
+            # not just `available/4`):
             #
-            # FALLBACK PATH: only reachable in the brief window before a
-            # real layout pass has run (the reference field's own
-            # self.width() is just as stale as this field's would be) --
-            # same self.width()>40 staleness guard `available` already
-            # uses. This approximation is corrected within one event-loop
-            # tick by CardDetailDialog's deferred re-refresh, so it's only
-            # ever visible for a single frame at most, not a steady-state
-            # answer.
+            # Let S = ROW_COLUMN_SPACING (the gap between adjacent columns
+            # in a row -- explicitly the SAME value in every row, since
+            # every row's QHBoxLayout has it set directly) and W = the
+            # total width available to a row (identical for every row --
+            # they're siblings under the same outer layout with the same
+            # margins).
+            #
+            # metadata_row (3 equal columns, 2 gaps of S):
+            #   column_width = (W - 2S) / 3
+            #   column 1's center, in row coordinates = column_width / 2
+            #                                          = (W - 2S) / 6   <- target
+            #
+            # gameplay_row (Type:Mana = 2:1, 1 gap of S):
+            #   Type_width = (2/3)(W - S)  =>  W = (3/2)*Type_width + S
+            #
+            # Type starts at the row's own left edge (it's the first
+            # widget), so Type's LOCAL coordinate 0 already IS row
+            # coordinate 0 -- no offset to add when substituting.
+            # Substituting W into the target:
+            #   anchor_center = (W - 2S) / 6
+            #                 = ((3/2)*Type_width + S - 2S) / 6
+            #                 = Type_width/4 - S/6
+            #
+            # `available` stands in for Type_width here (same
+            # self.width()-with-staleness-fallback value used everywhere
+            # else in this method) -- this formula only ever depends on
+            # THIS field's own width and the S constant we set ourselves,
+            # so there's no other widget's geometry to be stale or
+            # out-of-order relative to.
             #
             # indent = distance from Type's left edge to where the text
             # should START if it's centered around that anchor point.
@@ -393,10 +387,7 @@ class StatField(QWidget):
             # still look centered around the same point every other
             # field's value would occupy; long values grow asymmetrically
             # without ever needing a separate branch for "long" vs "short."
-            if self._anchor_reference is not None and self._anchor_reference.width() > 40:
-                anchor_center = self._anchor_reference.width() / 2
-            else:
-                anchor_center = available / 4
+            anchor_center = available / 4 - ROW_COLUMN_SPACING / 6
 
             # Caption gets the SAME anchor_center, same clamp-at-0 rule --
             # just measured against its own (short, static, e.g. "Type")
@@ -662,6 +653,7 @@ class CardDetailDialog(FramelessDialog):
         # there's deliberately no addStretch() after them, since the two
         # fields together ARE meant to fill the row.
         gameplay_row = QHBoxLayout()
+        gameplay_row.setSpacing(ROW_COLUMN_SPACING)
         self.type_field = StatField("Type", width=None, wrap=True, dynamic_anchor=True)
         self.mana_field = StatField("Mana Cost", width=None, align=Qt.AlignHCenter, wrap=True)
         gameplay_row.addWidget(self.type_field, stretch=2)
@@ -677,6 +669,7 @@ class CardDetailDialog(FramelessDialog):
         # docstring for why they now center correctly (hug-content +
         # layout stretches, not text-align CSS fighting the native arrow).
         metadata_row = QHBoxLayout()
+        metadata_row.setSpacing(ROW_COLUMN_SPACING)
         self.edition_field = StatField("Edition", width=None, clickable=True, align=Qt.AlignHCenter)
         self.rarity_field = StatField("Rarity", width=None, align=Qt.AlignHCenter)
         self.price_field = StatField("Price", width=None, clickable=True, align=Qt.AlignHCenter)
@@ -685,14 +678,6 @@ class CardDetailDialog(FramelessDialog):
         layout.addLayout(metadata_row)
         layout.addSpacing(STAT_ROW_SPACING)
 
-        # Wired up here, right after edition_field exists: Type's caption
-        # and value both align against edition_field's REAL measured width
-        # (a genuine column-1 field from a genuine 3-column row) instead of
-        # approximating "1/3 of a row" from gameplay_row's own 2-column
-        # geometry -- see StatField.set_anchor_reference()'s docstring for
-        # why those two things aren't actually the same calculation.
-        self.type_field.set_anchor_reference(self.edition_field)
-
         # METADATA row 2: Language / Condition / Foil -- kept off row 1 so
         # that row doesn't get cramped; these three also describe a specific
         # OWNED COPY rather than the card or print itself, which is a
@@ -700,6 +685,7 @@ class CardDetailDialog(FramelessDialog):
         # Price. Not yet wired to actually saving against a collection
         # entry (see NOTES.md). Same even-thirds technique as row 1.
         collection_row = QHBoxLayout()
+        collection_row.setSpacing(ROW_COLUMN_SPACING)
         self.language_field = StatField("Language", width=None, clickable=True, align=Qt.AlignHCenter, wrap=True)
         self.condition_field = StatField("Condition", width=None, clickable=True, align=Qt.AlignHCenter, wrap=True)
         self.foil_toggle = FoilToggle()

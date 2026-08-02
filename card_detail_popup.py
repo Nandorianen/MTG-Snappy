@@ -693,6 +693,20 @@ class ImageZoomWidget(QWidget):
         sized to the whole usable screen is centered on it by
         construction, so there's no separate "now center it" step that
         could disagree with the sizing step.
+
+        WHY THE TRAILING self.update() ISN'T REDUNDANT: setGeometry()
+        only triggers Qt's own automatic repaint when the geometry
+        actually CHANGES. The first reticle zoom genuinely resizes the
+        window (its small starting size -> fullscreen), so it repainted
+        correctly by accident; every zoom after that sets the SAME
+        already-fullscreen rect -- a real no-op Qt silently skips -- so
+        nothing was telling the window to redraw even though _view_rect
+        (and the zoom-multiplier label it drives) kept updating
+        correctly underneath. Confirmed headlessly: a same-geometry
+        reticle zoom produced zero repaints before this line was added,
+        with the internal state correct regardless. Don't rely on a
+        geometry-setter's side effect for a repaint that needs to happen
+        unconditionally -- request it explicitly instead.
         """
         w, h = self.width(), self.height()
         frac = QRectF(local_rect.x() / w, local_rect.y() / h,
@@ -715,6 +729,26 @@ class ImageZoomWidget(QWidget):
         # immediately snap back down, undoing the reticle zoom.
         self._base_size = target.size()
         self._zoom = 1.0
+
+        # Explicit repaint request -- NOT redundant with setGeometry()
+        # above. Qt only sends a resize/move event (which is what
+        # triggers an automatic repaint) when the new geometry actually
+        # DIFFERS from the current one. The FIRST reticle zoom genuinely
+        # resizes the window (its small starting size -> fullscreen), so
+        # that one repaints "for free" and looked correct. Every
+        # SUBSEQUENT reticle zoom sets the SAME already-fullscreen target
+        # rect -- a real no-op as far as Qt's geometry system is
+        # concerned -- so no resize event fires and nothing was ever
+        # telling the window to redraw, even though _view_rect (and the
+        # zoom-multiplier label derived from it) updated correctly
+        # underneath the whole time. Confirmed via a headless paintEvent
+        # call-count: 1 repaint on a real-resize reticle zoom, 0 on a
+        # same-geometry one, with the internal state correct in both
+        # cases either way -- a state-vs-repaint gap, not a math bug.
+        # Wheel-zoom "fixing" it was the tell: scrolling genuinely
+        # resizes the window, which is what was silently doing the
+        # repainting job this line now does explicitly and unconditionally.
+        self.update()
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:

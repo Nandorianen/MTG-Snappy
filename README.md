@@ -42,6 +42,20 @@ feature's built:
   `MIN_RETICLE_SIZE` (8px either dimension) on release is treated as an
   aborted/accidental Ctrl+click and quietly does nothing, rather than
   "zooming" into an effectively-zero-sized region.
+- **Fixed after initial testing**: the zoom-multiplier label only
+  visibly updated on roughly every OTHER reticle zoom. Root cause was a
+  state-vs-repaint gap, not a math bug -- `_finish_reticle()` relied on
+  `setGeometry()`'s own implicit repaint, which Qt only fires when the
+  geometry genuinely changes. The first reticle zoom does (small window
+  -> fullscreen), so it repainted correctly by accident; every zoom after
+  that sets the SAME already-fullscreen rect, a real no-op Qt silently
+  skips, so nothing told the window to redraw even though `_view_rect`
+  kept updating correctly underneath the whole time. Confirmed headlessly
+  by counting `paintEvent` calls: 0 repaints on a same-geometry reticle
+  zoom before the fix, 1 after. Mouse-wheel zoom "fixing" it was the
+  tell -- scrolling genuinely resizes the window, which is what had
+  silently been doing the repainting job an explicit `self.update()` now
+  does unconditionally.
 - Wheel-zoom's own baseline (`_base_size`) re-anchors to the new
   screen-filling size after a reticle zoom completes — without this, the
   very next scroll would recompute relative to the original small

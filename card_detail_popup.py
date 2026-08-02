@@ -58,7 +58,7 @@ FIVE PIECES OF CUSTOM MACHINERY WORTH CALLING OUT:
 """
 
 from PySide6.QtWidgets import (
-    QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame,
+    QDialog, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QFrame,
     QToolButton, QMenu, QListWidget, QListWidgetItem, QApplication, QSizePolicy,
     QPushButton,
 )
@@ -97,6 +97,18 @@ STAT_ROW_SPACING = 9
 # as an unstated implicit default would make that formula a guess instead
 # of an exact answer.
 ROW_COLUMN_SPACING = 8
+# StatField's own inner QVBoxLayout margin (left/right side). Named here
+# because the dynamic_anchor calculation in set_text() needs to know this
+# exact number: anchor_center is computed relative to a FIELD's OUTER left
+# edge (to match how a real grid column's width/center is measured), but
+# it gets applied via setContentsMargins() on the LABEL INSIDE that field,
+# whose own local coordinate origin is already shifted right by this same
+# margin. Forgetting to subtract it was a real, measured ~4px bug -- not a
+# rounding artifact -- caught by instantiating the dialog headlessly and
+# comparing actual rendered text positions rather than trusting the
+# algebra alone. Keep this in sync with StatField.__init__'s own
+# `layout.setContentsMargins(FIELD_INNER_MARGIN, 0, FIELD_INNER_MARGIN, 0)`.
+FIELD_INNER_MARGIN = 4
 
 # Reused for the Apply button so it reads as the same "confirm/primary
 # action" affordance CardDatabaseView's Inventory/Wishlist toggle buttons
@@ -213,21 +225,25 @@ class StatField(QWidget):
         values are really the same rule, not two different code paths that
         happen to look similar.
 
-        The "notional 1/3-width slot" is computed ANALYTICALLY from Type's
-        own width plus ROW_COLUMN_SPACING (see set_text()'s derivation) --
-        deliberately NOT by reading a sibling field's live width at
-        runtime. An earlier version tried that (read edition_field.width()
-        directly), which was correct in principle but timing-fragile in
-        practice: it depended on a sibling widget having already been laid
-        out with its FINAL geometry at the exact moment this ran, and nothing
-        actually guaranteed that ordering (a QTimer.singleShot(0, ...)
-        deferred refresh doesn't reliably run after every pending layout
-        pass -- Qt doesn't promise that ordering). The analytical formula
-        only ever depends on THIS widget's own width and a spacing constant
-        we set ourselves, so there's nothing left to be stale about.
+        The "notional 1/3-width slot" is read directly from a real
+        single-column sibling cell in the SAME QGridLayout (see
+        set_grid_anchor(), called by CardDetailDialog right after building
+        the grid), rather than approximated via a formula. Two earlier
+        approaches -- deriving it from Type's own width alone, and later a
+        correction formula involving row spacing -- were each individually
+        reasonable-looking but ultimately still guesses about what a
+        DIFFERENT, independently-laid-out row's column width was. A
+        QGridLayout removes the guessing entirely: column widths are a
+        single property the grid itself computes and enforces identically
+        for every cell in that column, spanning or not, so asking the grid
+        (via cellRect()) for column 0's width IS the authoritative answer,
+        not an approximation of it.
         """
         super().__init__()
         self._fixed_width = width
+        self._anchor_grid = None    # see set_grid_anchor()
+        self._anchor_row = None
+        self._anchor_col = None
         if width is not None:
             self.setFixedWidth(width)
         else:
@@ -237,7 +253,7 @@ class StatField(QWidget):
         self._align = align
         self._dynamic_anchor = dynamic_anchor
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 0, 4, 0)
+        layout.setContentsMargins(FIELD_INNER_MARGIN, 0, FIELD_INNER_MARGIN, 0)
         layout.setSpacing(CAPTION_VALUE_SPACING)
 
         title_label = QLabel(title)
@@ -303,6 +319,30 @@ class StatField(QWidget):
     def set_menu(self, menu):
         self.value_button.setMenu(menu)
 
+    def set_grid_anchor(self, grid, anchor_row, anchor_col):
+        """
+        Only meaningful for the dynamic_anchor (Type) field, when it's
+        placed into a QGridLayout as a cell that SPANS more than one
+        column (Type spans columns 0+1 -- see CardDetailDialog's grid
+        construction -- so a long value can grow rightward into column
+        1's otherwise-empty space instead of being clipped or wrapping
+        early). Points this field at a genuine SINGLE-COLUMN cell
+        elsewhere in the SAME grid (Edition's cell: row 1, column 0) so
+        SHORT values can still center on column 0 alone, not the midpoint
+        of the full 2-column span this field's own width now covers.
+
+        Uses QGridLayout.cellRect() -- a pure layout-geometry query --
+        rather than reading a sibling WIDGET's .width() directly. cellRect
+        asks the grid itself "how wide is column 0," which is a single
+        number the grid computes once and enforces identically for every
+        cell in that column; it doesn't depend on whether Edition's own
+        set_text() happens to have run yet, or on any other content-
+        driven timing at all.
+        """
+        self._anchor_grid = grid
+        self._anchor_row = anchor_row
+        self._anchor_col = anchor_col
+
     def set_text(self, full_text):
         target = self.value_button or self.value_label
         metrics = QFontMetrics(target.font())
@@ -344,39 +384,37 @@ class StatField(QWidget):
             # with those columns instead of landing at a plausible-looking
             # but structurally different point.
             #
-            # DERIVATION (why it's `available/4 - ROW_COLUMN_SPACING/6`,
-            # not just `available/4`):
-            #
-            # Let S = ROW_COLUMN_SPACING (the gap between adjacent columns
-            # in a row -- explicitly the SAME value in every row, since
-            # every row's QHBoxLayout has it set directly) and W = the
-            # total width available to a row (identical for every row --
-            # they're siblings under the same outer layout with the same
-            # margins).
-            #
-            # metadata_row (3 equal columns, 2 gaps of S):
-            #   column_width = (W - 2S) / 3
-            #   column 1's center, in row coordinates = column_width / 2
-            #                                          = (W - 2S) / 6   <- target
-            #
-            # gameplay_row (Type:Mana = 2:1, 1 gap of S):
-            #   Type_width = (2/3)(W - S)  =>  W = (3/2)*Type_width + S
-            #
-            # Type starts at the row's own left edge (it's the first
-            # widget), so Type's LOCAL coordinate 0 already IS row
-            # coordinate 0 -- no offset to add when substituting.
-            # Substituting W into the target:
-            #   anchor_center = (W - 2S) / 6
-            #                 = ((3/2)*Type_width + S - 2S) / 6
-            #                 = Type_width/4 - S/6
-            #
-            # `available` stands in for Type_width here (same
-            # self.width()-with-staleness-fallback value used everywhere
-            # else in this method) -- this formula only ever depends on
-            # THIS field's own width and the S constant we set ourselves,
-            # so there's no other widget's geometry to be stale or
-            # out-of-order relative to.
-            #
+            # Read DIRECTLY from the grid via cellRect() -- see
+            # set_grid_anchor()'s docstring for why this is an exact
+            # answer rather than an approximation. `available` here is
+            # Type's OWN width, which -- because Type's grid cell spans
+            # columns 0+1 -- is genuinely "column 0 + column 1 + the gap
+            # between them," not something that needs deriving.
+            ref_width = 0
+            if self._anchor_grid is not None:
+                ref_width = self._anchor_grid.cellRect(self._anchor_row, self._anchor_col).width()
+            if ref_width <= 40:
+                # Pre-layout fallback (same staleness pattern `available`
+                # itself guards against elsewhere in this method) --
+                # roughly half of Type's own width, since Type's cell
+                # spans two real columns and a single column is roughly
+                # half of that. Corrected within one event-loop tick by
+                # CardDetailDialog's deferred re-refresh.
+                ref_width = available / 2
+            # anchor_center is measured relative to the FIELD's own OUTER
+            # left edge (matching how cellRect/a real column's center is
+            # measured). But it gets APPLIED below via setContentsMargins
+            # on the caption/value LABEL, whose own local coordinate
+            # origin is already shifted right by FIELD_INNER_MARGIN (this
+            # field's own inner QVBoxLayout margin) relative to that outer
+            # edge. Subtracting it here is what keeps the two coordinate
+            # spaces consistent -- skipping this was a real, measured bug
+            # (confirmed by instantiating the dialog and comparing actual
+            # rendered pixel positions, not just re-deriving the algebra
+            # again): every dynamic_anchor value/caption landed exactly
+            # FIELD_INNER_MARGIN pixels further right than intended.
+            anchor_center = ref_width / 2 - FIELD_INNER_MARGIN
+
             # indent = distance from Type's left edge to where the text
             # should START if it's centered around that anchor point.
             # Clamped at 0 (never negative): once text is wide enough that
@@ -387,8 +425,7 @@ class StatField(QWidget):
             # still look centered around the same point every other
             # field's value would occupy; long values grow asymmetrically
             # without ever needing a separate branch for "long" vs "short."
-            anchor_center = available / 4 - ROW_COLUMN_SPACING / 6
-
+            #
             # Caption gets the SAME anchor_center, same clamp-at-0 rule --
             # just measured against its own (short, static, e.g. "Type")
             # text width instead of the value's. This is what keeps the
@@ -641,59 +678,59 @@ class CardDetailDialog(FramelessDialog):
         layout.addWidget(self.art_box, alignment=Qt.AlignHCenter)
         layout.addSpacing(14)  # a bit more breathing room before the stats start
 
-        # GAMEPLAY row: only what matters while playing. Type gets 2/3 of the
-        # row (dynamically anchored -- see StatField's dynamic_anchor docs --
-        # so short values sit centered on the same point a normal field
-        # would, while long values expand rightward instead of truncating
-        # awkwardly), Mana Cost gets the remaining 1/3 (centered, since mana
-        # costs are short symbol clusters that read fine centered in their
-        # space). Stretch factors (not fixed pixel widths) are what make
-        # this an actual 2:1 PROPORTION of whatever width the row ends up
-        # with, rather than two fixed sizes with leftover blank space --
-        # there's deliberately no addStretch() after them, since the two
-        # fields together ARE meant to fill the row.
-        gameplay_row = QHBoxLayout()
-        gameplay_row.setSpacing(ROW_COLUMN_SPACING)
+        # All three stat rows (Type/Mana, Edition/Rarity/Price,
+        # Language/Condition/Foil) now live in ONE QGridLayout instead of
+        # three independent QHBoxLayouts. WHY THIS MATTERS: a QGridLayout
+        # guarantees every cell in the same COLUMN shares the exact same
+        # pixel width across every row -- a hard invariant Qt itself
+        # enforces, not something reconstructed via a formula that has to
+        # correctly guess how a DIFFERENT row's layout divides up its own
+        # width. Column 0 (Edition/Language, and now Type's anchor point)
+        # is therefore guaranteed to line up, full stop.
+        #
+        # Type's cell SPANS columns 0+1 (columnSpan=2) rather than living
+        # in a single cell -- column 1 is otherwise empty on this row, so
+        # spanning into it gives a long type line real room to grow
+        # rightward without being clipped or wrapping early, while
+        # set_text() still centers SHORT values on column 0 ALONE by
+        # querying a genuine single-column sibling cell directly (see
+        # StatField.set_grid_anchor(), wired up right after Edition's
+        # field exists below).
+        self.card_grid = QGridLayout()
+        self.card_grid.setHorizontalSpacing(ROW_COLUMN_SPACING)
+        self.card_grid.setVerticalSpacing(STAT_ROW_SPACING)
+        self.card_grid.setContentsMargins(0, 0, 0, 0)
+        for col in range(3):
+            self.card_grid.setColumnStretch(col, 1)
+
         self.type_field = StatField("Type", width=None, wrap=True, dynamic_anchor=True)
         self.mana_field = StatField("Mana Cost", width=None, align=Qt.AlignHCenter, wrap=True)
-        gameplay_row.addWidget(self.type_field, stretch=2)
-        gameplay_row.addWidget(self.mana_field, stretch=1)
-        layout.addLayout(gameplay_row)
-        layout.addSpacing(STAT_ROW_SPACING)
+        self.card_grid.addWidget(self.type_field, 0, 0, 1, 2)  # row 0, col 0, spans 2 columns
+        self.card_grid.addWidget(self.mana_field, 0, 2)
 
-        # METADATA row 1: Edition / Rarity / Price -- collection/shopping
-        # info, separated from gameplay info above. Each field is
-        # width=None + equal stretch=1, same technique as the gameplay row's
-        # 2:1 split -- this is what actually makes them 1/3 of the row each.
-        # Edition and Price are clickable dropdowns -- see StatField's
-        # docstring for why they now center correctly (hug-content +
-        # layout stretches, not text-align CSS fighting the native arrow).
-        metadata_row = QHBoxLayout()
-        metadata_row.setSpacing(ROW_COLUMN_SPACING)
         self.edition_field = StatField("Edition", width=None, clickable=True, align=Qt.AlignHCenter)
         self.rarity_field = StatField("Rarity", width=None, align=Qt.AlignHCenter)
         self.price_field = StatField("Price", width=None, clickable=True, align=Qt.AlignHCenter)
-        for field in (self.edition_field, self.rarity_field, self.price_field):
-            metadata_row.addWidget(field, stretch=1)
-        layout.addLayout(metadata_row)
-        layout.addSpacing(STAT_ROW_SPACING)
+        self.card_grid.addWidget(self.edition_field, 1, 0)
+        self.card_grid.addWidget(self.rarity_field, 1, 1)
+        self.card_grid.addWidget(self.price_field, 1, 2)
 
-        # METADATA row 2: Language / Condition / Foil -- kept off row 1 so
-        # that row doesn't get cramped; these three also describe a specific
-        # OWNED COPY rather than the card or print itself, which is a
-        # reasonable second reason to group them apart from Edition/Rarity/
-        # Price. Not yet wired to actually saving against a collection
-        # entry (see NOTES.md). Same even-thirds technique as row 1.
-        collection_row = QHBoxLayout()
-        collection_row.setSpacing(ROW_COLUMN_SPACING)
+        # Wired up right after Edition's field exists: a genuine
+        # single-column (colspan=1) cell in the SAME grid Type can query
+        # directly for "how wide is column 0, really" -- see
+        # set_grid_anchor()'s docstring.
+        self.type_field.set_grid_anchor(self.card_grid, anchor_row=1, anchor_col=0)
+
         self.language_field = StatField("Language", width=None, clickable=True, align=Qt.AlignHCenter, wrap=True)
         self.condition_field = StatField("Condition", width=None, clickable=True, align=Qt.AlignHCenter, wrap=True)
         self.foil_toggle = FoilToggle()
         if self.collection_card is not None:
             self.foil_toggle.setChecked(self.collection_card.get("foil", False))
-        for field in (self.language_field, self.condition_field, self.foil_toggle):
-            collection_row.addWidget(field, stretch=1)
-        layout.addLayout(collection_row)
+        self.card_grid.addWidget(self.language_field, 2, 0)
+        self.card_grid.addWidget(self.condition_field, 2, 1)
+        self.card_grid.addWidget(self.foil_toggle, 2, 2)
+
+        layout.addLayout(self.card_grid)
 
         # Same row-to-row gap as above, between the last stat row and the
         # Apply button, so Apply reads as its own distinct action rather

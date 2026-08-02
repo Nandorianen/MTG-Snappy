@@ -625,17 +625,69 @@ class CardDetailDialog(FramelessDialog):
         self._populate_legality()
         self._populate_rulings()
 
-        # Runs the same refresh again, once, on the next event-loop tick --
-        # by which point the caller has called .show() and Qt has done a
-        # real layout pass, so every field's self.width() now reflects its
-        # ACTUAL geometry instead of whatever it reported before ever being
-        # shown. Only the Type field's dynamic-anchor math is precise
-        # enough to visibly need this (see StatField.set_text's comment on
-        # this exact failure mode) -- everything else already tolerates
-        # the pre-layout estimate fine -- but re-running the one shared
-        # refresh method is simpler and safer than trying to special-case
-        # just the field that needs it.
-        QTimer.singleShot(0, self._refresh_for_current_print)
+        # Runs a second time, once, on the next event-loop tick -- by which
+        # point the caller has called .show() and Qt has done a real
+        # layout pass, so every field's self.width() now reflects its
+        # ACTUAL geometry instead of whatever it reported before ever
+        # being shown. Chained with _lock_column_widths() (see that
+        # method's docstring) rather than scheduled as a second, separate
+        # singleShot -- this guarantees the locking step runs AFTER the
+        # refresh has had a chance to settle real content into every
+        # field, not dependent on Qt's ordering between two independently
+        # queued zero-timeout timers.
+        QTimer.singleShot(0, self._settle_after_first_layout)
+
+    def _settle_after_first_layout(self):
+        self._refresh_for_current_print()
+        self._lock_column_widths()
+
+    def _lock_column_widths(self):
+        """
+        Converts the stat grid's column widths from "whatever stretch +
+        content size hints currently produce" into a FIXED, PERMANENT
+        pixel number -- immune to any later content change (selecting a
+        long Language or Condition value, etc.) ever causing a column to
+        widen. Called once, right after the first real layout pass (see
+        _settle_after_first_layout).
+
+        WHY THIS IS SAFE: this dialog is a fixed-size window (900x560,
+        never resized by the user -- see the class docstring's "known
+        limitation" about frameless windows losing native edge-drag
+        resize). There's no dynamic-resize scenario a fixed column width
+        would ever need to adapt to, so locking it down loses nothing.
+
+        WHY THIS WAS NEEDED: setMaximumWidth() on an individual value
+        button (see StatField.set_text()) caps what THAT WIDGET is
+        allocated, but doesn't reliably stop QGridLayout from using an
+        uncapped minimumSizeHint() when it decides how wide a COLUMN
+        itself needs to be -- a number every cell in that column
+        contributes to jointly. That's a genuinely different computation
+        than the old per-row QHBoxLayout structure had to do, where each
+        row's width was decided independently and never needed to
+        reconcile against a DIFFERENT row's content at all. Setting BOTH
+        setColumnMinimumWidth() and setMaximumWidth() on every cell in a
+        column to the exact SAME number removes any remaining degree of
+        freedom for Qt to negotiate -- the column can't be anything other
+        than that fixed value, regardless of what any individual cell's
+        internal size hint claims.
+        """
+        col_width = self.card_grid.cellRect(1, 0).width()  # Edition's cell -- authoritative real column-0 width
+        if col_width <= 40:
+            return  # still pre-layout somehow; nothing reliable to lock in yet
+
+        for col in range(3):
+            self.card_grid.setColumnMinimumWidth(col, col_width)
+
+        single_column_fields = (
+            self.mana_field, self.edition_field, self.rarity_field, self.price_field,
+            self.language_field, self.condition_field, self.foil_toggle,
+        )
+        for field in single_column_fields:
+            field.setMaximumWidth(col_width)
+
+        # Type spans columns 0+1 -- its cap is two locked columns plus the
+        # single gap between them, not col_width alone.
+        self.type_field.setMaximumWidth(col_width * 2 + ROW_COLUMN_SPACING)
 
     def _pane_layout(self, title):
         """

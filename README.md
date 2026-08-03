@@ -1,109 +1,121 @@
 # MTG Local Database — Prototype
 
-## Reticle-select zoom on the card image, pan/zoom viewer model (this round)
-Resolves the idea parked in NOTES.md. Went through three real designs
-before landing on the one below -- see "Design journey" at the end for
-the two that didn't hold up and why, worth reading if this class of bug
-(numbers or shapes that quietly stop tracking reality) shows up again.
+## Reticle-select zoom on the card image, real pan+zoom viewer (this round)
+Resolves the idea parked in NOTES.md. Third real design -- see "Design
+journey" at the end for the two that came before and exactly what each
+one got wrong; worth reading before touching this file again, since each
+failure was subtle and each fix revealed the next problem.
 
-**Final design: standard image-viewer zoom/pan, one piece of state.**
-`ImageZoomWidget` now behaves like a normal image viewer (ACDSee/XnView-
-style): opens fit-to-screen, zoom is purely a VIEW operation that never
-touches the underlying image, and zooming all the way back out reproduces
-the *exact* opening state -- not just something close to it.
+**Final design: a real camera-position-plus-zoom-level viewer, not a crop
+rectangle.** `ImageZoomWidget` now tracks exactly two things: `_zoom` (a
+scalar; 1.0 = fit-to-screen, the opening state) and `_pan_center` (a
+normalized point in the full image; which point is centered in the
+viewport). Nothing else. Both mouse-wheel and reticle-select read and
+write these same two variables.
 
-- **A single normalized crop rectangle (`_view_rect`) is the only state
-  that exists.** (0,0,1,1) means "the whole card." Mouse wheel scales
-  both its width and height by the same factor, centered on the crop's
-  own current center -- shrinking to zoom in, growing (capped at 1.0 per
-  axis) to zoom out. Ctrl+drag reticle-select computes a new crop by
-  composing the dragged rectangle against whatever crop was already
-  active, so a second reticle zoom crops further into the first rather
-  than re-measuring from the original image. **Both the on-screen window
-  size and the displayed zoom-multiplier number are pure functions of
-  this one rectangle** (`_window_size_for_crop`, `_effective_zoom_multiplier`)
-  -- there is no second, independently-adjustable variable they could
-  quietly disagree with each other about.
-- **The window opens, and always renders, as "the current crop, fit to
-  the current screen, in the crop's own shape."** At the default crop
-  (the whole card), that shape is the card's own aspect ratio, so it
-  opens and fully-zoomed-out looks exactly card-shaped. Once a reticle
-  selection narrows the crop to some other shape (a wide, short
-  selection, say), the window takes on THAT shape instead -- and that's
-  correct, not distortion: the window is showing exactly the rectangle
-  the user asked to see, at whatever shape that rectangle actually is.
-  Only once the crop widens back toward (0,0,1,1) does the window
-  necessarily return to card-shaped, since that's the only shape
-  (0,0,1,1) can ever produce.
-- **Zooming all the way out reproduces the exact opening state because
-  it's the exact same computation, not a special case for it.** The
-  window size at ANY moment is `_window_size_for_crop(current _view_rect)`;
-  the opening size is the identical function applied to the starting
-  value of that same rectangle. Confirmed headlessly: two deep,
-  intentionally odd-shaped (non-card) reticle zooms in a row (reaching
-  roughly 700x), then 120 wheel-zoom-out ticks, land on a window size,
-  aspect ratio, multiplier (1.0), and crop rectangle ((0,0,1,1)) all
-  *exactly* matching the freshly-opened state -- and every one of those
-  120 ticks shrinks by a bounded, gradual amount, with no single-tick
-  jump bigger than 2x anywhere in the unwind.
-- **Deliberately not built yet: panning.** A real image viewer lets you
-  drag to pan once zoomed in past what fits on screen. `_view_rect`'s
-  position (not just its size) is tracked as real, adjustable state
-  specifically so wiring up an actual pan gesture later is a small,
-  scoped addition -- but it isn't wired to a gesture in this round, both
-  because it has zero visible effect on a flat color placeholder and
-  because it would need to coexist with plain-drag's EXISTING job (moving
-  the whole window around the screen) in a way not yet specified by any
-  request so far.
-- Layers on top of the click+drag-to-move-the-window gesture unchanged;
-  Ctrl+drag is still what distinguishes "start a reticle selection" from
-  a plain window move. The translucent blue selection overlay (same
-  accent color used for selection elsewhere in the app) still stays
-  visible while dragging, and Escape still cancels an in-progress
-  selection specifically rather than closing the whole viewer.
-- `grabMouse()`/`releaseMouse()` still bracket a reticle drag, same
-  reasoning as before: the window can be much larger than a small fixed
-  starting size now that it opens fit-to-screen, so a real drag gesture
-  crossing outside its bounds mid-gesture is even more likely than it
-  was, not less.
+- **The window's on-screen size is derived, not stored**
+  (`_geometry_for_zoom`): the full image at the current zoom has a size
+  of `fit_size * zoom` in BOTH dimensions together (uniform scaling --
+  the card's true aspect ratio is never distorted, only enlarged or
+  shrunk as a whole), and the window's actual size is that, clamped
+  INDEPENDENTLY per axis to the screen. This is what makes zooming in
+  from the opening state grow the window correctly: whichever axis
+  already touches the screen edge (typically height, for a portrait card
+  on a landscape screen) stays capped there, while the OTHER axis --
+  still growing, since the image keeps enlarging uniformly -- keeps
+  widening the window to fill more of the screen, until it ALSO hits the
+  screen edge. Past that point (both axes maxed), further zoom can't grow
+  the window at all and instead shows progressively less of the image on
+  both axes -- exactly matching how zooming into a photo past "fit to
+  window" behaves in a real viewer. Confirmed headlessly: 40 wheel-zoom-
+  in ticks from the opening state genuinely widen the window horizontally
+  while its height stays pinned at the screen's height, then eventually
+  land on an exactly-fullscreen window once both axes are capped.
+- **Plain click+drag now actually pans**, not just moves the window --
+  built and tested this round rather than deferred. Once the image (at
+  the current zoom) exceeds the screen on at least one axis, there's real
+  content sitting outside the window for `_pan_center` to point at, so
+  drag adjusts `_pan_center` instead (dragging right/down reveals content
+  that was further left/up -- the pan center moves OPPOSITE the drag
+  direction, the standard "grab and drag the canvas" convention). When
+  nothing is cropped (the whole image already fits), drag still moves the
+  window as before, since there's nothing to pan to. Confirmed headlessly:
+  a simulated drag while zoomed in moves `_pan_center` in the correct
+  direction and leaves the window's on-screen position untouched; the
+  same drag at the default zoom still moves the window and leaves
+  `_pan_center` alone.
+- **Reticle-select now computes a new `_zoom` and `_pan_center`** from the
+  dragged rectangle (mapped through the CURRENT visible fraction into
+  normalized image coordinates, so a selection made while already zoomed/
+  panned composes correctly against that state) rather than touching a
+  separate crop concept. The zoom increase is whichever is smaller of the
+  two per-axis fit ratios, so the WHOLE selection becomes visible without
+  being clipped on either axis -- same "fit, don't overflow" convention
+  `_geometry_for_zoom` already uses for fitting to the screen.
+- **`MAX_ZOOM = 4.0` (default) is now a real, explicit ceiling** applied
+  to both wheel and reticle zoom identically -- requested after the
+  previous design let a chain of reticle zooms push effective
+  magnification far higher than a single wheel-out tick could gracefully
+  unwind (see design journey). Intended to become a configurable Options-
+  window setting eventually; hardcoded for now since that's explicitly
+  low priority. `MIN_ZOOM = 0.3` remains as the lower floor, allowing
+  zooming out slightly below "fit to screen" as before.
+- Ctrl+drag reticle selection, the translucent blue selection overlay,
+  Escape-cancels-an-in-progress-selection, and right-click/Escape/
+  outside-click-closes are all unchanged from before.
 
-### Design journey (worth keeping -- two earlier attempts, each fixed a real bug and revealed the next one)
+### Design journey (worth keeping -- three designs, each fixed a real bug and revealed the next one)
 
 **Attempt 1** treated the reticle-cropped region and the window's own
-pixel size as one and the same: a reticle zoom just set the window to
-fill the screen directly. This worked once, but a SECOND reticle zoom
-(or any wheel-zoom afterward) had no reliable way to combine with the
-first -- there was no persistent "how much is currently cropped" state
-to compose against, so repeated zooming didn't stack sensibly and the
-zoom label had nothing accurate to read from.
+pixel size as the same thing: a reticle zoom just set the window to fill
+the screen directly, with no persistent state to compose a second zoom
+against.
 
-**Attempt 2** introduced two separate variables to fix that: `_zoom` (a
-plain scale factor driving window pixel size, adjusted by the mouse
-wheel) and `_view_rect` (a normalized crop fraction, narrowed only by
-reticle selections). This fixed the composition problem, but created a
-new one: a reticle zoom PEGGED `_zoom` to whatever fit the screen and
-left `_view_rect` to keep narrowing independently forever. Since wheel-
-zoom only ever touched `_zoom`, never `_view_rect`, scrolling out after
-several reticle zooms shrank the WINDOW while the CROP stayed frozen at
-whatever a deep chain of reticle zooms had left it at -- so the displayed
-multiplier (driven by the frozen crop) could report a huge number even
-once the window was smaller than its own original starting size, wheel-
-zooming out jumped disproportionately right after a reticle zoom (since
-`_zoom` had just been reset to a big screen-relative value with no
-smooth path back down), and the window was force-fit to the CARD's own
-aspect ratio always, fighting against reticle selections that were
-legitimately a different shape. Three symptoms, each traced back to the
-same root cause: two variables that were each supposed to represent
-"how zoomed in are we," only one of which (the crop) was actually real.
+**Attempt 2** split this into two variables -- `_zoom` (window pixel
+scale, wheel-adjusted) and `_view_rect` (a normalized crop fraction,
+reticle-adjusted only). This let repeated zooms compose, but wheel-zoom
+touched `_zoom` alone, so scrolling out after several reticle zooms
+shrank the window while the crop (and the multiplier it drove) stayed
+frozen -- the displayed number could report huge magnification even once
+the window was smaller than its own starting size.
 
-**The actual fix (this round)**: delete the second variable. Let the
-crop alone (`_view_rect`) drive both the window's size and the displayed
-number, so they can never independently drift -- see the final design
-above. The general lesson, worth remembering for the next time a UI
-shows two numbers/states that both claim to describe "the same thing"
-from different angles: check whether one of them can be deleted entirely
-and DERIVED from the other, rather than trying to keep the two in sync
-after the fact.
+**Attempt 3** deleted `_zoom` entirely and let a single crop rectangle
+drive everything, with wheel scaling BOTH the rectangle's width and
+height by the same factor. This fixed the drift from attempt 2, and
+correctly reproduced "zooming all the way out returns to the exact
+opening state." But it revealed a new, different problem: scaling both
+crop dimensions together means the crop's shape can never change under
+wheel alone -- zooming in from the default (card-shaped) crop just
+produces a smaller, STILL card-shaped crop, and "fit a still-card-shaped
+rectangle to the screen" always produces the IDENTICAL window shape
+regardless of how small the rectangle conceptually is. So the window
+never grew past its initial letterboxed size under wheel zoom at all --
+the number climbed, but nothing about the window's actual size or shape
+changed, matching the exact "indicator keeps counting up, the card
+doesn't fill more space to the sides" symptom. Reticle-select worked
+because it could deliberately produce an odd-shaped crop; wheel alone
+structurally never could, no matter how the factor or clamping was
+tuned. Repeated unclamped reticle zooms could also push the crop far
+below any wheel-side floor, so a single wheel-out tick afterward could
+snap the number down by a huge amount in one step instead of shrinking
+gradually.
+
+**The actual fix (this round)**: stop trying to represent "how zoomed in"
+and "what shape is currently framed" with a single rectangle. Track them
+as what they actually are -- a scalar zoom level and a separate pan
+point -- the same "camera position + zoom" model any real 2D viewer uses.
+Once the crop's SHAPE is allowed to be a pure side effect of "the image
+enlarged uniformly, clamped per-axis to the screen" rather than something
+wheel-zoom has to directly preserve or manipulate, the window naturally
+grows into whatever shape the screen allows, exactly as a real viewer
+does.
+
+**General lesson, worth remembering next time state doesn't quite behave
+right**: when a single piece of state (a rectangle, in this case) is
+being asked to answer two conceptually different questions at once ("how
+much is shown" and "what shape is it"), consider whether those are
+actually two SEPARATE, independent facts that got conflated into one
+representation -- not just a formula that needs more tuning.
 
 ## Card detail popup: Type-column alignment overhaul, QGridLayout rewrite (earlier round)
 Three rounds of alignment fixes on the same underlying complaint ("Type's

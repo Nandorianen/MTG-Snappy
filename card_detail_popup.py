@@ -44,17 +44,17 @@ FIVE PIECES OF CUSTOM MACHINERY WORTH CALLING OUT:
    accidentally closes the dialog mid-click).
 
 4. The zoomable/draggable image window is a separate frameless top-level
-   QWidget of its own (see ImageZoomWidget) -- dragging is implemented by
-   hand since there's no OS title bar to drag by there either. It behaves
-   like a standard image viewer: opens fit-to-screen, and BOTH mouse-wheel
-   zoom and Ctrl+drag reticle-select drive the exact same underlying state
-   (a single normalized crop rectangle, _view_rect) rather than two
-   independent variables -- see ImageZoomWidget's own docstring for why
-   that unification is what makes zooming all the way back out reproduce
-   the exact opening state, and for the two earlier (now-superseded)
-   designs that didn't hold up. This resolves the reticle-zoom idea that
-   used to be parked in NOTES.md -- see README.md's changelog entry for
-   this round for the full design writeup and design journey.
+   QWidget of its own (see ImageZoomWidget) -- it behaves like a real
+   image viewer: opens fit-to-screen, tracks a zoom scalar and a
+   separate pan point (not a single crop rectangle -- see
+   ImageZoomWidget's own docstring for why that distinction is what
+   finally made wheel-zoom grow the window correctly, and for the two
+   earlier, now-superseded designs that didn't), and supports actual
+   click-drag panning once zoomed in past what fits on screen, falling
+   back to the original click-drag-moves-the-window behavior when
+   nothing is cropped. This resolves the reticle-zoom idea that used to
+   be parked in NOTES.md -- see README.md's changelog entry for this
+   round for the full design writeup and design journey.
 
 5. StatField's clickable (dropdown) variant now CENTERS BY HUGGING ITS OWN
    CONTENT rather than centering long text inside an artificially wide
@@ -69,7 +69,7 @@ from PySide6.QtWidgets import (
     QToolButton, QMenu, QListWidget, QListWidgetItem, QApplication, QSizePolicy,
     QPushButton,
 )
-from PySide6.QtCore import Qt, Signal, QSize, QEvent, QTimer, QRect, QRectF, QPoint
+from PySide6.QtCore import Qt, Signal, QSize, QEvent, QTimer, QRect, QRectF, QPoint, QPointF
 from PySide6.QtGui import QFontMetrics, QColor, QPainter
 
 from frameless_dialog import FramelessDialog
@@ -546,207 +546,228 @@ class ImageZoomWidget(QWidget):
     """
     A separate, frameless, always-on-top-of-itself window showing the
     (placeholder) art, zoomable and pannable like a standard image
-    viewer (ACDSee/XnView-style): opens fit-to-screen, zoom is a VIEW
-    operation that never touches the underlying image, and zooming all
-    the way back out reproduces the exact opening state. Closes on
+    viewer (ACDSee/XnView-style): opens fit-to-screen, and behaves like a
+    real camera-position-plus-zoom-level viewer from there. Closes on
     right-click, Escape, a click anywhere outside it (see eventFilter),
     or its owning CardDetailDialog closing (see that class's closeEvent).
     Singleton per dialog -- see CardDetailDialog._open_zoom_window.
 
-    ONE PIECE OF STATE, NOT TWO -- this is the whole fix from the
-    previous version. _view_rect is the only thing that changes: which
-    normalized (0..1) rectangle of the full image is currently framed.
-    (0, 0, 1, 1) = the whole card. There is no separate "_zoom" scale
-    factor tracked alongside it -- both the mouse-wheel zoom level and
-    the on-screen window size are pure functions of _view_rect alone
-    (see _effective_zoom_multiplier and _window_size_for_crop), so they
-    can never drift apart from each other the way a genuinely separate
-    _zoom variable and this crop rectangle could (and did, in the
-    earlier version -- see history note below).
+    TWO PIECES OF STATE: _zoom (a scalar; 1.0 = fit-to-screen) and
+    _pan_center (a normalized 0..1 point in the FULL image, which point
+    is centered in the viewport). Both mouse-wheel and reticle-select
+    read and write the SAME two variables -- see the history note below
+    for why an earlier version's single-crop-rectangle model couldn't
+    reproduce standard zoom behavior, and the one before that's
+    "separate _zoom and _view_rect" model let the two drift apart.
 
-    HOW EACH GESTURE CHANGES _view_rect:
-    - Mouse wheel scales BOTH _view_rect's width and height by the same
-      factor, centered on the crop's own current center -- shrinking to
-      zoom in, growing (capped at the full image on each axis) to zoom
-      out. Because both dimensions scale together, whatever aspect ratio
-      the crop currently has (the card's own shape by default, or
-      whatever shape a prior reticle selection left it at) is PRESERVED
-      through further wheel zooming -- the window's shape is allowed to
-      differ from the card's own shape while zoomed into a non-card-
-      shaped selection, and that's correct, not a bug: the window is
-      showing exactly the rectangle the user asked to see, at whatever
-      shape that rectangle actually is.
-    - Ctrl+drag reticle-select computes a NEW crop by composing the
-      dragged rectangle (as a fraction of the CURRENT window) against
-      the CURRENT crop -- see _finish_reticle. A second reticle zoom
-      crops further into the first, rather than re-measuring from the
-      full original image.
-    - Nothing else changes it. Panning (moving _view_rect's position
-      without changing its size) isn't wired to a gesture yet -- see the
-      note above __init__ for why that's a deliberate, scoped omission
-      for now rather than a gap.
+    HOW THE WINDOW'S OWN SIZE IS DERIVED (_geometry_for_zoom): the full
+    image, at the current _zoom, has a size of `fit_size * _zoom` in
+    BOTH dimensions together (uniform scaling -- the image's own aspect
+    ratio, the card's true shape, is NEVER distorted by zoom, only
+    enlarged or shrunk as a whole). The window's ACTUAL on-screen size
+    is that image size clamped INDEPENDENTLY per axis to the current
+    screen's available area. This is what makes the window grow
+    correctly as you zoom in from the opening (fit-to-screen) state:
+    whichever axis was already touching the screen edge (typically
+    height, for a portrait card on a landscape screen) stays capped
+    there, while the OTHER axis (still growing, since the underlying
+    image keeps enlarging uniformly) keeps widening the window to fill
+    more of the screen -- until it ALSO reaches the screen edge, past
+    which further zoom can no longer grow the window at all (both axes
+    already maxed) and instead shows progressively less of the image on
+    BOTH axes, exactly like zooming into a photo past "fit to window" in
+    a real viewer.
 
-    WHY ZOOMING ALL THE WAY OUT EXACTLY REPRODUCES THE OPENING STATE:
-    the window's size is ALWAYS "the current crop, fit to the current
-    screen, in the crop's own shape" (_window_size_for_crop) -- including
-    at the very first time the window is ever shown, where the crop is
-    (0,0,1,1) as a starting value like any other. Scrolling out enough
-    grows _view_rect back to exactly (0,0,1,1) (each axis clamped at 1.0
-    independently, so they can arrive at slightly different times but
-    both necessarily land there), at which point _window_size_for_crop
-    produces the IDENTICAL fit-to-screen size and shape it would compute
-    for a freshly-opened window on the same screen -- same function, same
-    inputs, same output, not a special case.
+    HOW PANNING WORKS: once the image (at the current zoom) exceeds the
+    screen on at least one axis, there's real content sitting outside
+    the window that _pan_center says which part of. Plain click+drag
+    ADJUSTS _pan_center in that case (see mousePressEvent/mouseMoveEvent)
+    instead of moving the window -- moving the window only happens when
+    there's nothing to pan to (the whole image already fits), since
+    otherwise "drag" unambiguously means "look at a different part of
+    what's zoomed in," not "reposition this box on my desktop."
 
-    EARLIER VERSION'S BUG, kept here for context in case this needs
-    revisiting again: a previous iteration tracked window PIXEL SIZE
-    (_zoom) and image CROP (_view_rect) as two independent variables,
-    with a reticle zoom pegging _zoom to whatever fit the screen and
-    wheel-zoom only ever adjusting _zoom, never _view_rect. That produced
-    three symptoms that all traced back to the same root cause: wheel-
-    zooming out after a reticle zoom shrank the WINDOW while the CROP
-    stayed frozen at whatever a deep chain of reticle zooms had left it
-    at, so the displayed multiplier (driven by the frozen crop) could
-    stay enormous even once the window was smaller than its own starting
-    size; the window was force-fit to the CARD's aspect ratio always,
-    fighting against crops that were legitimately a different shape; and
-    there was no way for zooming out to ever return to the exact opening
-    state, since the crop never widened back on its own. Eliminating the
-    second variable entirely -- letting the crop alone drive both the
-    window size AND the displayed number -- removes the possibility of
-    them disagreeing, rather than trying to keep two formulas in sync.
+    HOW RETICLE-SELECT FITS IN: a completed Ctrl+drag computes a NEW
+    _zoom and _pan_center from the selected rectangle (mapped through the
+    CURRENT visible fraction into normalized image coordinates -- see
+    _finish_reticle) rather than touching a separate crop concept. The
+    zoom increase is whatever makes the WHOLE selection visible without
+    clipping (the smaller of the two per-axis ratios, same "fit, don't
+    overflow" convention _geometry_for_zoom itself uses for the screen).
+
+    MAX_ZOOM (default 4x the fit-to-screen size) is an explicit ceiling
+    requested after an earlier version let repeated reticle zooms push
+    the effective magnification far higher than any wheel-zoom-out could
+    smoothly recover from in one tick -- see history note. Intended to
+    become a configurable Options-window setting eventually (explicitly
+    low priority), not hardcoded forever.
+
+    HISTORY -- two earlier designs that didn't hold up, kept here in
+    case a related bug resurfaces:
+    - FIRST design tracked window pixel size (_zoom) and image crop
+      (_view_rect) as two independent variables, with a reticle zoom
+      pegging _zoom to whatever fit the screen while _view_rect kept
+      narrowing independently. Wheel-zoom only ever touched _zoom, never
+      _view_rect, so scrolling out after several reticle zooms shrank the
+      WINDOW while the CROP (and the multiplier it drove) stayed frozen
+      at whatever a deep reticle chain had left it at -- the number could
+      report huge magnification even once the window was smaller than
+      its own starting size.
+    - SECOND design deleted _zoom and let a single crop rectangle
+      (_view_rect) drive everything, with wheel-zoom shrinking/growing
+      BOTH the rectangle's width and height by the same factor. This
+      fixed the previous drift, but revealed a NEW problem: scaling both
+      dimensions together means the crop's shape (and therefore the
+      fit-to-screen window's shape) can never change under wheel alone
+      -- wheel-zooming in from the default (card-shaped) crop just
+      produces a smaller, STILL card-shaped crop, which is invisible on
+      a flat placeholder AND never grows the window past its original
+      letterboxed size, since "fit a still-card-shaped rectangle to the
+      screen" always produces the identical result regardless of how
+      small the rectangle conceptually is. Reticle-select worked because
+      it could deliberately produce an odd-shaped crop; wheel alone
+      never could. Repeated unclamped reticle zooms could also push the
+      crop's size far below any wheel-side floor, so a single wheel-out
+      tick after enough reticle zooms could snap the number down by a
+      huge amount in one step instead of shrinking gradually.
+    - THIS version separates "how big is the image" (_zoom, uniform,
+      never distorts the image's own shape) from "which part is
+      centered" (_pan_center) explicitly, rather than trying to
+      represent both with a single rectangle -- and bounds _zoom to a
+      fixed range so neither of the above failure modes has room to
+      recur.
 
     WHY grabMouse() DURING A RETICLE DRAG: the window can be much larger
-    than BASE_SIZE once opened fit-to-screen -- a real drag gesture can
-    still cross outside its bounds before the button comes up (e.g. near
-    an edge). Without an explicit mouse grab, Qt simply stops delivering
-    mouseMoveEvent/mouseReleaseEvent the instant the cursor leaves the
-    widget, silently abandoning the drag. grabMouse()/releaseMouse()
-    bracket the gesture so it tracks correctly all the way to wherever
-    the button is actually released -- same "Qt's default per-widget
-    delivery isn't enough here" problem shape as collapsible_pane.py
-    needing an app-level event filter for Tab.
+    than a small fixed starting size (it opens fit-to-screen). Without an
+    explicit mouse grab, Qt stops delivering mouseMoveEvent/
+    mouseReleaseEvent the instant the cursor leaves the widget mid-drag.
+    grabMouse()/releaseMouse() bracket the gesture so it tracks correctly
+    all the way to wherever the button is actually released -- same
+    "Qt's default per-widget delivery isn't enough here" shape as
+    collapsible_pane.py needing an app-level event filter for Tab.
     """
 
-    BASE_SIZE = QSize(300, 420)  # the card's own aspect ratio (~2.5:3.5) -- a ratio reference, not a literal opening pixel size anymore, since the window now opens fit-to-screen
-    # Floor on how small either _view_rect dimension can shrink -- purely
-    # a numerical safety net (avoids a literal zero-size crop / divide-by-
-    # zero in the multiplier calc), not a meaningful UX zoom limit. The
-    # user asked for "zoom in infinitely" -- this is as close to that as
-    # a flat-color placeholder needs; a real image would eventually hit
-    # its own native pixel resolution as the natural, meaningful limit.
-    MIN_CROP_FRACTION = 0.001
+    BASE_SIZE = QSize(300, 420)  # the card's own aspect ratio (~2.5:3.5) -- a ratio reference only
+    MIN_ZOOM = 0.3
+    # Explicit ceiling, requested after an earlier design let effective
+    # magnification run away far higher than a single wheel-out tick
+    # could smoothly recover from (see history note above). Meant to
+    # become a configurable Options-window setting eventually -- low
+    # priority, not built yet.
+    MAX_ZOOM = 4.0
     MIN_RETICLE_SIZE = 8
+    # How close a per-axis visible fraction needs to be to 1.0 to count
+    # as "the whole image already fits, nothing to pan to" -- guards
+    # against floating-point noise (e.g. 0.999999997) being treated as
+    # "still slightly cropped" and incorrectly entering pan mode.
+    _FULLY_VISIBLE_THRESHOLD = 0.999
 
     def __init__(self, color, on_close=None):
         super().__init__(None, Qt.Window | Qt.FramelessWindowHint)
         self._color = QColor(color)
-        self._drag_offset = None
         self._on_close = on_close
 
-        # The ENTIRE zoom/pan state -- see class docstring. (0,0,1,1) =
-        # the whole card, exactly matching the opening state, so "zoom
-        # all the way back out" and "just opened" are the same state by
-        # construction, not two states that happen to be kept equal.
-        #
-        # NOT WIRED TO A GESTURE YET: panning (moving this rect's
-        # position without changing its size, e.g. via plain drag once
-        # zoomed in) is a natural next step once real card art exists --
-        # deliberately not built now, both because it has zero visible
-        # effect on a flat color fill and because it would need to
-        # coexist with plain-drag's EXISTING job (moving the whole
-        # window around the screen) in a way not yet specified. The
-        # rectangle's position is still tracked as real, adjustable
-        # state (not just derived from its size), so adding real pan
-        # later is a small, scoped addition, not a redesign.
-        self._view_rect = QRectF(0.0, 0.0, 1.0, 1.0)
+        self._zoom = 1.0
+        self._pan_center = QPointF(0.5, 0.5)
 
         # Reticle drag state -- None whenever a Ctrl+drag isn't active.
-        # Local (widget) pixel coords, since that's what paintEvent needs.
-        self._reticle_start = None   # QPoint -- where the Ctrl+drag began
-        self._reticle_rect = None    # QRect -- current drag extent, for the overlay
+        self._reticle_start = None   # QPoint, local widget coords
+        self._reticle_rect = None    # QRect, current drag extent, for the overlay
+
+        # Plain-drag state -- exactly ONE of these two pairs is active at
+        # a time, decided at press-time by whether there's anything to
+        # pan to (see mousePressEvent). Window-move:
+        self._drag_offset = None
+        # Pan:
+        self._pan_start = None            # QPoint, local widget coords at press
+        self._pan_center_start = None     # QPointF, _pan_center at press
+        self._pan_visible_frac = None     # (float, float), visible fraction at press
 
         self.setFocusPolicy(Qt.StrongFocus)
 
         # Best-effort initial sizing before the window has ever been
         # shown (self.screen() can't yet reflect which real screen this
-        # will end up on -- that's only reliable once shown). Corrected
-        # for real on the next event-loop tick via _settle_after_show,
-        # once the platform has actually placed the window -- same
-        # "settle on the next tick, once real geometry exists" pattern
+        # will end up on). Corrected for real on the next event-loop
+        # tick via _settle_after_show, once the platform has actually
+        # placed the window -- same "settle on the next tick" pattern
         # CardDetailDialog already uses for its own post-show fixups.
-        self._apply_view_rect(QApplication.primaryScreen())
+        self._apply_zoom(QApplication.primaryScreen())
         QTimer.singleShot(0, self._settle_after_show)
 
         # Click-anywhere-outside-closes -- see eventFilter for the exact
         # condition. Installed/removed the same way FramelessDialog and
-        # _MenuSearchBox already do it elsewhere in this app: on the
-        # QApplication instance (so it sees every click regardless of
-        # which widget receives it), torn down in closeEvent so a closed
-        # window doesn't leak a permanent global filter.
+        # _MenuSearchBox already do it elsewhere in this app.
         QApplication.instance().installEventFilter(self)
 
     def _settle_after_show(self):
         screen = self.screen() or QApplication.primaryScreen()
-        self._apply_view_rect(screen)
+        self._apply_zoom(screen)
 
-    def _window_size_for_crop(self, screen):
+    def _geometry_for_zoom(self, screen):
         """
-        The on-screen size that best displays the CURRENT crop: as large
-        as possible while fitting within `screen`'s available area and
-        preserving the crop's OWN aspect ratio, whatever shape that is --
-        the crop is always some already-decided rectangle (the full
-        card's own shape by default, or whatever shape a reticle
-        selection produced), and this renders exactly that rectangle as
-        large as the screen allows, undistorted. The single shared
-        authority both wheelEvent and _finish_reticle route through, so
-        the two can never independently disagree about what "fit to the
-        screen" means for a given crop -- same "one shared authority
-        instead of two formulas that both have to agree" principle as
-        the stat-grid column-width fix in this dialog's own alignment
-        work (see NOTES.md).
+        The single authority both wheelEvent and _finish_reticle read
+        from: given the CURRENT _zoom, returns (window_size, visible_
+        fraction_x, visible_fraction_y) for `screen`. Nothing downstream
+        derives window size or visible fraction any other way, so they
+        can never independently disagree with each other about what the
+        current zoom level actually looks like.
         """
         avail = screen.availableGeometry()
-        crop_w = self.BASE_SIZE.width() * self._view_rect.width()
-        crop_h = self.BASE_SIZE.height() * self._view_rect.height()
-        fit_zoom = min(avail.width() / crop_w, avail.height() / crop_h)
-        return QSize(max(1, int(crop_w * fit_zoom)), max(1, int(crop_h * fit_zoom)))
+        fit_zoom = min(avail.width() / self.BASE_SIZE.width(),
+                       avail.height() / self.BASE_SIZE.height())
+        image_w = self.BASE_SIZE.width() * fit_zoom * self._zoom
+        image_h = self.BASE_SIZE.height() * fit_zoom * self._zoom
+        window_w = min(image_w, float(avail.width()))
+        window_h = min(image_h, float(avail.height()))
+        size = QSize(max(1, int(window_w)), max(1, int(window_h)))
+        return size, window_w / image_w, window_h / image_h
 
-    def _apply_view_rect(self, screen):
+    def _apply_zoom(self, screen):
         """
-        Resizes to _window_size_for_crop and centers the result within
-        `screen`'s available area -- the one place that turns the
-        current crop into actual window geometry, used identically by
-        the initial show, every wheel tick, and every completed reticle
-        zoom, so all three can never visually disagree about what the
-        current crop should look like on screen.
+        Resizes to _geometry_for_zoom's window size and centers the
+        result within `screen`'s available area. Called on every zoom
+        CHANGE (wheel, reticle, initial show) -- not on plain panning,
+        since panning only changes which part of an already-sized window
+        is (conceptually) shown, not the window's own on-screen bounds.
         """
-        size = self._window_size_for_crop(screen)
+        size, _, _ = self._geometry_for_zoom(screen)
         avail = screen.availableGeometry()
         x = avail.x() + (avail.width() - size.width()) // 2
         y = avail.y() + (avail.height() - size.height()) // 2
         self.setGeometry(x, y, size.width(), size.height())
         # Explicit repaint request -- NOT guaranteed by setGeometry()
-        # above. Qt only sends a resize/move event (which triggers an
-        # automatic repaint) when the new geometry actually DIFFERS from
-        # the current one; consecutive actions that happen to land on
-        # the same fit-to-screen geometry would otherwise be a real
-        # no-op Qt silently skips, leaving the zoom label stale. Confirmed
-        # this exact gap once already in an earlier version of this
-        # class -- see README.md's changelog for that round.
+        # above, which only triggers Qt's automatic repaint when the new
+        # geometry actually DIFFERS from the current one. Hit this exact
+        # gap once already in an earlier version of this class -- see
+        # README.md's changelog for that round.
         self.update()
 
+    def _clamp_pan_center(self, screen):
+        """
+        Keeps _pan_center from sitting somewhere that would require
+        showing past the image's own edges. When a given axis is fully
+        visible (visible_frac >= 1, nothing to pan on that axis), the
+        clamp bounds collapse to exactly 0.5 -- forcing pan back to
+        center on that axis rather than leaving it wherever a previous,
+        more-zoomed-in pan happened to leave it.
+        """
+        _, vis_w, vis_h = self._geometry_for_zoom(screen)
+        x = min(max(self._pan_center.x(), vis_w / 2), 1.0 - vis_w / 2)
+        y = min(max(self._pan_center.y(), vis_h / 2), 1.0 - vis_h / 2)
+        self._pan_center = QPointF(x, y)
+
     def _effective_zoom_multiplier(self):
-        return 1.0 / min(self._view_rect.width(), self._view_rect.height())
+        return self._zoom
 
     def paintEvent(self, event):
         painter = QPainter(self)
         # --- Real-art hook-in point ---
-        # Once real card images exist, this flat fillRect becomes:
-        #   painter.drawPixmap(self.rect(), self._pixmap, self._denormalized_source_rect())
-        # where _denormalized_source_rect() just multiplies self._view_rect
-        # by the pixmap's own size. Everything else in this class already
-        # produces the right self._view_rect for that call to be correct.
+        # Once real card images exist, this flat fillRect becomes drawing
+        # the sub-rectangle of the real pixmap implied by the current
+        # _pan_center and the visible fraction from _geometry_for_zoom --
+        # everything needed for that (an exact normalized source rect) is
+        # already computed by this class, just not consumed by painting
+        # yet since there's no real pixmap to sample from.
         painter.fillRect(self.rect(), self._color)
         painter.setPen(QColor("#e3e3e3"))
         painter.drawRect(self.rect().adjusted(0, 0, -1, -1))
@@ -782,30 +803,15 @@ class ImageZoomWidget(QWidget):
         painter.restore()
 
     def wheelEvent(self, event):
-        """
-        Scales _view_rect's width AND height by the same factor, centered
-        on the crop's own current center -- shrinking (zooming in) or
-        growing back toward the full image, capped per-axis at 1.0
-        (zooming out gradually converges to a genuine (0,0,1,1) once
-        both axes reach their cap, not just something close to it, since
-        min() clamps each axis independently and exactly). Both the
-        window size and the displayed multiplier are recomputed from
-        this SAME updated _view_rect via _apply_view_rect -- there's no
-        separate window-size variable this could fall out of sync with.
-        """
-        zooming_in = event.angleDelta().y() > 0
-        factor = (1 / 1.1) if zooming_in else 1.1  # crop shrinks to zoom in, grows to zoom out
-
-        old = self._view_rect
-        cx, cy = old.center().x(), old.center().y()
-        new_w = max(self.MIN_CROP_FRACTION, min(1.0, old.width() * factor))
-        new_h = max(self.MIN_CROP_FRACTION, min(1.0, old.height() * factor))
-        new_x = min(max(0.0, cx - new_w / 2), 1.0 - new_w)
-        new_y = min(max(0.0, cy - new_h / 2), 1.0 - new_h)
-        self._view_rect = QRectF(new_x, new_y, new_w, new_h)
-
+        factor = 1.1 if event.angleDelta().y() > 0 else (1 / 1.1)
+        self._zoom = max(self.MIN_ZOOM, min(self.MAX_ZOOM, self._zoom * factor))
         screen = self.screen() or QApplication.primaryScreen()
-        self._apply_view_rect(screen)
+        # The valid pan range depends on the zoom that just changed --
+        # re-clamp before resizing, not after, so _apply_zoom never
+        # briefly renders against a pan_center that's already stale for
+        # the new zoom level.
+        self._clamp_pan_center(screen)
+        self._apply_zoom(screen)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.RightButton:
@@ -817,12 +823,42 @@ class ImageZoomWidget(QWidget):
             self._reticle_start = event.position().toPoint()
             self._reticle_rect = QRect(self._reticle_start, self._reticle_start)
             self.grabMouse()
+            return
+
+        screen = self.screen() or QApplication.primaryScreen()
+        _, vis_w, vis_h = self._geometry_for_zoom(screen)
+        if vis_w < self._FULLY_VISIBLE_THRESHOLD or vis_h < self._FULLY_VISIBLE_THRESHOLD:
+            # The image exceeds the screen on at least one axis at the
+            # current zoom -- there's real content outside the window
+            # for _pan_center to point at, so plain drag pans instead of
+            # moving the window (matching a real image viewer: once
+            # zoomed in past "fit," drag unambiguously means "look
+            # elsewhere in the image," not "move this box around").
+            self._pan_start = event.position().toPoint()
+            self._pan_center_start = QPointF(self._pan_center)
+            self._pan_visible_frac = (vis_w, vis_h)
         else:
             self._drag_offset = event.globalPosition().toPoint() - self.pos()
 
     def mouseMoveEvent(self, event):
         if self._reticle_start is not None:
             self._reticle_rect = QRect(self._reticle_start, event.position().toPoint()).normalized()
+            self.update()
+            return
+        if self._pan_start is not None:
+            pos = event.position().toPoint()
+            dx = pos.x() - self._pan_start.x()
+            dy = pos.y() - self._pan_start.y()
+            vis_w, vis_h = self._pan_visible_frac
+            w, h = self.width(), self.height()
+            # Dragging right/down reveals content that was further
+            # left/up -- the pan center moves OPPOSITE the drag
+            # direction, same convention as "grab and drag the canvas"
+            # in any standard image viewer or map application.
+            new_x = self._pan_center_start.x() - (dx / w) * vis_w
+            new_y = self._pan_center_start.y() - (dy / h) * vis_h
+            self._pan_center = QPointF(new_x, new_y)
+            self._clamp_pan_center(self.screen() or QApplication.primaryScreen())
             self.update()
             return
         if self._drag_offset is not None and (event.buttons() & Qt.LeftButton):
@@ -841,30 +877,39 @@ class ImageZoomWidget(QWidget):
             else:
                 self.update()  # clear the overlay even when the drag was too small to act on
             return
+        self._pan_start = None
         self._drag_offset = None
 
     def _finish_reticle(self, local_rect, global_release_pos):
         """
-        Commits a completed reticle drag: narrows self._view_rect to the
-        selected region, composed against whatever was already framed
-        (a second reticle zoom crops further into the first, rather than
-        restarting from the full original image), then applies it via
-        the same _apply_view_rect every other zoom action uses.
+        Commits a completed reticle drag: maps the dragged LOCAL rectangle
+        through the CURRENT visible fraction into normalized image
+        coordinates (so a selection made while already zoomed/panned in
+        composes correctly against that state, rather than being measured
+        against the full original image), then derives a new _zoom (the
+        smallest increase that makes the WHOLE selection visible without
+        clipping -- the smaller of the two per-axis fit ratios) and a new
+        _pan_center (the selection's own center).
         """
-        w, h = self.width(), self.height()
-        frac = QRectF(local_rect.x() / w, local_rect.y() / h,
-                       local_rect.width() / w, local_rect.height() / h)
-
-        old = self._view_rect
-        self._view_rect = QRectF(
-            old.x() + frac.x() * old.width(),
-            old.y() + frac.y() * old.height(),
-            frac.width() * old.width(),
-            frac.height() * old.height(),
-        )
-
         screen = QApplication.screenAt(global_release_pos) or self.screen() or QApplication.primaryScreen()
-        self._apply_view_rect(screen)
+        w, h = self.width(), self.height()
+        _, vis_w, vis_h = self._geometry_for_zoom(screen)
+
+        vis_left = min(max(0.0, self._pan_center.x() - vis_w / 2), 1.0 - vis_w)
+        vis_top = min(max(0.0, self._pan_center.y() - vis_h / 2), 1.0 - vis_h)
+
+        sel_w = (local_rect.width() / w) * vis_w
+        sel_h = (local_rect.height() / h) * vis_h
+        if sel_w <= 0 or sel_h <= 0:
+            return
+        sel_left = vis_left + (local_rect.x() / w) * vis_w
+        sel_top = vis_top + (local_rect.y() / h) * vis_h
+
+        zoom_factor = min(1.0 / sel_w, 1.0 / sel_h)
+        self._zoom = max(self.MIN_ZOOM, min(self.MAX_ZOOM, self._zoom * zoom_factor))
+        self._pan_center = QPointF(sel_left + sel_w / 2, sel_top + sel_h / 2)
+        self._clamp_pan_center(screen)
+        self._apply_zoom(screen)
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:
@@ -889,9 +934,10 @@ class ImageZoomWidget(QWidget):
         of its own to exempt, so ANY press whose target isn't part of
         THIS window counts as outside -- including a click back on the
         card detail dialog itself. A press that starts a Ctrl+drag
-        reticle, or the right-click that closes via mousePressEvent
-        above, both originate ON this window (watched.window() IS self),
-        so neither is affected by this check.
+        reticle, a pan drag, or the right-click that closes via
+        mousePressEvent above, all originate ON this window
+        (watched.window() IS self), so none of them are affected by
+        this check.
         """
         if (event.type() == QEvent.MouseButtonPress
                 and isinstance(watched, QWidget) and watched.window() is not self):
@@ -903,6 +949,7 @@ class ImageZoomWidget(QWidget):
         if self._on_close is not None:
             self._on_close()
         super().closeEvent(event)
+
 
 def _vline():
     line = QFrame()

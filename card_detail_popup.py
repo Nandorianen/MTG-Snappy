@@ -523,19 +523,46 @@ class ImageZoomWidget(QWidget):
     """
     A separate, frameless, always-on-top-of-itself window showing the
     (placeholder) art at a user-adjustable zoom, draggable anywhere on
-    screen. Closes on right-click or Escape.
+    screen. Closes on right-click, Escape, a click anywhere outside it
+    (see eventFilter), or its owning CardDetailDialog closing (see that
+    class's closeEvent). Singleton per dialog -- see CardDetailDialog.
+    _open_zoom_window for why a second click on the art re-focuses this
+    same window instead of spawning a duplicate.
 
-    TWO INDEPENDENT ZOOM MECHANISMS:
-    1. Mouse wheel -- scales the WHOLE box uniformly around its current
-       pixel size (see wheelEvent). Doesn't change which part of the
-       image is framed, just how big the frame is on screen.
-    2. Ctrl+drag ("reticle zoom") -- draw a rectangle directly on the
-       image; on release, that rectangle becomes the new framed region,
-       and the window jumps to fill the CURRENT screen's available area
-       (see _finish_reticle). Kept deliberately separate from wheel zoom:
-       wheel zoom is a physical window-size preference, reticle zoom is a
-       content-crop decision. Unifying them into one "zoom level" would
-       mean a plain zoom-out also silently widened the framed region.
+    ONE UNIFIED MAGNIFICATION MODEL, not two independent ones:
+    - _zoom is a pure scale factor on the card's own fixed aspect ratio
+      (BASE_SIZE, 300x420 -- MTG's real ~2.5:3.5 ratio). Mouse wheel is
+      the only thing that changes it incrementally; nothing ever
+      substitutes a DIFFERENT baseline in for BASE_SIZE.
+    - _view_rect is which fraction of the (eventual, real) source image
+      is framed, in normalized 0..1 coordinates. Only Ctrl+drag reticle
+      zoom ever narrows it.
+    - The two compose multiplicatively into one displayed number (see
+      _effective_zoom_multiplier): shrinking the crop by half doubles
+      the multiplier for a FIXED window size, exactly the same way
+      doubling the window's pixel size would for a FIXED crop -- they're
+      the same kind of magnification, just driven by different inputs,
+      which is why the label reads correctly regardless of which one the
+      user just changed.
+
+    EARLIER VERSION'S BUG, for context if this needs revisiting: a
+    reticle zoom used to OVERWRITE the wheel-zoom baseline with the
+    screen's own (non-card-shaped) rectangle and reset _zoom to 1.0.
+    That caused three separate visible symptoms from one root cause:
+    wheel-zooming out after a reticle zoom jumped disproportionately
+    (the "1.0" was relative to a suddenly-huge new baseline, not a
+    continuation of whatever zoom level the reticle had actually
+    reached); the window took on the SCREEN's aspect ratio instead of
+    the card's once wheel-zoomed afterward (a landscape screen produces
+    a landscape window); and the zoom label never moved on plain wheel
+    scrolling regardless (it only ever read _view_rect, never _zoom, so
+    wheel-only magnification was invisible even before the baseline bug).
+    Keeping _zoom always relative to the SAME constant baseline, and
+    folding _zoom into the displayed multiplier, fixes all three at once
+    because they were symptoms of the same "two things claiming to
+    measure the same axis, only one of which is real" shape -- treat
+    that as a warning sign to look for elsewhere in this app if a
+    similar cluster of oddly-related symptoms shows up again.
 
     WHY grabMouse() DURING A RETICLE DRAG: the window starts small
     (BASE_SIZE, 300x420) -- a real drag gesture will often cross outside
@@ -549,25 +576,27 @@ class ImageZoomWidget(QWidget):
     """
 
     BASE_SIZE = QSize(300, 420)
-    MIN_ZOOM, MAX_ZOOM = 0.3, 4.0
-    # Below this pixel size (either dimension), a Ctrl+drag is treated as
-    # an aborted/accidental selection (a near-stationary Ctrl+click) rather
-    # than a real reticle -- avoids "zooming" into an effectively-zero-sized
-    # region nobody meant to select.
+    MIN_ZOOM = 0.3
+    # No fixed upper constant -- a hardcoded max would either cut off a
+    # legitimate screen-filling reticle zoom on a large monitor, or (if
+    # set generously high to avoid that) be a guessed number untethered
+    # to any real screen -- exactly the "assumed instead of measured"
+    # trap NOTES.md's DPI/scaling entry already warns about elsewhere in
+    # this app. The real ceiling (how far BASE_SIZE can scale before it
+    # no longer fits the CURRENT screen) is something Qt can just be
+    # asked for directly -- see _max_zoom_for_screen().
     MIN_RETICLE_SIZE = 8
 
-    def __init__(self, color):
+    def __init__(self, color, on_close=None):
         super().__init__(None, Qt.Window | Qt.FramelessWindowHint)
         self._color = QColor(color)
         self._zoom = 1.0
-        # Wheel zoom's own zoom-neutral reference size. Starts as a COPY of
-        # the class constant (not the constant itself) because a reticle
-        # zoom re-anchors this to whatever size reticle zoom just set the
-        # window to -- from that point on, wheel zoom scales relative to
-        # the NEW baseline instead of snapping back to the original small
-        # box on the very next scroll (see _finish_reticle).
-        self._base_size = QSize(self.BASE_SIZE)
         self._drag_offset = None
+        # Called from closeEvent once this window is actually gone --
+        # lets CardDetailDialog clear its own reference to this widget
+        # (see _on_zoom_widget_closed) so a later click on the art
+        # doesn't try to re-focus an already-closed window.
+        self._on_close = on_close
 
         # Which portion of the (eventual, real) source image this window
         # currently frames, in normalized 0..1 image-space coordinates --
@@ -576,8 +605,7 @@ class ImageZoomWidget(QWidget):
         # this has no visible effect on painting today (see paintEvent) --
         # it's tracked now so real art later needs one new line (a
         # QPixmap.copy() using this exact rect, marked below) instead of a
-        # redesign. It also drives the zoom-multiplier readout, which IS
-        # visible today.
+        # redesign.
         self._view_rect = QRectF(0.0, 0.0, 1.0, 1.0)
 
         # Reticle drag state -- None whenever a Ctrl+drag isn't active.
@@ -585,8 +613,46 @@ class ImageZoomWidget(QWidget):
         self._reticle_start = None   # QPoint -- where the Ctrl+drag began
         self._reticle_rect = None    # QRect -- current drag extent, for the overlay
 
-        self.resize(self._base_size)
+        self.resize(self.BASE_SIZE)
         self.setFocusPolicy(Qt.StrongFocus)
+
+        # Click-anywhere-outside-closes -- see eventFilter for the exact
+        # condition. Installed/removed the same way FramelessDialog and
+        # _MenuSearchBox already do it elsewhere in this app: on the
+        # QApplication instance (so it sees every click regardless of
+        # which widget receives it), torn down in closeEvent so a closed
+        # window doesn't leak a permanent global filter.
+        QApplication.instance().installEventFilter(self)
+
+    def _max_zoom_for_screen(self, screen):
+        """
+        The largest _zoom that keeps a BASE_SIZE-shaped window within
+        `screen`'s available area, preserving BASE_SIZE's own aspect
+        ratio -- computed from real screen geometry via
+        QScreen.availableGeometry(), not a guessed constant. Shared by
+        wheelEvent (the ceiling wheel-zoom-in can reach) and
+        _finish_reticle (the exact fit a reticle zoom lands on) so the
+        two can never independently drift into disagreeing about what
+        "as zoomed as the screen allows" means -- same "one shared
+        authority instead of two formulas that both have to agree"
+        principle as the stat-grid column-width fix in this dialog's own
+        alignment work (see the class docstring above and NOTES.md).
+        """
+        avail = screen.availableGeometry()
+        return min(avail.width() / self.BASE_SIZE.width(),
+                   avail.height() / self.BASE_SIZE.height())
+
+    def _size_for_zoom(self):
+        return QSize(int(self.BASE_SIZE.width() * self._zoom),
+                     int(self.BASE_SIZE.height() * self._zoom))
+
+    def _effective_zoom_multiplier(self):
+        """
+        The single number the on-screen readout shows -- see the class
+        docstring for why _zoom and _view_rect compose multiplicatively
+        rather than being two separately-reported figures.
+        """
+        return self._zoom / min(self._view_rect.width(), self._view_rect.height())
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -603,8 +669,8 @@ class ImageZoomWidget(QWidget):
         if self._reticle_rect is not None:
             self._paint_reticle_overlay(painter)
 
-        zoom_multiplier = 1.0 / min(self._view_rect.width(), self._view_rect.height())
-        if zoom_multiplier > 1.01:  # only once a reticle zoom has actually happened
+        zoom_multiplier = self._effective_zoom_multiplier()
+        if zoom_multiplier > 1.01:  # only once actually zoomed in from the default
             self._paint_zoom_label(painter, zoom_multiplier)
 
     def _paint_reticle_overlay(self, painter):
@@ -632,9 +698,17 @@ class ImageZoomWidget(QWidget):
 
     def wheelEvent(self, event):
         factor = 1.1 if event.angleDelta().y() > 0 else (1 / 1.1)
-        self._zoom = max(self.MIN_ZOOM, min(self.MAX_ZOOM, self._zoom * factor))
-        self.resize(int(self._base_size.width() * self._zoom),
-                    int(self._base_size.height() * self._zoom))
+        screen = self.screen() or QApplication.primaryScreen()
+        max_zoom = self._max_zoom_for_screen(screen)
+        self._zoom = max(self.MIN_ZOOM, min(max_zoom, self._zoom * factor))
+        self.resize(self._size_for_zoom())
+        # Belt-and-suspenders: resize() already repaints when the pixel
+        # size actually changes, but a tiny _zoom delta can round to the
+        # SAME integer pixel size (no-op resize, no automatic repaint)
+        # while _zoom itself still moved slightly -- cheap enough to just
+        # always request one explicitly rather than reason about whether
+        # this particular tick happened to cross a pixel boundary.
+        self.update()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.RightButton:
@@ -676,8 +750,9 @@ class ImageZoomWidget(QWidget):
         """
         Commits a completed reticle drag: narrows self._view_rect to the
         selected region (composed against whatever was already framed --
-        see below), then resizes+moves the window to fill the current
-        screen's available area in one call.
+        see below), then sets _zoom to the largest value that FITS the
+        current screen (via _max_zoom_for_screen) and centers the
+        resulting card-shaped window on it.
 
         WHY COMPOSED, NOT REPLACED: a SECOND reticle zoom should crop
         further into the first one, not restart measuring from the full
@@ -686,27 +761,30 @@ class ImageZoomWidget(QWidget):
         is what makes repeated zooms stack correctly instead of each one
         silently discarding the previous crop.
 
-        WHY availableGeometry(), NOT geometry(): geometry() includes the
-        taskbar/dock; availableGeometry() excludes it, so the zoomed
-        window doesn't end up partly hidden behind system UI. Setting the
-        window's geometry to exactly this rect IS the centering: a window
-        sized to the whole usable screen is centered on it by
-        construction, so there's no separate "now center it" step that
-        could disagree with the sizing step.
+        WHY FIT, NOT STRETCH: setting the window to exactly the screen's
+        own rectangle (the earlier approach) distorts a card-shaped image
+        into whatever shape the screen happens to be. Using
+        _max_zoom_for_screen instead scales BASE_SIZE's own aspect ratio
+        up until it touches the screen on whichever axis is tighter --
+        the window stays card-shaped at every zoom level, letterboxed
+        (not stretched) against the screen on the other axis.
 
-        WHY THE TRAILING self.update() ISN'T REDUNDANT: setGeometry()
-        only triggers Qt's own automatic repaint when the geometry
-        actually CHANGES. The first reticle zoom genuinely resizes the
-        window (its small starting size -> fullscreen), so it repainted
-        correctly by accident; every zoom after that sets the SAME
-        already-fullscreen rect -- a real no-op Qt silently skips -- so
-        nothing was telling the window to redraw even though _view_rect
-        (and the zoom-multiplier label it drives) kept updating
-        correctly underneath. Confirmed headlessly: a same-geometry
-        reticle zoom produced zero repaints before this line was added,
-        with the internal state correct regardless. Don't rely on a
-        geometry-setter's side effect for a repaint that needs to happen
-        unconditionally -- request it explicitly instead.
+        WHY setGeometry() HERE STILL COUNTS AS "CENTERED": the window is
+        no longer necessarily screen-sized on BOTH axes (fitting, not
+        stretching, can leave one axis smaller than the screen) -- so
+        centering is now a real placement step (see _center_on_screen),
+        not a side effect of exactly matching the screen rect the way a
+        stretch-to-fill approach got it "for free."
+
+        WHY _zoom CARRIES OVER RATHER THAN RESETTING: the earlier version
+        reset _zoom to 1.0 here, relative to a baseline it had ALSO just
+        replaced with the screen's own size -- two changes at once that
+        made the next wheel-zoom-out jump discontinuously. Setting _zoom
+        directly to the real fit value (still relative to the one
+        constant baseline, BASE_SIZE) means a subsequent wheel-out starts
+        from wherever the reticle zoom actually landed and shrinks
+        smoothly from there, with _view_rect (the actual crop) completely
+        unaffected by wheel input either way.
         """
         w, h = self.width(), self.height()
         frac = QRectF(local_rect.x() / w, local_rect.y() / h,
@@ -721,34 +799,34 @@ class ImageZoomWidget(QWidget):
         )
 
         screen = QApplication.screenAt(global_release_pos) or self.screen() or QApplication.primaryScreen()
-        target = screen.availableGeometry()
-        self.setGeometry(target)
+        self._zoom = self._max_zoom_for_screen(screen)
+        self._center_on_screen(screen)
 
-        # Re-anchor wheel zoom's baseline -- without this, the next
-        # scroll would recompute from the original small BASE_SIZE and
-        # immediately snap back down, undoing the reticle zoom.
-        self._base_size = target.size()
-        self._zoom = 1.0
-
-        # Explicit repaint request -- NOT redundant with setGeometry()
-        # above. Qt only sends a resize/move event (which is what
+        # Explicit repaint request -- NOT guaranteed by _center_on_screen's
+        # own setGeometry() call. Qt only sends a resize/move event (which
         # triggers an automatic repaint) when the new geometry actually
-        # DIFFERS from the current one. The FIRST reticle zoom genuinely
-        # resizes the window (its small starting size -> fullscreen), so
-        # that one repaints "for free" and looked correct. Every
-        # SUBSEQUENT reticle zoom sets the SAME already-fullscreen target
-        # rect -- a real no-op as far as Qt's geometry system is
-        # concerned -- so no resize event fires and nothing was ever
-        # telling the window to redraw, even though _view_rect (and the
-        # zoom-multiplier label derived from it) updated correctly
-        # underneath the whole time. Confirmed via a headless paintEvent
-        # call-count: 1 repaint on a real-resize reticle zoom, 0 on a
-        # same-geometry one, with the internal state correct in both
-        # cases either way -- a state-vs-repaint gap, not a math bug.
-        # Wheel-zoom "fixing" it was the tell: scrolling genuinely
-        # resizes the window, which is what was silently doing the
-        # repainting job this line now does explicitly and unconditionally.
+        # DIFFERS from the current one; a second reticle zoom on the SAME
+        # screen can compute the identical fit geometry as the first,
+        # making that call a real no-op Qt silently skips. Confirmed
+        # headlessly during the original version of this fix: 0 repaints
+        # on a same-geometry reticle zoom without this line, 1 with it.
         self.update()
+
+    def _center_on_screen(self, screen):
+        """
+        Resizes to the current _zoom (see _size_for_zoom) and repositions
+        so the window sits centered within `screen`'s available area.
+        Used after a reticle zoom, where "center on screen" is an
+        absolute placement decided fresh each time -- unlike wheelEvent's
+        plain resize() (which anchors at the window's current top-left
+        corner, appropriate for a small incremental scroll adjustment,
+        not a full re-placement).
+        """
+        avail = screen.availableGeometry()
+        size = self._size_for_zoom()
+        x = avail.x() + (avail.width() - size.width()) // 2
+        y = avail.y() + (avail.height() - size.height()) // 2
+        self.setGeometry(x, y, size.width(), size.height())
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:
@@ -764,6 +842,33 @@ class ImageZoomWidget(QWidget):
                 self.close()
         else:
             super().keyPressEvent(event)
+
+    def eventFilter(self, watched, event):
+        """
+        Click-anywhere-outside-this-window closes it. Checked via
+        `watched.window() is not self` rather than a main-window-specific
+        check like FramelessDialog uses: this widget has no popup menus
+        of its own to exempt (unlike FramelessDialog, which has to tell
+        "a real outside click" apart from "a click on one of the
+        dialog's own dropdown menus"), so ANY press whose target isn't
+        part of THIS window counts as outside -- including a click back
+        on the card detail dialog itself, which is what makes this
+        window read as an attached preview rather than an independent
+        one the user has to remember to close by hand. A press that
+        starts a Ctrl+drag reticle, or the right-click that closes via
+        mousePressEvent above, both originate ON this window
+        (watched.window() IS self), so neither is affected by this check.
+        """
+        if (event.type() == QEvent.MouseButtonPress
+                and isinstance(watched, QWidget) and watched.window() is not self):
+            self.close()
+        return super().eventFilter(watched, event)
+
+    def closeEvent(self, event):
+        QApplication.instance().removeEventFilter(self)
+        if self._on_close is not None:
+            self._on_close()
+        super().closeEvent(event)
 
 
 def _vline():
@@ -807,7 +912,12 @@ class CardDetailDialog(FramelessDialog):
         else:
             self.language = LANGUAGES[0]
             self.condition = CONDITIONS[0]
-        self._zoom_widget = None  # keep a reference so it isn't garbage-collected while open
+        # Keeps a reference so the window isn't garbage-collected while
+        # open, AND doubles as the singleton/lifecycle tracker for it --
+        # see _open_zoom_window (re-focuses instead of duplicating) and
+        # closeEvent below (closing this dialog closes the zoom window
+        # too, rather than leaving it orphaned on screen).
+        self._zoom_widget = None
 
         self.resize(900, 560)
 
@@ -839,6 +949,26 @@ class CardDetailDialog(FramelessDialog):
         # field, not dependent on Qt's ordering between two independently
         # queued zero-timeout timers.
         QTimer.singleShot(0, self._settle_after_first_layout)
+
+    def closeEvent(self, event):
+        """
+        Cascades to the zoom window: every way this dialog can close (the
+        title bar's close button, FramelessDialog's own click-outside-
+        the-main-window auto-close, or a programmatic .close()) funnels
+        through this one override, so there's a single place that
+        guarantees the zoom window never survives its owning card detail
+        view -- rather than trying to catch each closing path separately.
+        Guarded by `is not None` because the zoom window may already be
+        gone by the time this runs (e.g. the user closed it directly, or
+        an outside click landed on THIS dialog and closed the zoom window
+        via ITS OWN eventFilter microseconds earlier in the same click) --
+        ImageZoomWidget.closeEvent already clears self._zoom_widget via
+        the on_close callback in that case, so this is a no-op rather than
+        a double-close.
+        """
+        if self._zoom_widget is not None:
+            self._zoom_widget.close()
+        super().closeEvent(event)
 
     def _settle_after_first_layout(self):
         self._refresh_for_current_print()
@@ -1145,9 +1275,35 @@ class CardDetailDialog(FramelessDialog):
             self.rulings_list.addItem(QListWidgetItem(ruling))
 
     def _open_zoom_window(self):
+        """
+        Opens the zoomable image window, or -- if one's already open for
+        this card -- just brings it back to the front instead of spawning
+        a second one. Singleton per dialog: without this, clicking the
+        art a second time while a zoom window is already showing (fully
+        possible; nothing about having it open disables the art box)
+        would leave the FIRST window still alive and unreferenced by
+        self._zoom_widget once the second replaced it, so it could never
+        be reached (or cleanly closed) again by this dialog. Re-focusing
+        the existing window instead also preserves whatever crop/zoom
+        state the user already had, which a fresh replacement would lose.
+        """
+        if self._zoom_widget is not None:
+            self._zoom_widget.raise_()
+            self._zoom_widget.activateWindow()
+            return
         color = swatch_for_card(self.oracle)
-        self._zoom_widget = ImageZoomWidget(color)
+        self._zoom_widget = ImageZoomWidget(color, on_close=self._on_zoom_widget_closed)
         self._zoom_widget.show()
+
+    def _on_zoom_widget_closed(self):
+        # Fired by ImageZoomWidget.closeEvent, however it got closed
+        # (Escape, right-click, an outside click, or this dialog's own
+        # closeEvent below calling .close() on it directly). Clearing the
+        # reference here -- rather than each of those call sites doing it
+        # themselves -- is what keeps _open_zoom_window's singleton check
+        # and this dialog's own closeEvent both honest about whether a
+        # zoom window genuinely still exists, from a single choke point.
+        self._zoom_widget = None
 
     def _apply_changes(self):
         """

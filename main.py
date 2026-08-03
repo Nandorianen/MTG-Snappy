@@ -29,6 +29,7 @@ from side_nav import SideNav, TABS
 from tag_tree import TagTreePanel
 from deck_viewer import DeckViewerView
 from card_database_view import CardDatabaseView
+from options_dialog import OptionsDialog
 from mock_data import get_all_cards
 
 
@@ -107,9 +108,20 @@ class MainWindow(QMainWindow):
         export_action = file_menu.addAction("Export...")
         export_action.triggered.connect(self._stub_action("Export"))
         file_menu.addSeparator()
+        options_action = file_menu.addAction("Options...")
+        options_action.setShortcut(QKeySequence("Ctrl+,"))
+        options_action.triggered.connect(self._open_options)
+        file_menu.addSeparator()
         quit_action = file_menu.addAction("Quit")
         quit_action.setShortcut(QKeySequence("Ctrl+Q"))
         quit_action.triggered.connect(self.close)
+
+    def _open_options(self):
+        # Modal, like TagApplyDialog -- a settings window is exactly the
+        # "focused task, dismiss when done" shape .exec() is for, unlike
+        # the card detail popup's .show() (browse-while-open) behavior.
+        dialog = OptionsDialog(self)
+        dialog.exec()
 
     def _stub_action(self, name):
         def handler():

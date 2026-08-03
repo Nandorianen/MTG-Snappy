@@ -288,7 +288,32 @@ letter badges next to each item, probably, activated by some modifier or
 a distinct navigation mode toggle).
 
 ## Options menu + externalized/translatable strings (raised alongside language selector)
-TODO, explicitly flagged as a TODO rather than a quick fix. Shape of it:
+**UPDATE: the window shell now exists (`options_dialog.py`, `OptionsDialog`)
+-- reachable via File > Options... or Ctrl+, -- but it's UI ONLY.** No
+control reads from or writes to a real settings store; every value shown is
+just a sensible-looking default. Still fully TODO below:
+- **No persistence layer at all.** Apply currently just flashes "Applied ✓"
+  (matching CardDetailDialog's Apply-button feedback pattern) without
+  actually applying anything anywhere. Needs a real settings store --
+  probably a single JSON/INI file rather than SQLite, since app-wide
+  preferences aren't really "collection data" -- plus a decision on where it
+  lives (same folder as the future local data folder the Advanced tab
+  already has a placeholder field for?).
+- **Nothing on the page is wired to app behavior yet**: the UI-scale slider
+  doesn't scale anything (this is the literal "user-facing text size
+  preference independent of OS scaling" NOTES.md's DPI entry already asked
+  about -- the control exists now, the effect doesn't), the accent-color
+  swatches don't repaint `main.py`'s STYLE_SHEET, the language combo
+  doesn't retranslate anything, the Input tab's keybinding table is
+  read-only display only (no rebinding), etc.
+- The tab strip is a `QListWidget` (Up/Down/Home/End/type-ahead navigation
+  free from Qt) rather than `SideNav`-style buttons, and tab-switching also
+  works via Ctrl+Tab/Ctrl+Shift+Tab from anywhere in the dialog -- see
+  `options_dialog.py`'s module docstring for the reasoning, which follows
+  the same "use the native widget for what Qt already does correctly"
+  principle `tree_pane.py` established for QTreeWidget.
+- The remaining shape below is unchanged -- still needed regardless of the
+  new shell:
 - An actual Options/Settings window/dialog is needed once there's more than
   a couple of app-wide preferences (default language, default condition,
   price-source default, etc. -- see the "default add" note below).

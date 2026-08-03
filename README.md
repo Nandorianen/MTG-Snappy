@@ -1,6 +1,41 @@
 # MTG Local Database — Prototype
 
-## Reticle-select zoom on the card image, real pan+zoom viewer (this round)
+## Options window: UI shell only (this round)
+Resolves the "window shell exists" half of NOTES.md's parked Options-menu
+entry -- reachable via **File > Options...** or **Ctrl+,**. Nothing here
+reads from or writes to a real settings store yet; see NOTES.md for the
+full list of what's still not wired up.
+
+- **New `options_dialog.py` / `OptionsDialog`**: a frameless modal window
+  (same `FramelessDialog` base as the card detail popup and tag-apply
+  dialog) with a vertical tab strip -- Language, Themes, Online, Interface,
+  Input, Advanced -- and Apply/Cancel/OK along the bottom.
+- **Tab strip is a `QListWidget`, not `SideNav`-style buttons** --
+  deliberately, so Up/Down/Home/End navigation and type-ahead jump-to-tab
+  come free from Qt itself rather than needing custom key handling (same
+  "let the native widget do what it already does" reasoning `tree_pane.py`
+  uses for `QTreeWidget` over a hand-rolled tree).
+- **Accent-color swatches (Themes tab) are `QRadioButton`s styled as flat
+  color squares**, not `QToolButton`s -- an exclusive `QRadioButton` group
+  gets native arrow-key cycling between its members; a row of checkable
+  tool buttons wouldn't, and reimplementing that by hand would be exactly
+  the kind of hand-rolled navigation this app tries to avoid when Qt
+  already provides it.
+- **Ctrl+Tab / Ctrl+Shift+Tab (also Ctrl+PageDown/Up) switch tabs from
+  anywhere in the dialog**, bound via `WidgetWithChildrenShortcut` the same
+  way `tree_pane.py` already binds Ctrl+N/Ctrl+X/etc. -- so tab-switching
+  doesn't require the tab list to specifically have focus first.
+- Escape-to-cancel and Enter-to-confirm are `QDialog`'s own native
+  behavior -- not reimplemented here.
+- Apply gives the same transient "Applied ✓" feedback CardDetailDialog's
+  Apply button already uses, without actually persisting anything (there's
+  nowhere to persist to yet).
+- Known limitation, same one CardDetailDialog already has and for the same
+  reason: fixed-size window (frameless windows lose native edge-drag
+  resize) -- see NOTES.md's DPI/scaling entry, which already flags this
+  dialog as one of the places that'll need real resize/reflow support.
+
+## Reticle-select zoom on the card image, real pan+zoom viewer (earlier round)
 Resolves the idea parked in NOTES.md. Third real design -- see "Design
 journey" at the end for the two that came before and exactly what each
 one got wrong; worth reading before touching this file again, since each

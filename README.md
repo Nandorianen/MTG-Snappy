@@ -1,6 +1,48 @@
 # MTG Local Database — Prototype
 
-## Options window: UI shell only (this round)
+## Data Management window + shared dialog base extracted (this round)
+The real first UI step toward the local-JSON/Scryfall-API data layer (goals
+#1/#3/#4/#7) -- reachable via **File > Data Management...** or **Ctrl+M**.
+Same UI-shell status as the Options window: everything looks and behaves
+correctly, but no actual download/parse/persistence pipeline exists yet.
+
+- **New `data_management_dialog.py` / `DataManagementDialog`**, three tabs:
+  - **Metadata** -- one row per Scryfall bulk-data export (Oracle Cards,
+    Unique Artwork, Default Cards, All Cards, Rulings) plus the separate
+    Tagger-project exports (Art Tags, Oracle Tags). Each row: Browse,
+    filename, size, last-changed date, and an Update button, followed by a
+    description of what that file actually contains.
+  - **Card Images** -- a target folder (with a real recursive folder-size
+    read), checkboxes for every image size/crop (png, small, normal,
+    large, border_crop, art_crop, thumb) each with its own description, a
+    print-language dropdown (reuses `mock_data.LANGUAGES` -- this genuinely
+    is the same "which printed language" concept, unlike Options' separate
+    UI-language setting), an edition-picker menu (checklist of placeholder
+    sets, "All Editions" as a master toggle), and a Download button.
+  - **Decks & Tags** -- structurally identical to the Metadata tab (same
+    row layout), pointed at this app's own local save data instead of
+    Scryfall's -- `decks.json` / `tags.json`. The action button reads
+    "Locate..." instead of "Update" here, since there's nothing to
+    redownload for your own data.
+- **Browse buttons are genuinely functional**, not mocked: real
+  `QFileDialog`s, and picking a real file/folder reads its actual size and
+  modified time straight off disk. Update/Locate/Download, by contrast,
+  have nothing real to do yet -- they give the same brief "working"
+  feedback CardDetailDialog's Apply button already established, rather
+  than sitting inert.
+- **New `dialog_common.py`**: the vertical-tab-list-plus-stack-plus-
+  Ctrl+Tab chrome that used to live directly in `options_dialog.py` is now
+  a shared `VerticalTabDialog` base, extracted once Data Management needed
+  the exact same wiring. `OptionsDialog` and `DataManagementDialog` are
+  both thin subclasses of it now -- siblings sharing one base, not one
+  inheriting the other.
+- **`main.py`'s global stylesheet gained explicit `QScrollBar` styling**,
+  added proactively rather than reactively -- both new dialogs' tabs are
+  this app's first use of `QScrollArea`, and this app already learned once
+  (the filter-menu `QMenu` styling gap) that any unstyled native widget
+  looks visibly wrong the moment custom QSS exists anywhere in the app.
+
+## Options window: UI shell only (earlier round)
 Resolves the "window shell exists" half of NOTES.md's parked Options-menu
 entry -- reachable via **File > Options...** or **Ctrl+,**. Nothing here
 reads from or writes to a real settings store yet; see NOTES.md for the

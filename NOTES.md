@@ -330,6 +330,55 @@ just a sensible-looking default. Still fully TODO below:
 - This should probably happen BEFORE too many more UI strings get written
   inline, since every new hardcoded string is something to migrate later.
 
+## Data Management window (new this round) -- the real first step toward goals #1/#3/#4/#7
+**New `data_management_dialog.py`, `DataManagementDialog`** -- reachable via
+File > Data Management... or Ctrl+M. Same UI-shell status as Options: looks
+and behaves correctly, but no download/parse/persistence pipeline exists
+yet. Three tabs: Metadata (Scryfall's bulk-data JSON exports -- Oracle
+Cards, Unique Artwork, Default Cards, All Cards, Rulings, plus the separate
+Tagger-project Art Tags/Oracle Tags exports), Card Images (a target folder,
+per-size/crop checkboxes, print language, edition picker, Download button),
+Decks & Tags (this app's own local save data -- same row layout as
+Metadata, structurally, but nothing here comes from Scryfall).
+- **Browse buttons are genuinely real**, not mocked: they open actual
+  `QFileDialog`s, and picking a real file/folder reads its REAL size and
+  modified time straight off disk (`os.stat`/`os.walk`). Nothing risky
+  about that -- it's a local filesystem read, no network, no writes --
+  so there was no reason to fake it just because the rest of the dialog
+  is a showcase.
+- **Update/Locate/Download buttons are NOT real** -- there's no download
+  pipeline or settings store to act on yet. They give the same transient
+  "working" feedback CardDetailDialog's Apply button and OptionsDialog's
+  Apply button already use, rather than doing nothing visible at all.
+- **Extracted `dialog_common.py`** out of `options_dialog.py` once this
+  became the SECOND dialog wanting the identical "vertical tab list +
+  stacked pages + Ctrl+Tab-from-anywhere" chrome -- `VerticalTabDialog` is
+  now the shared base both `OptionsDialog` and `DataManagementDialog`
+  subclass (siblings, not a hierarchy -- see that module's docstring for
+  why one doesn't just inherit the other). Any future dialog wanting this
+  same shape should subclass it too rather than re-copying the wiring a
+  third time.
+- **The edition-picker menu (Card Images tab) needed NONE of
+  `card_table.py`'s `_MenuSearchBox` keyboard machinery** -- worth noting
+  explicitly since it'd be easy to assume every checklist-style QMenu in
+  this app needs that treatment. It doesn't: that machinery exists only
+  because a search box embedded in the menu competes with QMenu's own
+  arrow-key handling for focus. A plain checklist menu with no embedded
+  widget (like this one) already gets correct Up/Down/Space/Enter
+  navigation from Qt with zero extra code.
+- **First use of `QScrollArea` in this app** (all three tabs use one, given
+  how many sections/controls each page holds). Pre-empted the "unstyled
+  native widget looks wrong once any custom QSS exists" bug class this
+  project already hit once with `QMenu` (see the "logic runs but nothing
+  visibly happens" debugging-lesson entry above) by adding explicit
+  `QScrollBar` styling to `main.py`'s global stylesheet up front, rather
+  than waiting to rediscover the same lesson a second time.
+- Dummy edition list (`EDITION_OPTIONS` in `data_management_dialog.py`)
+  deliberately reuses the same set codes already scattered through
+  `mock_data.py` (LEA, FUT, DGM, ZEN, AVR, ISD, NPH, 2XM, DMR) rather than
+  inventing a new arbitrary list, so the placeholder data across the app
+  stays internally consistent until real Scryfall set data replaces it.
+
 ## "Have" / "Want" / "In Deck" count columns (raised alongside language/condition)
 UPDATE: Have/Want now exist as real columns (dynamically labeled per table)
 across both All Card Database and Inventory, and are filterable by exact

@@ -30,6 +30,7 @@ from tag_tree import TagTreePanel
 from deck_viewer import DeckViewerView
 from card_database_view import CardDatabaseView
 from options_dialog import OptionsDialog
+from data_management_dialog import DataManagementDialog
 from mock_data import get_all_cards
 
 
@@ -108,6 +109,9 @@ class MainWindow(QMainWindow):
         export_action = file_menu.addAction("Export...")
         export_action.triggered.connect(self._stub_action("Export"))
         file_menu.addSeparator()
+        data_management_action = file_menu.addAction("Data Management...")
+        data_management_action.setShortcut(QKeySequence("Ctrl+M"))
+        data_management_action.triggered.connect(self._open_data_management)
         options_action = file_menu.addAction("Options...")
         options_action.setShortcut(QKeySequence("Ctrl+,"))
         options_action.triggered.connect(self._open_options)
@@ -121,6 +125,10 @@ class MainWindow(QMainWindow):
         # "focused task, dismiss when done" shape .exec() is for, unlike
         # the card detail popup's .show() (browse-while-open) behavior.
         dialog = OptionsDialog(self)
+        dialog.exec()
+
+    def _open_data_management(self):
+        dialog = DataManagementDialog(self)
         dialog.exec()
 
     def _stub_action(self, name):
@@ -213,6 +221,38 @@ QMenu::separator {
     height: 1px;
     background-color: #3a3c41;
     margin: 4px 0px;
+}
+QScrollBar:vertical, QScrollBar:horizontal {
+    /* Added alongside DataManagementDialog's scroll areas (its Metadata/
+       Card Images/Decks & Tags tabs are the first place this app uses a
+       QScrollArea). Same lesson as the QMenu rules above, pre-empted this
+       time instead of rediscovered: once ANY custom QSS is applied to the
+       QApplication, Qt stops rendering EVERY unstyled native widget with
+       its normal platform look, not just the ones we happen to be testing
+       -- a scrollbar with no rule here would show up as a jarring light
+       native bar in an otherwise flat dark app. */
+    background: #1e1f22;
+    border: none;
+    margin: 0px;
+}
+QScrollBar:vertical { width: 12px; }
+QScrollBar:horizontal { height: 12px; }
+QScrollBar::handle:vertical, QScrollBar::handle:horizontal {
+    background: #3a3c41;
+    border-radius: 5px;
+}
+QScrollBar::handle:vertical { min-height: 24px; }
+QScrollBar::handle:horizontal { min-width: 24px; }
+QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {
+    background: #4f8fc0;
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+    height: 0px;
+    width: 0px;
+}
+QScrollBar::add-page, QScrollBar::sub-page {
+    background: none;
 }
 SideNav QPushButton {
     text-align: left;

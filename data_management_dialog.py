@@ -283,11 +283,11 @@ class DataManagementDialog(VerticalTabDialog):
         super().__init__("Data Management", DATA_TABS, parent)
         self.resize(880, 620)
 
-    def build_pages(self):
+    def page_factories(self):
         return [
-            self._build_metadata_page(),
-            self._build_images_page(),
-            self._build_userdata_page(),
+            self._build_metadata_page,
+            self._build_images_page,
+            self._build_userdata_page,
         ]
 
     def build_footer(self):

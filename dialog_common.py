@@ -110,10 +110,22 @@ class VerticalTabDialog(FramelessDialog):
     bottom. Subclasses provide the tabs and pages; this class builds and
     wires the tab list and stack, and handles all the keyboard plumbing.
 
-    Subclasses MUST implement `build_pages()` (returns a list of QWidget
-    pages, same order as the `tab_specs` passed to __init__) and MAY
-    override `build_footer()` (returns a QWidget for the bottom row, or
-    None for no footer -- the default).
+    Subclasses MUST implement `page_factories()` (returns a list of
+    zero-arg callables, same order as the `tab_specs` passed to __init__ --
+    each one builds and returns that tab's page QWidget, called only once,
+    the first time that tab is actually selected) and MAY override
+    `build_footer()` (returns a QWidget for the bottom row, or None for no
+    footer -- the default).
+
+    PAGES ARE BUILT LAZILY, NOT ALL AT ONCE: only the currently-viewed
+    tab's widgets actually get constructed; every other tab starts as an
+    empty placeholder until the user first clicks over to it. A dialog
+    with several tabs (Options has six) previously paid the FULL
+    construction cost of every single page before the window could even
+    appear, most of which might never get looked at in a given session --
+    real, avoidable work standing between a click and a window showing up,
+    which conflicts directly with this app's snappiness priority. See
+    `_show_tab()`.
 
     KEYBOARD SUPPORT (originally worked out for OptionsDialog; now shared
     by everything built on this base):
@@ -143,15 +155,24 @@ class VerticalTabDialog(FramelessDialog):
         for _key, label in tab_specs:
             self.tab_list.addItem(QListWidgetItem(label))
 
+        # LAZY PAGE CONSTRUCTION: only the page for whichever tab is
+        # actually being looked at gets built. Building every page eagerly
+        # (the original approach) meant paying the FULL construction cost
+        # of every tab before the window could even appear -- for a
+        # 6-tab dialog like Options, most of those tabs might never get
+        # visited in a given session. Each tab starts as an empty
+        # placeholder widget in the stack; _show_tab() swaps in the REAL
+        # page (built by calling the subclass-provided factory function,
+        # exactly once per tab) the first time that tab is actually
+        # selected. Subsequent visits to an already-built tab are free --
+        # _built_pages just tracks which indices have already been swapped
+        # in, so a tab is never rebuilt from scratch on every revisit.
+        self._page_factories = self.page_factories()
+        self._built_pages = set()
         self.stack = QStackedWidget()
-        for page in self.build_pages():
-            self.stack.addWidget(page)
-        # Selecting a tab and showing its page are the same action here --
-        # unlike CardDatabaseView's Inventory/Wishlist buttons (which sync
-        # two independent UIs over one shared model), there's only one
-        # source of truth for "which tab is active," so a direct signal
-        # connection is enough.
-        self.tab_list.currentRowChanged.connect(self.stack.setCurrentIndex)
+        for _ in self._page_factories:
+            self.stack.addWidget(QWidget())  # placeholder, replaced on first visit
+        self.tab_list.currentRowChanged.connect(self._show_tab)
 
         body = QHBoxLayout()
         body.setSpacing(0)
@@ -169,15 +190,36 @@ class VerticalTabDialog(FramelessDialog):
             self.content_layout.addWidget(footer)
 
         self._install_tab_shortcuts()
-        self.tab_list.setCurrentRow(0)
+        self.tab_list.setCurrentRow(0)  # fires currentRowChanged -> builds tab 0's real page
         self.tab_list.setFocus()
 
     # --- Subclass hooks ------------------------------------------------
-    def build_pages(self):
+    def page_factories(self):
+        """
+        Returns a list of zero-argument callables, same order as the
+        tab_specs passed to __init__ -- each one builds and returns that
+        tab's page QWidget WHEN CALLED. Callables, not already-built
+        widgets: that's what makes deferring the actual construction
+        possible. Subclasses typically just return a list of their own
+        page-builder method references, e.g. `[self._build_language_page,
+        self._build_themes_page, ...]` -- note the lack of `()`, since
+        these must stay uncalled until _show_tab() decides a tab is
+        actually being visited.
+        """
         raise NotImplementedError
 
     def build_footer(self):
         return None
+
+    def _show_tab(self, index):
+        if index not in self._built_pages:
+            page = self._page_factories[index]()
+            placeholder = self.stack.widget(index)
+            self.stack.removeWidget(placeholder)
+            placeholder.deleteLater()
+            self.stack.insertWidget(index, page)
+            self._built_pages.add(index)
+        self.stack.setCurrentIndex(index)
 
     # --- Keyboard: tab-switching from anywhere in the dialog ------------
     def _install_tab_shortcuts(self):

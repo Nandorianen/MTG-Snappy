@@ -81,14 +81,14 @@ class OptionsDialog(VerticalTabDialog):
         # work is done).
         self.resize(760, 500)
 
-    def build_pages(self):
+    def page_factories(self):
         return [
-            self._build_language_page(),
-            self._build_themes_page(),
-            self._build_online_page(),
-            self._build_ui_page(),
-            self._build_input_page(),
-            self._build_advanced_page(),
+            self._build_language_page,
+            self._build_themes_page,
+            self._build_online_page,
+            self._build_ui_page,
+            self._build_input_page,
+            self._build_advanced_page,
         ]
 
     def build_footer(self):

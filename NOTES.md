@@ -379,6 +379,41 @@ Metadata, structurally, but nothing here comes from Scryfall).
   inventing a new arbitrary list, so the placeholder data across the app
   stays internally consistent until real Scryfall set data replaces it.
 
+## Performance fix: settings-dialog open delay (raised as "Options/Data Management feel slow to open")
+Two real, measured fixes, both now in `dialog_common.py`/`main.py` --
+worth knowing about since they change how any FUTURE `VerticalTabDialog`
+subclass should be written:
+- **Pages are now built LAZILY.** `VerticalTabDialog` used to build every
+  tab's full widget tree immediately in `__init__`, before the window
+  could even appear -- for Options' 6 tabs, that's 5 pages' worth of
+  work paid for on every single open regardless of whether they're ever
+  looked at. Subclasses now implement `page_factories()` (a list of
+  *callables*, not built widgets) instead of `build_pages()`; each tab
+  starts as an empty placeholder and only gets built the first time it's
+  actually selected. Headless timing: OptionsDialog's steady-state
+  construction dropped from ~30ms to ~7ms once only 1 of 6 pages had to
+  be built up front (measured via `time.perf_counter()` around
+  construction, not wall-clock guessing).
+- **`main.py` now caches and reuses both dialog instances** (`
+  self._options_dialog` / `self._data_management_dialog`, lazily created
+  once, reused via `.exec()` on every subsequent open) instead of
+  constructing a brand-new dialog object from scratch on every single
+  menu click. Neither dialog holds state that needs a fresh start on
+  reopen, so there's no correctness reason to rebuild.
+- **Still unresolved / worth re-testing for**: headless (offscreen)
+  construction timing never showed anything close to the reported
+  0.5-1s delay even BEFORE these fixes (worst case ~250ms on the very
+  first-ever dialog construction, ~30-70ms steady state) -- meaning
+  pure widget/layout construction was probably never the dominant cost.
+  If a real, on-screen delay persists after these two fixes (especially
+  if it's roughly the SAME on every open, not just the first), the next
+  place to look is something platform/window-manager-specific to
+  `Qt.FramelessWindowHint` top-level windows (compositor negotiation,
+  show-animation cost) rather than anything in this app's own widget
+  code -- worth testing by temporarily removing the frameless hint from
+  `FramelessDialog` and seeing whether a normal-decorated QDialog opens
+  instantly by comparison.
+
 ## "Have" / "Want" / "In Deck" count columns (raised alongside language/condition)
 UPDATE: Have/Want now exist as real columns (dynamically labeled per table)
 across both All Card Database and Inventory, and are filterable by exact

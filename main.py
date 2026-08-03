@@ -40,6 +40,15 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("MTG Local Database — Prototype")
         self.resize(1300, 780)
 
+        # Options/Data Management are constructed once and reused across
+        # opens (see _open_options/_open_data_management below) rather
+        # than rebuilt from scratch on every menu click -- a modal
+        # settings-style dialog has no reason to discard and rebuild its
+        # entire widget tree just because it was closed; nothing in either
+        # dialog holds state that needs a fresh start on reopen.
+        self._options_dialog = None
+        self._data_management_dialog = None
+
         # --- Build the views that live in the stack ---
         self.tag_panel = TagTreePanel()
         self.card_database = CardDatabaseView(get_all_cards())
@@ -124,12 +133,16 @@ class MainWindow(QMainWindow):
         # Modal, like TagApplyDialog -- a settings window is exactly the
         # "focused task, dismiss when done" shape .exec() is for, unlike
         # the card detail popup's .show() (browse-while-open) behavior.
-        dialog = OptionsDialog(self)
-        dialog.exec()
+        # Built once, reused thereafter (see self._options_dialog's own
+        # comment in __init__).
+        if self._options_dialog is None:
+            self._options_dialog = OptionsDialog(self)
+        self._options_dialog.exec()
 
     def _open_data_management(self):
-        dialog = DataManagementDialog(self)
-        dialog.exec()
+        if self._data_management_dialog is None:
+            self._data_management_dialog = DataManagementDialog(self)
+        self._data_management_dialog.exec()
 
     def _stub_action(self, name):
         def handler():

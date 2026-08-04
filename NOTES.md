@@ -414,6 +414,38 @@ subclass should be written:
   `FramelessDialog` and seeing whether a normal-decorated QDialog opens
   instantly by comparison.
 
+**UPDATE (follow-up round): corrected premise + async I/O added
+regardless.** Confirmed opening either dialog does ZERO disk I/O today --
+`DataFileRow`'s displayed filename/size/date are static placeholder text
+until the user manually clicks Browse on a specific row, one at a time.
+So the residual first-open delay was never file-reading; it's still an
+open question (see the platform/window-manager note above). That said,
+the underlying worry -- what happens once real remembered file paths get
+checked automatically on open, possibly several at once, possibly on slow
+storage -- was worth solving now rather than retrofitting later:
+- **`os.stat()` (Browse) and the recursive folder-size walk (Card Images
+  tab's folder Browse) now both run on `QThreadPool`'s background pool**
+  via two small `QRunnable` workers (`_StatWorker`, `_FolderSizeWorker` in
+  `data_management_dialog.py`), each with a companion `QObject` carrying
+  results back via signals -- the standard Qt pattern for this, since
+  `QRunnable` itself can't emit signals. A signal's delivery thread is
+  decided by which thread its RECEIVING QObject lives on, not which
+  thread `emit()` is called from, so the connected slots safely touch
+  real widgets even though the work happens off the UI thread.
+  `DataFileRow.check_path_async()` is the reusable entry point;
+  `_on_browse` (single file) now just calls it, and it's the SAME method
+  future remembered-path auto-checking would call once per row on open --
+  nothing about the mechanism needs to change for that later.
+- **Both paths guard against stale/superseded results**: if a row is
+  re-Browsed to a different file, or a folder is re-Browsed to a
+  different directory, before the FIRST check finishes, the late-arriving
+  result for the abandoned path/folder is discarded rather than
+  overwriting what's now actually displayed.
+- Rows show a "Checking..."/"Calculating..." state meanwhile, so the
+  window is fully interactive and each row updates independently as its
+  own background check happens to complete -- not all at once, not in any
+  particular order, and never blocking the others.
+
 ## "Have" / "Want" / "In Deck" count columns (raised alongside language/condition)
 UPDATE: Have/Want now exist as real columns (dynamically labeled per table)
 across both All Card Database and Inventory, and are filterable by exact

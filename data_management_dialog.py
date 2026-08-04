@@ -33,7 +33,12 @@ WHAT'S ACTUALLY REAL vs. MOCKED:
   - Browse buttons (file AND folder) open genuine QFileDialogs, and if you
     pick a REAL file/folder, the filename/size/date fields update from a
     REAL os.stat()/os.walk() read. There's no reason to fake a harmless
-    local filesystem read.
+    local filesystem read -- but that read runs on a BACKGROUND thread via
+    QThreadPool (see _StatWorker / _FolderSizeWorker below), not the UI
+    thread, so a slow disk (a spun-down HDD, a network share) can never
+    freeze the window. Nothing in the dialog opens with any of this
+    happening yet, either -- no file paths are known/remembered, so
+    opening either dialog does zero disk I/O today.
   - Everything else -- the placeholder filenames/sizes/dates shown before
     you browse, the Update/Locate/Download buttons' actions, the format
     checkboxes' effect -- is cosmetic. Clicking Update/Locate/Download just
@@ -57,7 +62,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QScrollArea,
     QPushButton, QCheckBox, QComboBox, QToolButton, QMenu, QFileDialog,
 )
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QThreadPool, QRunnable, QObject, Signal
 
 from dialog_common import VerticalTabDialog, APPLY_BUTTON_STYLE, section_label
 from mock_data import LANGUAGES
@@ -181,6 +186,59 @@ class _StayOpenMenu(QMenu):
         super().mouseReleaseEvent(event)
 
 
+class _StatWorkerSignals(QObject):
+    """
+    Companion QObject carrying _StatWorker's results back across threads.
+    QRunnable itself CAN'T emit Qt signals (it isn't a QObject) -- this is
+    the standard Qt pattern for a background task that needs to report
+    back: a small QObject holding the signals, constructed on the MAIN
+    thread before the runnable is ever handed to the thread pool. That's
+    what makes Qt route finished/failed back to the main thread safely --
+    a signal's delivery thread is decided by which thread its RECEIVING
+    QObject lives on, not which thread emit() happens to be called from,
+    so touching real widgets from the connected slot is always safe even
+    though run() below executes on a worker thread.
+    """
+    finished = Signal(str, int, float)  # path, size_bytes, mtime
+    failed = Signal(str, str)           # path, error message
+
+
+class _StatWorker(QRunnable):
+    """Runs os.stat() on QThreadPool's global background pool rather than
+    the UI thread -- see DataFileRow.check_path_async()."""
+
+    def __init__(self, path):
+        super().__init__()
+        self.path = path
+        self.signals = _StatWorkerSignals()
+
+    def run(self):
+        try:
+            stat = os.stat(self.path)
+        except OSError as exc:
+            self.signals.failed.emit(self.path, str(exc))
+            return
+        self.signals.finished.emit(self.path, stat.st_size, stat.st_mtime)
+
+
+class _FolderSizeSignals(QObject):
+    finished = Signal(str, int)  # folder path, total size bytes
+
+
+class _FolderSizeWorker(QRunnable):
+    """Runs the recursive _folder_size() walk on a background thread --
+    the genuinely slow case here (potentially thousands of files), unlike
+    a single file's os.stat(). See DataManagementDialog._on_browse_image_folder()."""
+
+    def __init__(self, path):
+        super().__init__()
+        self.path = path
+        self.signals = _FolderSizeSignals()
+
+    def run(self):
+        self.signals.finished.emit(self.path, _folder_size(self.path))
+
+
 class DataFileRow(QWidget):
     """
     One "point at a local file" row: a header, then Browse/filename/size/
@@ -194,8 +252,8 @@ class DataFileRow(QWidget):
     instead.
 
     See the module docstring for why Browse is real (genuine QFileDialog +
-    real os.stat()) while the action button is not (nothing to actually
-    update/locate/sync against yet).
+    a real, ASYNC os.stat() -- see check_path_async()) while the action
+    button is not (nothing to actually update/locate/sync against yet).
     """
 
     def __init__(self, title, filename, size_bytes, date_text, description,
@@ -203,7 +261,8 @@ class DataFileRow(QWidget):
         super().__init__()
         self._file_filter = file_filter
         self._title = title
-        self.path = None  # set for real once Browse actually picks a file
+        self.path = None  # set for real once a background stat check completes
+        self._pending_path = None  # guards against a stale/superseded check finishing late
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 10)
@@ -254,15 +313,57 @@ class DataFileRow(QWidget):
         path, _ = QFileDialog.getOpenFileName(self, f"Locate {self._title} file", "", self._file_filter)
         if not path:
             return
+        self.check_path_async(path)
+
+    def check_path_async(self, path):
+        """
+        Non-blocking file check: kicks off os.stat() on QThreadPool's
+        background pool instead of calling it directly on the UI thread.
+        A single stat() is normally near-instant (filesystem metadata, not
+        file content) -- what this actually protects against is the case
+        that matters: a spun-down HDD needing real time to wake up, a
+        network/USB drive that's momentarily unresponsive, or several rows
+        checking their paths at once once real remembered-path
+        auto-checking on dialog-open exists (see NOTES.md) -- none of
+        those should ever be able to freeze the window, no matter how slow
+        the underlying storage turns out to be. Each row's check runs
+        independently, so rows update as each one's own stat happens to
+        finish, not all together or in path order.
+
+        THIS IS THE READY-TO-REUSE MECHANISM for that future feature: once
+        a settings store remembers each row's last-linked path, opening
+        the dialog would just call `row.check_path_async(remembered_path)`
+        once per row right after construction -- the window would appear
+        immediately, each row would show "Checking..." briefly, and real
+        values would populate independently as each check completes. No
+        changes needed here to support that; it's exercised today via
+        Browse (real, user-triggered, one row at a time) as the same code
+        path that future bulk/automatic checking would reuse.
+        """
+        self._pending_path = path
+        self.filename_label.setText("Checking\u2026")
+        self.filename_label.setStyleSheet("font-weight: 600; color: #a8adb5; font-style: italic;")
+        worker = _StatWorker(path)
+        worker.signals.finished.connect(self._on_stat_finished)
+        worker.signals.failed.connect(self._on_stat_failed)
+        QThreadPool.globalInstance().start(worker)
+
+    def _on_stat_finished(self, path, size_bytes, mtime):
+        if path != self._pending_path:
+            return  # superseded by a newer Browse before this one finished
         self.path = path
-        try:
-            stat = os.stat(path)
-        except OSError:
-            return  # file vanished between the picker closing and this read -- leave the display as-is
+        self.filename_label.setStyleSheet("font-weight: 600;")
         self.filename_label.setText(os.path.basename(path))
         self.filename_label.setToolTip(path)
-        self.size_label.setText(_format_size(stat.st_size))
-        self.date_label.setText(datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d"))
+        self.size_label.setText(_format_size(size_bytes))
+        self.date_label.setText(datetime.fromtimestamp(mtime).strftime("%Y-%m-%d"))
+
+    def _on_stat_failed(self, path, message):
+        if path != self._pending_path:
+            return
+        self.filename_label.setStyleSheet("font-weight: 600; color: #d3898f;")
+        self.filename_label.setText("(unavailable)")
+        self.filename_label.setToolTip(f"{path}\n{message}")
 
     def _on_action(self):
         # Nothing real to do yet -- see module docstring. Brief "working"
@@ -452,7 +553,22 @@ class DataManagementDialog(VerticalTabDialog):
             return
         self.folder_path_label.setText(folder)
         self.folder_path_label.setToolTip(folder)
-        self.folder_size_label.setText(_format_size(_folder_size(folder)))
+        # The recursive walk (_folder_size) is the genuinely slow operation
+        # in this dialog -- potentially thousands of files -- so this one
+        # runs on a background thread rather than blocking the window
+        # while it counts, same reasoning as DataFileRow.check_path_async().
+        self.folder_size_label.setText("Calculating\u2026")
+        worker = _FolderSizeWorker(folder)
+        worker.signals.finished.connect(self._on_folder_size_ready)
+        QThreadPool.globalInstance().start(worker)
+
+    def _on_folder_size_ready(self, folder, size_bytes):
+        # Guard against a stale result: if the user browsed to a DIFFERENT
+        # folder again before this calculation finished, the label already
+        # shows that newer folder -- don't overwrite it with a late result
+        # for the one they've since moved on from.
+        if self.folder_path_label.text() == folder:
+            self.folder_size_label.setText(_format_size(size_bytes))
 
     def _on_download_images(self):
         # No real download pipeline yet -- see module docstring.

@@ -19,12 +19,13 @@ fixed panel, freeing up horizontal space for the spreadsheet itself.
 """
 
 import sys
+from collections import deque
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QStackedWidget,
     QStatusBar, QMessageBox, QSplashScreen,
 )
 from PySide6.QtGui import QKeySequence, QShortcut, QPixmap, QColor, QPainter
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 
 from side_nav import SideNav, TABS
 from tag_tree import TagTreePanel
@@ -32,7 +33,18 @@ from deck_viewer import DeckViewerView
 from card_database_view import CardDatabaseView
 from mock_data import get_all_cards
 # OptionsDialog and DataManagementDialog are deliberately NOT imported here
-# at module level -- see _open_options/_open_data_management below.
+# at module level -- see _open_options/_open_data_management, and the
+# background-preload block in __init__, below.
+
+# How long to wait between each background-preload step, in milliseconds.
+# Long enough that a click/keypress arriving mid-preload gets its turn on
+# the event loop before the NEXT chunk of construction starts (Qt services
+# pending input/paint events ahead of a timer that hasn't fired yet); short
+# enough that preloading everything only takes a few hundred ms total once
+# the app is sitting idle after launch. Not tuned against real hardware --
+# a reasonable starting guess, easy to adjust in one place if it ever feels
+# too eager or too slow in practice.
+PRELOAD_STEP_DELAY_MS = 60
 
 
 class MainWindow(QMainWindow):
@@ -64,6 +76,13 @@ class MainWindow(QMainWindow):
         # VerticalTabDialog already uses for dialog tabs (dialog_common.py)
         # -- see that module's docstring for the general reasoning;
         # applied here to the top-level SideNav tabs instead.
+        #
+        # Lazy alone just MOVES the one-time construction cost from launch
+        # to "whenever the user first clicks over" -- still a real, felt
+        # hitch, just at a worse moment (mid-interaction instead of before
+        # the window's even up). See the background-preload block near the
+        # end of __init__ for how that gap gets closed without giving the
+        # snappy-launch win back.
         self._view_builders = [
             ("tags", self._build_tag_panel),
             ("cards", self._build_card_database),
@@ -96,6 +115,39 @@ class MainWindow(QMainWindow):
         self._build_shortcuts()
         self._focus_current_view()  # deterministic initial focus, not Qt's default guess
 
+        # --- Background preload: fill the idle time AFTER launch instead
+        # of wasting it, without giving back the fast-launch win above. ---
+        #
+        # NOT a real background thread: Qt widgets are not thread-safe --
+        # constructing (or touching) a QWidget from anywhere but the GUI
+        # thread is undefined behavior, full stop. There's no safe way to
+        # build CardDatabaseView or OptionsDialog on a QThreadPool worker
+        # the way data_management_dialog.py's _StatWorker safely backgrounds
+        # a plain os.stat() call.
+        #
+        # So "async" here means a staggered TIMER CHAIN on the main thread
+        # instead: one queued task runs, then schedules the next one after
+        # PRELOAD_STEP_DELAY_MS rather than looping straight through the
+        # whole queue in one call. That gap is what keeps this from just
+        # being the old eager-construction-at-launch problem moved a few
+        # hundred ms later -- Qt gets to service any pending input/paint
+        # event in between two preload steps, so a click during preload
+        # doesn't queue up behind one long unbroken freeze.
+        #
+        # Every queued task reuses the EXACT SAME builder/guard a user
+        # triggering it directly would hit (_ensure_view_built's
+        # already-built check; _options_dialog/_data_management_dialog's
+        # `is None` check) -- so whichever happens first, this queue or
+        # the user actually clicking/opening the real thing, the other is
+        # just a harmless no-op. Nothing downstream needed to change.
+        self._preload_queue = deque([
+            lambda: self._ensure_view_built(self._tab_indexes["cards"]),
+            lambda: self._ensure_view_built(self._tab_indexes["decks"]),
+            self._preload_options_dialog,
+            self._preload_data_management_dialog,
+        ])
+        QTimer.singleShot(PRELOAD_STEP_DELAY_MS, self._run_next_preload_step)
+
     def _build_tag_panel(self):
         self.tag_panel = TagTreePanel()
         return self.tag_panel
@@ -106,10 +158,11 @@ class MainWindow(QMainWindow):
         # safe to wire up here (rather than passed into CardDatabaseView's
         # constructor) because Tag Database is always the eager default
         # tab, so self.tag_panel already exists by the time this ever
-        # runs, however much later that turns out to be. Goes through
-        # .table since CardDatabaseView WRAPS the real CardTableView
-        # rather than being one itself (see card_database_view.py's
-        # module docstring for why).
+        # runs, however much later that turns out to be -- whether that's
+        # the user clicking over, or the background preload queue getting
+        # to it first. Goes through .table since CardDatabaseView WRAPS
+        # the real CardTableView rather than being one itself (see
+        # card_database_view.py's module docstring for why).
         self.card_database.table.tag_source = self.tag_panel.tree_pane
         return self.card_database
 
@@ -120,7 +173,10 @@ class MainWindow(QMainWindow):
     def _ensure_view_built(self, index):
         """Builds the view for `index` and swaps it into the stack, unless
         that's already been done -- see the lazy-construction comment
-        above self._view_builders in __init__."""
+        above self._view_builders in __init__. Called from BOTH the
+        on-demand tab-click path (_on_tab_changed) and the background
+        preload queue -- this shared guard is what makes calling it twice
+        (once from each, in either order) safe and free the second time."""
         if index in self._built_view_indexes:
             return
         _key, builder = self._view_builders[index]
@@ -178,16 +234,15 @@ class MainWindow(QMainWindow):
         # Modal, like TagApplyDialog -- a settings window is exactly the
         # "focused task, dismiss when done" shape .exec() is for, unlike
         # the card detail popup's .show() (browse-while-open) behavior.
-        # Built once, reused thereafter (see self._options_dialog's own
-        # comment in __init__). The import itself is deferred to here
-        # too, not done at module level -- options_dialog.py (plus
-        # dialog_common.py and tree_pane's ICON_PALETTE it pulls in)
-        # measured a real, nonzero import cost; paying that on every
-        # single app launch, whether or not this menu item is ever
-        # clicked in a given session, is exactly the kind of avoidable
-        # startup work this app's snappiness priority argues against.
-        # Python caches the import either way, so this only costs
-        # anything on the FIRST open, same as OptionsDialog itself.
+        #
+        # By the time a user actually clicks this, the background preload
+        # queue (see __init__) has often already built self._options_dialog
+        # -- in which case this is just an .exec() on an existing instance,
+        # with none of the ~construction cost paid live. If preload hasn't
+        # reached it yet (or the user is fast), this builds it the same way
+        # _preload_options_dialog does, on demand, exactly as before that
+        # queue existed. Either path is safe to hit first; see
+        # _preload_options_dialog's docstring for why.
         if self._options_dialog is None:
             from options_dialog import OptionsDialog
             self._options_dialog = OptionsDialog(self)
@@ -198,6 +253,46 @@ class MainWindow(QMainWindow):
             from data_management_dialog import DataManagementDialog
             self._data_management_dialog = DataManagementDialog(self)
         self._data_management_dialog.exec()
+
+    # --- Background preload queue ---------------------------------------
+    def _run_next_preload_step(self):
+        """
+        Pops and runs exactly ONE queued preload task, then -- if more are
+        left -- schedules the next one after another PRELOAD_STEP_DELAY_MS
+        gap rather than draining the whole queue in one call. That gap is
+        the entire mechanism: it's what lets the event loop service any
+        input/paint event that arrived while this step ran before the next
+        chunk of construction starts, instead of the user's click sitting
+        behind one long unbroken run of widget-building. See __init__'s
+        background-preload comment for why this is a staggered main-thread
+        timer chain rather than an actual background thread.
+        """
+        if not self._preload_queue:
+            return
+        task = self._preload_queue.popleft()
+        task()
+        if self._preload_queue:
+            QTimer.singleShot(PRELOAD_STEP_DELAY_MS, self._run_next_preload_step)
+
+    def _preload_options_dialog(self):
+        """
+        Same construction _open_options() does on demand -- just run early
+        and quietly, from the background preload queue, instead of live
+        under a menu click. Guarded by the identical `is None` check
+        _open_options() uses, so whichever runs first -- this preload step,
+        or the user genuinely opening File > Options before their turn in
+        the queue comes up -- the other is a harmless no-op, not a
+        double-build.
+        """
+        if self._options_dialog is None:
+            from options_dialog import OptionsDialog
+            self._options_dialog = OptionsDialog(self)
+
+    def _preload_data_management_dialog(self):
+        """Same reasoning as _preload_options_dialog, for Data Management."""
+        if self._data_management_dialog is None:
+            from data_management_dialog import DataManagementDialog
+            self._data_management_dialog = DataManagementDialog(self)
 
     def _stub_action(self, name):
         def handler():

@@ -21,17 +21,18 @@ fixed panel, freeing up horizontal space for the spreadsheet itself.
 import sys
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QStackedWidget,
-    QStatusBar, QMessageBox,
+    QStatusBar, QMessageBox, QSplashScreen,
 )
-from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtGui import QKeySequence, QShortcut, QPixmap, QColor, QPainter
+from PySide6.QtCore import Qt
 
 from side_nav import SideNav, TABS
 from tag_tree import TagTreePanel
 from deck_viewer import DeckViewerView
 from card_database_view import CardDatabaseView
-from options_dialog import OptionsDialog
-from data_management_dialog import DataManagementDialog
 from mock_data import get_all_cards
+# OptionsDialog and DataManagementDialog are deliberately NOT imported here
+# at module level -- see _open_options/_open_data_management below.
 
 
 class MainWindow(QMainWindow):
@@ -50,26 +51,33 @@ class MainWindow(QMainWindow):
         self._data_management_dialog = None
 
         # --- Build the views that live in the stack ---
-        self.tag_panel = TagTreePanel()
-        self.card_database = CardDatabaseView(get_all_cards())
-        self.deck_viewer = DeckViewerView()
-
-        # Right-click-to-tag needs a reference to the Tag Database's tree --
-        # wired here (after both exist) rather than passed into
-        # CardDatabaseView's constructor, matching the late-bound tag_source
-        # attribute pattern. Goes through .table since CardDatabaseView
-        # WRAPS the real CardTableView rather than being one itself (see
-        # card_database_view.py's module docstring for why).
-        self.card_database.table.tag_source = self.tag_panel.tree_pane
+        # LAZY VIEW CONSTRUCTION: only the initially-visible tab (Tag
+        # Database, per SideNav's own default) gets built during startup.
+        # Card Database and Deck Viewer are real, non-trivial widget trees
+        # -- CardDatabaseView alone measured ~60ms even against today's
+        # tiny 9-card mock dataset, before any real data replaces it --
+        # that the user may not look at for a while, or at all, in a given
+        # session. Building them anyway on every single launch is exactly
+        # the kind of work standing between opening the app and having a
+        # usable window that conflicts with this app's snappiness
+        # priority. Same lazy-build-on-first-visit pattern
+        # VerticalTabDialog already uses for dialog tabs (dialog_common.py)
+        # -- see that module's docstring for the general reasoning;
+        # applied here to the top-level SideNav tabs instead.
+        self._view_builders = [
+            ("tags", self._build_tag_panel),
+            ("cards", self._build_card_database),
+            ("decks", self._build_deck_viewer),
+        ]
+        # Derived from _view_builders' own order rather than written out a
+        # second time -- the two can never drift apart this way.
+        self._tab_indexes = {key: i for i, (key, _builder) in enumerate(self._view_builders)}
+        self._built_view_indexes = set()
 
         self.stack = QStackedWidget()
-        # Order here defines the stack INDEX for each view; self._tab_indexes
-        # below maps the SideNav's string keys to these indexes, so the two
-        # never need to be kept in sync by hand elsewhere.
-        self.stack.addWidget(self.tag_panel)        # index 0
-        self.stack.addWidget(self.card_database)     # index 1
-        self.stack.addWidget(self.deck_viewer)         # index 2
-        self._tab_indexes = {"tags": 0, "cards": 1, "decks": 2}
+        for _ in self._view_builders:
+            self.stack.addWidget(QWidget())  # placeholder, replaced on first visit
+        self._ensure_view_built(self._tab_indexes["tags"])  # eager: the default visible tab
 
         # --- Side nav ---
         self.side_nav = SideNav()
@@ -88,8 +96,45 @@ class MainWindow(QMainWindow):
         self._build_shortcuts()
         self._focus_current_view()  # deterministic initial focus, not Qt's default guess
 
+    def _build_tag_panel(self):
+        self.tag_panel = TagTreePanel()
+        return self.tag_panel
+
+    def _build_card_database(self):
+        self.card_database = CardDatabaseView(get_all_cards())
+        # Right-click-to-tag needs a reference to the Tag Database's tree --
+        # safe to wire up here (rather than passed into CardDatabaseView's
+        # constructor) because Tag Database is always the eager default
+        # tab, so self.tag_panel already exists by the time this ever
+        # runs, however much later that turns out to be. Goes through
+        # .table since CardDatabaseView WRAPS the real CardTableView
+        # rather than being one itself (see card_database_view.py's
+        # module docstring for why).
+        self.card_database.table.tag_source = self.tag_panel.tree_pane
+        return self.card_database
+
+    def _build_deck_viewer(self):
+        self.deck_viewer = DeckViewerView()
+        return self.deck_viewer
+
+    def _ensure_view_built(self, index):
+        """Builds the view for `index` and swaps it into the stack, unless
+        that's already been done -- see the lazy-construction comment
+        above self._view_builders in __init__."""
+        if index in self._built_view_indexes:
+            return
+        _key, builder = self._view_builders[index]
+        real_widget = builder()
+        placeholder = self.stack.widget(index)
+        self.stack.removeWidget(placeholder)
+        placeholder.deleteLater()
+        self.stack.insertWidget(index, real_widget)
+        self._built_view_indexes.add(index)
+
     def _on_tab_changed(self, key):
-        self.stack.setCurrentIndex(self._tab_indexes[key])
+        index = self._tab_indexes[key]
+        self._ensure_view_built(index)
+        self.stack.setCurrentIndex(index)
         self._refresh_status_bar()
         self._focus_current_view()
 
@@ -134,13 +179,23 @@ class MainWindow(QMainWindow):
         # "focused task, dismiss when done" shape .exec() is for, unlike
         # the card detail popup's .show() (browse-while-open) behavior.
         # Built once, reused thereafter (see self._options_dialog's own
-        # comment in __init__).
+        # comment in __init__). The import itself is deferred to here
+        # too, not done at module level -- options_dialog.py (plus
+        # dialog_common.py and tree_pane's ICON_PALETTE it pulls in)
+        # measured a real, nonzero import cost; paying that on every
+        # single app launch, whether or not this menu item is ever
+        # clicked in a given session, is exactly the kind of avoidable
+        # startup work this app's snappiness priority argues against.
+        # Python caches the import either way, so this only costs
+        # anything on the FIRST open, same as OptionsDialog itself.
         if self._options_dialog is None:
+            from options_dialog import OptionsDialog
             self._options_dialog = OptionsDialog(self)
         self._options_dialog.exec()
 
     def _open_data_management(self):
         if self._data_management_dialog is None:
+            from data_management_dialog import DataManagementDialog
             self._data_management_dialog = DataManagementDialog(self)
         self._data_management_dialog.exec()
 
@@ -297,11 +352,53 @@ SideNav QPushButton:pressed {
 """
 
 
+def _build_splash_pixmap():
+    """
+    Drawn with QPainter rather than loading a bundled image file -- same
+    reasoning tree_pane.py's own _make_icon() already established for
+    icons: no extra asset to ship or a new dependency to manage, and a
+    solid-color pixmap plus a couple of drawText() calls is plenty for a
+    screen that's only ever on-screen for a moment.
+    """
+    pixmap = QPixmap(380, 220)
+    pixmap.fill(QColor("#1e1f22"))
+    painter = QPainter(pixmap)
+    painter.setPen(QColor("#3a3c41"))
+    painter.drawRect(pixmap.rect().adjusted(0, 0, -1, -1))
+    painter.setPen(QColor("#e3e3e3"))
+    title_font = painter.font()
+    title_font.setPointSize(15)
+    title_font.setBold(True)
+    painter.setFont(title_font)
+    painter.drawText(pixmap.rect().adjusted(0, -20, 0, -20), Qt.AlignCenter, "MTG Local Database")
+    painter.end()
+    return pixmap
+
+
 def main():
     app = QApplication(sys.argv)
     app.setStyleSheet(STYLE_SHEET)
+
+    # Shown immediately, before MainWindow's own construction (which does
+    # real, measurable work -- see the lazy-view-construction comment in
+    # MainWindow.__init__) even begins. This doesn't make the app launch
+    # any FASTER -- most of a cold Qt app's startup cost is native
+    # libraries loading, which is well outside anything Python-level code
+    # can speed up -- but it means the user sees SOMETHING respond to
+    # their double-click right away instead of a blank/frozen window for
+    # however long that takes. Standard, honest mitigation for PERCEIVED
+    # responsiveness in any native-toolkit-heavy GUI app's cold start;
+    # doesn't pretend to fix the underlying cost, just stops hiding it
+    # behind nothing happening.
+    splash = QSplashScreen(_build_splash_pixmap())
+    splash.showMessage("Loading\u2026", Qt.AlignHCenter | Qt.AlignBottom, QColor("#a8adb5"))
+    splash.show()
+    app.processEvents()  # force the splash to actually paint before MainWindow's construction blocks the event loop
+
     window = MainWindow()
     window.show()
+    splash.finish(window)
+
     sys.exit(app.exec())
 
 

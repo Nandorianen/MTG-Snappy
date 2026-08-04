@@ -446,6 +446,46 @@ storage -- was worth solving now rather than retrofitting later:
   own background check happens to complete -- not all at once, not in any
   particular order, and never blocking the others.
 
+**UPDATE (second follow-up round): app-launch delay + first-dialog-open
+delay, profiled and addressed where it was ours to fix.** Measured
+directly rather than guessing (`time.perf_counter()` around imports and
+construction, both in isolation and end-to-end):
+- **Cold PySide6 native-library load time is the dominant cost, and it's
+  not fixable from Python code.** Measured wildly inconsistent numbers for
+  literally the same operation in this sandbox (4.4s, then 5.6s, for
+  `import PySide6.QtWidgets` alone) -- too noisy to draw a precise number
+  from, but consistent with the well-known general reality that any
+  PySide6/PyQt app pays a real, largely-fixed cost the first time its
+  native `.so`/`.dll` bindings get read off disk in a process, especially
+  on slower storage. This is a property of using a large compiled Qt
+  binding at all, not something restructuring our own ~15 files can erase.
+- **What WAS ours to fix, and is now fixed:**
+  - **Lazy top-level view construction in `main.py`** (`MainWindow`'s
+    `_view_builders` / `_ensure_view_built`) -- only the default-visible
+    tab (Tag Database) gets built at startup now; Card Database and Deck
+    Viewer build on first navigation to them, same pattern
+    `VerticalTabDialog` already uses for dialog tabs. Measured ~65ms of
+    startup work eliminated against today's tiny 9-card mock dataset --
+    will matter far more once real Scryfall data replaces it.
+  - **`options_dialog`/`data_management_dialog` are no longer imported at
+    module level in `main.py`** -- each is imported lazily inside its own
+    `_open_*` method, the first time it's actually invoked, so that
+    Python-level import cost isn't paid on every single app launch for a
+    session that never opens either dialog.
+  - **A real `QSplashScreen`** (`main.py`'s `_build_splash_pixmap()`,
+    drawn with `QPainter` rather than a bundled image asset, same
+    reasoning `tree_pane.py`'s `_make_icon()` already established) is now
+    shown immediately in `main()`, before `MainWindow`'s own construction
+    begins. Doesn't reduce the underlying native-library-load time at
+    all -- it's a PERCEIVED-responsiveness fix: the user sees something
+    respond to their launch immediately instead of nothing happening for
+    however long that cost turns out to be on their machine.
+- Individually profiled every one of this project's own files' import
+  cost -- none showed a standout hotspot (all under 20ms, most under
+  5ms) -- so there's no single slow file left to chase here; what
+  remained (per-launch view construction, deferred-until-needed dialog
+  imports) is what got fixed above.
+
 ## "Have" / "Want" / "In Deck" count columns (raised alongside language/condition)
 UPDATE: Have/Want now exist as real columns (dynamically labeled per table)
 across both All Card Database and Inventory, and are filterable by exact

@@ -14,9 +14,11 @@ from PySide6.QtCore import Signal
 
 # (internal key, display label) -- the key is what gets emitted on view_changed
 # and is what main.py uses to decide which widget to show in the QStackedWidget.
+# Order here is also the order Ctrl-less digit shortcuts 1/2/3 map to (see
+# main.py's _handle_digit_shortcut) and the order tabs appear top-to-bottom.
 TABS = [
-    ("tags", "Tag Database"),
     ("cards", "Card Database"),
+    ("tags", "Tag Database"),
     ("decks", "Deck Viewer"),
 ]
 
@@ -44,7 +46,11 @@ class SideNav(QWidget):
             layout.addWidget(button)
 
         layout.addStretch()
-        self.buttons["tags"].setChecked(True)  # default tab on startup
+        # Deliberately NO default-checked button: the app opens with nothing
+        # selected and an empty placeholder pane in the main content area
+        # (see main.py) until the user actually picks a tab. QButtonGroup
+        # with setExclusive(True) is fine left with none checked -- that
+        # only constrains "at most one checked," not "always exactly one."
 
     def _on_clicked(self, key):
         self.view_changed.emit(key)

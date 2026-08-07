@@ -1,5 +1,98 @@
 # MTG Local Database — Prototype
 
+## Startup empty-state, tab reorder, Excel-parity fixes (this round)
+
+- **App opens with NO tab selected** -- an empty pane ("Open any of the
+  tabs on the left...") instead of defaulting to Tag Database. SideNav no
+  longer auto-checks a button at startup; `main.py`'s stack has the empty
+  pane at index 0, with every real tab's stack position offset by one
+  (`MainWindow.STACK_OFFSET`). Nothing is built eagerly anymore either --
+  every tab (including what used to be the eager default) now goes
+  through the same lazy-build-on-first-visit path, backed by the same
+  background preload queue as before.
+- **Tab order is now Card Database, Tag Database, Deck Viewer** (was
+  Tag/Card/Deck) -- `side_nav.py`'s `TABS` is still the single source of
+  truth both the side-nav buttons and the digit shortcuts below derive
+  from.
+- **1/2/3 switch tabs directly, no Ctrl.** Previously Ctrl+1/2/3 via plain
+  `QShortcut`s; a bare-digit `QShortcut` would have stolen '1'/'2'/'3' away
+  from any focused text field (a filter search box, an in-progress Qty
+  edit) before that widget ever saw the keystroke. Implemented instead as
+  an app-level event filter (`MainWindow.eventFilter`) that only treats a
+  bare digit as a tab switch when this window is the active one AND focus
+  isn't in a `QLineEdit` -- every editable text field in this app is one
+  under the hood, including the table's own default cell editor.
+- **Card Database header now shows sort direction + a filter indicator
+  per column** (`SplitDropdownHeader`'s new `_paint_sort_arrow`/
+  `_paint_filter_dot`) -- a small ▲/▼ for the actively-sorted column
+  (previously only the Edition/Rarity split column showed anything, and
+  it was direction-blind), and a gold dot on any column with an active
+  value filter (including Mana Cost's mono-only/excluded-color state,
+  which isn't a plain `_column_filters` entry). No more right-clicking
+  every column to check whether it's currently filtered.
+- **New "Clear Filters" button** (`CardDatabaseView`, next to Columns) and
+  **Ctrl+Alt+F** (`CardTableView`) both call the same new
+  `CardTableModel.clear_all_filters()` -- resets every column's value
+  filter plus Mana Cost's separate mono/excluded-color state in one shot,
+  without touching sort or grouping.
+- **Keyboard selection now actually matches Excel** -- see "Keyboard
+  navigation rewrite" below, its own section since the bug and fix are
+  worth understanding in detail.
+- **Mana Cost color filtering is now robust against non-color symbols
+  (e.g. "X") in a card's `colors` list** -- see "Mana Cost / X robustness"
+  below.
+
+### Keyboard navigation rewrite: anchor tracking
+
+Two real bugs, both from the same root cause: the old code used
+`self.currentIndex()` as one corner of a selection rectangle, but
+`currentIndex()` is also what gets MOVED by every one of these actions --
+so it couldn't simultaneously be "the fixed starting corner" too.
+
+- **Ctrl+Shift+Right then Ctrl+Shift+Down only selected the last column**,
+  not the whole rectangle -- because the second call read `currentIndex()`
+  (now sitting at the FAR corner from the first extend) as its anchor,
+  instead of the cell the whole chain actually started from.
+- **Ctrl+End looked like it selected both the current cell and the last
+  cell** -- `QAbstractItemView.setCurrentIndex()` doesn't reliably CLEAR a
+  prior selection; it can just add the new cell on top of whatever was
+  already selected.
+
+**The fix**: `CardTableView` now tracks a real `self._selection_anchor` --
+the fixed corner a Ctrl+Shift+... chain extends FROM, updated only on
+non-shift navigation (a plain click, a plain arrow key, Ctrl+Home/End) and
+left untouched by anything that EXTENDS a selection (plain Shift+Arrow,
+Ctrl+Shift+Arrow/Home/End). Every extend now re-derives the FULL
+anchor-to-target rectangle from scratch (`_extend_selection_to`) rather
+than unioning onto whatever was already selected, and Ctrl+Home/End go
+through the selection model directly with an explicit `ClearAndSelect`
+(`_move_current_clearing_selection`) instead of the unreliable
+convenience `setCurrentIndex()`. Ctrl+Shift+Home/End (select-to-corner,
+which Excel also supports and the old code didn't have at all) came along
+for free once `_extend_selection_to` existed as a shared primitive.
+Confirmed headlessly: a Shift+Right (native Qt) followed by a
+Ctrl+Shift+Down (ours) correctly extends from the ORIGINAL anchor, not
+wherever the first extension left off -- the two mechanisms share the
+same anchor concept without any coordination code, because neither one
+ever touches it during a shift-held move, only ever reads it.
+
+### Mana Cost / X robustness
+
+Investigated the reported "{X} should count as colorless, not be affected
+by filters" -- turns out the mock data already gets this right structurally
+(Endless One's `colors` is `[]`, and colorless cards were already
+structurally exempt from every color-filter check). The REAL latent bug:
+`_color_category()` did `COLOR_NAMES[colors[0]]` with no validation, so if
+a card's `colors` list ever contained anything other than a genuine WUBRG
+letter -- e.g. a stray "X" from messier real-world/imported data -- it
+would raise `KeyError` and crash. New `_real_colors()` helper strips
+`colors` down to genuine WUBRG letters before ANY category/rank/filter
+logic touches it, everywhere colors are read (`_color_category`,
+`_color_rank`, `CardTableModel._passes_filters`) -- consistent with the
+app's offline-first "pick up whatever valid-ish data it's given" priority,
+and makes the exemption robust by construction instead of by accident of
+today's mock data happening to already model it as `colors: []`.
+
 ## Loading time optimizations
 
 Tabs/dialogs still build lazily (fast launch), but now preload in the background

@@ -3,7 +3,14 @@ main.py
 -------
 Entry point. Assembles the Deckbox-style layout: a narrow tab strip on the
 left (SideNav) driving a QStackedWidget on the right that swaps between
-Tag Database, Card Database, and Deck Viewer.
+Card Database, Tag Database, and Deck Viewer (in that order -- see
+side_nav.py's TABS).
+
+The app opens with NO tab selected and an empty placeholder pane ("Open
+any of the tabs on the left...") rather than defaulting to one -- see
+self._build_empty_state() and the stack-index-offset comment in __init__.
+Tabs are switchable via 1/2/3 (no Ctrl -- see _handle_digit_shortcut)
+matching TABS' order, in addition to clicking the side nav.
 
 Card Database is the full browsable catalog (every card, showing both Have
 and Want counts) -- there's no separate always-filtered "Inventory" or
@@ -21,11 +28,11 @@ fixed panel, freeing up horizontal space for the spreadsheet itself.
 import sys
 from collections import deque
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QHBoxLayout, QStackedWidget,
-    QStatusBar, QMessageBox, QSplashScreen,
+    QApplication, QMainWindow, QWidget, QHBoxLayout, QLabel, QStackedWidget,
+    QStatusBar, QMessageBox, QSplashScreen, QLineEdit,
 )
-from PySide6.QtGui import QKeySequence, QShortcut, QPixmap, QColor, QPainter
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QKeySequence, QPixmap, QColor, QPainter
+from PySide6.QtCore import Qt, QEvent, QTimer
 
 from side_nav import SideNav, TABS
 from tag_tree import TagTreePanel
@@ -63,19 +70,20 @@ class MainWindow(QMainWindow):
         self._data_management_dialog = None
 
         # --- Build the views that live in the stack ---
-        # LAZY VIEW CONSTRUCTION: only the initially-visible tab (Tag
-        # Database, per SideNav's own default) gets built during startup.
-        # Card Database and Deck Viewer are real, non-trivial widget trees
-        # -- CardDatabaseView alone measured ~60ms even against today's
-        # tiny 9-card mock dataset, before any real data replaces it --
-        # that the user may not look at for a while, or at all, in a given
-        # session. Building them anyway on every single launch is exactly
-        # the kind of work standing between opening the app and having a
-        # usable window that conflicts with this app's snappiness
-        # priority. Same lazy-build-on-first-visit pattern
-        # VerticalTabDialog already uses for dialog tabs (dialog_common.py)
-        # -- see that module's docstring for the general reasoning;
-        # applied here to the top-level SideNav tabs instead.
+        # LAZY VIEW CONSTRUCTION: no tab is built during startup at all --
+        # the app now opens on the empty-state placeholder (see below), so
+        # EVERY tab is deferred until either the user clicks it or the
+        # background preload queue gets to it. Card Database and Deck
+        # Viewer are real, non-trivial widget trees -- CardDatabaseView
+        # alone measured ~60ms even against today's tiny 9-card mock
+        # dataset, before any real data replaces it -- so building any of
+        # them before they're actually needed is exactly the kind of work
+        # standing between opening the app and having a usable window,
+        # which conflicts with this app's snappiness priority. Same
+        # lazy-build-on-first-visit pattern VerticalTabDialog already uses
+        # for dialog tabs (dialog_common.py) -- see that module's
+        # docstring for the general reasoning; applied here to the
+        # top-level SideNav tabs instead.
         #
         # Lazy alone just MOVES the one-time construction cost from launch
         # to "whenever the user first clicks over" -- still a real, felt
@@ -84,19 +92,28 @@ class MainWindow(QMainWindow):
         # end of __init__ for how that gap gets closed without giving the
         # snappy-launch win back.
         self._view_builders = [
-            ("tags", self._build_tag_panel),
             ("cards", self._build_card_database),
+            ("tags", self._build_tag_panel),
             ("decks", self._build_deck_viewer),
         ]
         # Derived from _view_builders' own order rather than written out a
-        # second time -- the two can never drift apart this way.
+        # second time -- the two can never drift apart this way. Offset by
+        # STACK_OFFSET below since index 0 in the real QStackedWidget is
+        # the empty-state placeholder, not a tab.
         self._tab_indexes = {key: i for i, (key, _builder) in enumerate(self._view_builders)}
         self._built_view_indexes = set()
 
+        # index 0 = the "nothing open yet" placeholder shown at startup;
+        # every real tab's stack position is its _view_builders index + 1.
+        self.STACK_OFFSET = 1
         self.stack = QStackedWidget()
+        self.stack.addWidget(self._build_empty_state())
         for _ in self._view_builders:
             self.stack.addWidget(QWidget())  # placeholder, replaced on first visit
-        self._ensure_view_built(self._tab_indexes["tags"])  # eager: the default visible tab
+        # Deliberately NOT building any tab eagerly here (unlike the old
+        # "always show Tag Database on launch" behavior) -- the app now
+        # opens on the empty-state pane above, and every real tab is left
+        # to the background preload queue below / an actual click.
 
         # --- Side nav ---
         self.side_nav = SideNav()
@@ -112,8 +129,7 @@ class MainWindow(QMainWindow):
 
         self._build_menu_bar()
         self._build_status_bar()
-        self._build_shortcuts()
-        self._focus_current_view()  # deterministic initial focus, not Qt's default guess
+        self._focus_current_view()  # no-op until a tab is actually opened
 
         # --- Background preload: fill the idle time AFTER launch instead
         # of wasting it, without giving back the fast-launch win above. ---
@@ -142,26 +158,48 @@ class MainWindow(QMainWindow):
         # just a harmless no-op. Nothing downstream needed to change.
         self._preload_queue = deque([
             lambda: self._ensure_view_built(self._tab_indexes["cards"]),
+            lambda: self._ensure_view_built(self._tab_indexes["tags"]),
             lambda: self._ensure_view_built(self._tab_indexes["decks"]),
             self._preload_options_dialog,
             self._preload_data_management_dialog,
         ])
         QTimer.singleShot(PRELOAD_STEP_DELAY_MS, self._run_next_preload_step)
 
+        # Digit-only (no Ctrl) tab shortcuts -- see _handle_digit_shortcut
+        # for why this is an app-level event filter rather than a plain
+        # QShortcut: a QShortcut would steal '1'/'2'/'3' away from any
+        # text field (a filter search box, an in-progress Qty edit)
+        # before that widget ever saw the keystroke.
+        QApplication.instance().installEventFilter(self)
+
+    def _build_empty_state(self):
+        """
+        The pane shown before the user has opened any tab -- deliberately
+        replacing the old "always default to Tag Database" behavior, so
+        launching the app never silently commits to building a tab the
+        user didn't actually ask for.
+        """
+        label = QLabel("Open any of the tabs on the left to view their contents.")
+        label.setAlignment(Qt.AlignCenter)
+        label.setStyleSheet("color: #a8adb5;")
+        return label
+
     def _build_tag_panel(self):
         self.tag_panel = TagTreePanel()
         return self.tag_panel
 
     def _build_card_database(self):
+        # Right-click-to-tag needs a reference to the Tag Database's tree.
+        # Tag Database is no longer guaranteed to exist yet by the time
+        # this runs -- nothing is built eagerly anymore (see the
+        # empty-state startup change) -- so explicitly ensure it first
+        # rather than assuming some other code path already triggered it.
+        # Reuses the same guarded builder every other path goes through,
+        # so this is a harmless no-op if Tag Database already exists.
+        self._ensure_view_built(self._tab_indexes["tags"])
         self.card_database = CardDatabaseView(get_all_cards())
-        # Right-click-to-tag needs a reference to the Tag Database's tree --
-        # safe to wire up here (rather than passed into CardDatabaseView's
-        # constructor) because Tag Database is always the eager default
-        # tab, so self.tag_panel already exists by the time this ever
-        # runs, however much later that turns out to be -- whether that's
-        # the user clicking over, or the background preload queue getting
-        # to it first. Goes through .table since CardDatabaseView WRAPS
-        # the real CardTableView rather than being one itself (see
+        # Goes through .table since CardDatabaseView WRAPS the real
+        # CardTableView rather than being one itself (see
         # card_database_view.py's module docstring for why).
         self.card_database.table.tag_source = self.tag_panel.tree_pane
         return self.card_database
@@ -171,27 +209,30 @@ class MainWindow(QMainWindow):
         return self.deck_viewer
 
     def _ensure_view_built(self, index):
-        """Builds the view for `index` and swaps it into the stack, unless
-        that's already been done -- see the lazy-construction comment
-        above self._view_builders in __init__. Called from BOTH the
-        on-demand tab-click path (_on_tab_changed) and the background
-        preload queue -- this shared guard is what makes calling it twice
-        (once from each, in either order) safe and free the second time."""
+        """Builds the view for `index` (an index into self._view_builders,
+        NOT a stack position -- see STACK_OFFSET) and swaps it into the
+        stack, unless that's already been done -- see the lazy-
+        construction comment above self._view_builders in __init__.
+        Called from BOTH the on-demand tab-click path (_on_tab_changed)
+        and the background preload queue -- this shared guard is what
+        makes calling it twice (once from each, in either order) safe and
+        free the second time."""
         if index in self._built_view_indexes:
             return
         _key, builder = self._view_builders[index]
         real_widget = builder()
-        placeholder = self.stack.widget(index)
+        stack_index = index + self.STACK_OFFSET
+        placeholder = self.stack.widget(stack_index)
         self.stack.removeWidget(placeholder)
         placeholder.deleteLater()
-        self.stack.insertWidget(index, real_widget)
+        self.stack.insertWidget(stack_index, real_widget)
         self._built_view_indexes.add(index)
 
     def _on_tab_changed(self, key):
         index = self._tab_indexes[key]
         self._ensure_view_built(index)
-        self.stack.setCurrentIndex(index)
-        self._refresh_status_bar()
+        self.stack.setCurrentIndex(index + self.STACK_OFFSET)
+        self._refresh_status_bar(key)
         self._focus_current_view()
 
     def _focus_current_view(self):
@@ -203,7 +244,8 @@ class MainWindow(QMainWindow):
         card_database_view.py). This matters beyond general keyboard-UX
         niceness: it's what makes Tab reliably collapse the tree pane on
         the very FIRST press rather than only from the second press onward
-        (see TreePane.focus_tree's docstring).
+        (see TreePane.focus_tree's docstring). The empty-state placeholder
+        has neither attribute, so this is a no-op before any tab is opened.
         """
         current = self.stack.currentWidget()
         if hasattr(current, "tree_pane"):
@@ -302,23 +344,56 @@ class MainWindow(QMainWindow):
     def _build_status_bar(self):
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
-        self._refresh_status_bar()
+        self._refresh_status_bar(None)  # empty state at startup -- nothing to report yet
 
-    def _refresh_status_bar(self):
+    def _refresh_status_bar(self, key):
         current = self.stack.currentWidget()
         if hasattr(current, "table"):
             count = current.table.card_model.rowCount()
             self.status_bar.showMessage(f"{count} cards")
-        else:
+        elif key == "tags":
             self.status_bar.showMessage("Tag database")
+        elif key == "decks":
+            self.status_bar.showMessage("Deck viewer")
+        else:
+            self.status_bar.clearMessage()  # the empty-state placeholder -- nothing open
 
-    def _build_shortcuts(self):
-        # Ctrl+1/2/3 jump directly to a tab, in the same order as TABS in
-        # side_nav.py -- defined there once so this loop and the button
-        # order can never drift apart.
-        for i, (key, _label) in enumerate(TABS, start=1):
-            shortcut = QShortcut(QKeySequence(f"Ctrl+{i}"), self)
-            shortcut.activated.connect(lambda k=key: self.side_nav.select_tab(k))
+    # --- Digit-only tab shortcuts (1/2/3, no Ctrl) -----------------------
+    # A plain QShortcut bound to Key_1/2/3 would intercept those keys
+    # ahead of whichever widget actually has focus -- including a filter
+    # search box or an in-progress Qty cell edit, both real QLineEdits a
+    # user might legitimately be typing a digit into. An app-level event
+    # filter lets this check what's actually focused first, the same
+    # "install on QApplication, decide case-by-case" pattern
+    # collapsible_pane.py and card_table.py's _MenuSearchBox already use
+    # for analogous "this key means something different depending on
+    # context" situations.
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.KeyPress and event.modifiers() == Qt.NoModifier:
+            key = event.key()
+            if key in (Qt.Key_1, Qt.Key_2, Qt.Key_3) and self._digit_shortcuts_active():
+                index = {Qt.Key_1: 0, Qt.Key_2: 1, Qt.Key_3: 2}[key]
+                self.side_nav.select_tab(TABS[index][0])
+                return True
+        return super().eventFilter(watched, event)
+
+    def _digit_shortcuts_active(self):
+        """
+        Only treat a bare 1/2/3 as a tab switch when: this window (not a
+        modal dialog like Options) is the active one, AND focus isn't
+        sitting in a text-entry widget that legitimately wants to receive
+        a literal digit -- a filter menu's search box, the Qty column's F2
+        edit, a QLineEdit anywhere in a dialog, etc. QLineEdit covers all
+        of those (every editable text field in this app, including the
+        table's own default cell editor, is a QLineEdit under the hood).
+        """
+        if QApplication.activeWindow() is not self:
+            return False
+        return not isinstance(QApplication.focusWidget(), QLineEdit)
+
+    def closeEvent(self, event):
+        QApplication.instance().removeEventFilter(self)
+        super().closeEvent(event)
 
 
 STYLE_SHEET = """

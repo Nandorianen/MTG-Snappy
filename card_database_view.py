@@ -98,6 +98,20 @@ class CardDatabaseView(QWidget):
         self.columns_button.setStyleSheet(TOGGLE_STYLE)
         self.columns_button.clicked.connect(self._show_columns_menu)
 
+        # One-shot action (not checkable, like Columns) -- resets every
+        # per-column value filter AND the Mana Cost row's separate mono-
+        # only/excluded-color state in one go. Same underlying model method
+        # (CardTableModel.clear_all_filters) the table's own Ctrl+Alt+F
+        # shortcut calls -- see card_table.py -- so the button and the
+        # hotkey can never drift apart on what "clear filters" actually
+        # means. Deliberately does NOT touch the Inventory/Wishlist toggle
+        # buttons directly; they're just another filter on Qty/Cross Qty
+        # columns and get reset the same way everything else does, then
+        # re-sync themselves via the modelReset listener below like always.
+        self.clear_filters_button = QPushButton("Clear Filters")
+        self.clear_filters_button.setStyleSheet(TOGGLE_STYLE)
+        self.clear_filters_button.clicked.connect(self.table.card_model.clear_all_filters)
+
         # Direction 1: button -> model. Each button only ever adds/removes
         # the single "0" value from its own column's exclusion set (via
         # set_value_excluded), leaving any OTHER manual exclusion a user
@@ -122,6 +136,7 @@ class CardDatabaseView(QWidget):
         button_row.addWidget(self.inventory_toggle)
         button_row.addWidget(self.wishlist_toggle)
         button_row.addWidget(self.columns_button)
+        button_row.addWidget(self.clear_filters_button)
         button_row.addStretch()  # reserved space -- future search box lands here
 
         layout = QVBoxLayout(self)

@@ -43,7 +43,7 @@ from PySide6.QtCore import (
     Qt, QAbstractTableModel, QModelIndex, Signal, QTimer, QRect, QEvent,
     QItemSelection, QItemSelectionModel,
 )
-from PySide6.QtGui import QKeySequence, QPainter, QColor, QBrush
+from PySide6.QtGui import QKeySequence, QPainter, QColor, QBrush, QShortcut
 
 from mock_data import RARITY_ORDER, PRICE_SOURCES
 from card_popover import CardPopover
@@ -105,6 +105,20 @@ DROPDOWN_COLUMNS = {COL_TYPE, COL_MANA, COL_PRICE}
 # STYLE_SHEET.
 HEADER_BG = "#141517"
 
+# Small header overlays -- a sort arrow (direction-aware) and a "this
+# column has an active filter" dot, added so the header alone tells you
+# what's currently sorted/filtered without having to right-click every
+# column to check (Excel shows the same two things via its own header
+# glyphs). SORT_ARROW_COLOR matches the app's normal text color; the
+# filter dot reuses the same gold accent tag_apply_dialog.py already uses
+# for "this is actively toggled on" (CHECKED_COLOR there) -- a different
+# hue from the blue selection color, so the two kinds of "something is
+# active here" don't read as the same signal.
+SORT_ARROW_COLOR = "#e3e3e3"
+FILTER_DOT_COLOR = "#e6c15c"
+FILTER_DOT_SIZE = 6
+SORT_ARROW_ZONE_WIDTH = 14
+
 # Columns offered in the right-click "Filter by..." value checklist. Skipped
 # for the checkbox/actions utility columns (nothing meaningful to filter by)
 # and for Price (continuous numeric data -- range filtering is a job for the
@@ -143,6 +157,24 @@ COLOR_NAMES = {"W": "White", "U": "Blue", "B": "Black", "R": "Red", "G": "Green"
 NAME_TO_COLOR_LETTER = {name: letter for letter, name in COLOR_NAMES.items()}
 
 
+def _real_colors(colors):
+    """
+    Filters a card's raw `colors` list down to genuine WUBRG letters.
+    Real Scryfall data never contains anything else, but this app is meant
+    to tolerate whatever valid-ish data it's pointed at (see the app's
+    offline-first "pick up whatever data the user supplies" priority) --
+    a non-color symbol like "X" (generic/variable mana -- conceptually
+    the same as any other numeric pip, e.g. the "1" in "{1}{G}") ending
+    up in this list should be inert everywhere colors are used for
+    categorizing, grouping, or filtering, exactly like a plain number
+    already is, rather than crashing a COLOR_NAMES[...] lookup or
+    silently counting toward "how many colors does this card have."
+    Every call site that reads a card's raw colors for category/rank/
+    filter purposes goes through this first.
+    """
+    return [c for c in colors if c in COLOR_NAMES]
+
+
 def _type_category(type_line):
     stripped = type_line
     for supertype in SUPERTYPES_TO_STRIP:
@@ -159,6 +191,7 @@ def _type_rank(card):
 
 
 def _color_category(colors):
+    colors = _real_colors(colors)
     if not colors:
         return "Colorless"
     if len(colors) == 1:
@@ -176,7 +209,7 @@ def _color_rank(card):
     compare their second element against each other because their first
     elements (0-5 vs 10+) always differ first.
     """
-    colors = card.get("colors", [])
+    colors = _real_colors(card.get("colors", []))
     if not colors:
         return (0, "")
     if len(colors) == 1:
@@ -397,6 +430,24 @@ class CardTableModel(QAbstractTableModel):
             current.discard(value)
         self.set_column_filter(column, current)  # already calls _commit_reorder()
 
+    def clear_all_filters(self):
+        """
+        Resets every per-column value-exclusion filter AND the Mana Cost
+        row's separate mono-only/excluded-color state back to "nothing
+        filtered," in one action -- the single underlying operation both
+        CardDatabaseView's "Clear Filters" button and CardTableView's
+        Ctrl+Alt+F shortcut call, so the two can never drift on what
+        "clear filters" actually resets. Sorting and grouping are left
+        untouched -- this only clears FILTERS, matching what a "clear
+        filters" action should do rather than also rearranging the table.
+        """
+        if not self._column_filters and not self.mana_mono_only and not self.mana_excluded_colors:
+            return  # already clear -- skip a pointless model reset
+        self._column_filters = {}
+        self.mana_mono_only = False
+        self.mana_excluded_colors = set()
+        self._commit_reorder()
+
     def distinct_values_for_column(self, column):
         values = set()
         for card in self._source_cards:
@@ -462,7 +513,12 @@ class CardTableModel(QAbstractTableModel):
                 continue
             if self._raw_filter_value(card, column) in excluded:
                 return False
-        card_colors = card.get("colors", [])
+        # _real_colors() strips anything that isn't a genuine WUBRG letter
+        # (e.g. a stray "X" from generic/variable mana) before either check
+        # below -- a card whose only "color" info is really just a generic/X
+        # symbol is exactly as colorless as a card whose cost is all plain
+        # numbers, and should be exempt from both checks the identical way.
+        card_colors = _real_colors(card.get("colors", []))
         # Colorless cards (card_colors == []) never intersect ANY excluded
         # set, so they're structurally exempt here too -- same principle as
         # the checklist never offering a "Colorless" checkbox in the first
@@ -745,13 +801,49 @@ class SplitDropdownHeader(QHeaderView):
         self._resize_start_width = None
 
     def paintSection(self, painter: QPainter, rect: QRect, logical_index: int):
+        # Sort arrows are painted INSIDE _paint_split_section and
+        # _paint_section_with_arrow (they need to dodge the split divider /
+        # dropdown-arrow zone respectively); plain columns get theirs
+        # painted here, right after Qt's own default section painting. The
+        # filter dot is uniform across every column shape, so it's always
+        # painted last, from this one place.
         if logical_index == COL_EDITION_RARITY:
             self._paint_split_section(painter, rect)
-            return
-        if logical_index in DROPDOWN_COLUMNS:
+        elif logical_index in DROPDOWN_COLUMNS:
             self._paint_section_with_arrow(painter, rect, logical_index)
-            return
-        super().paintSection(painter, rect, logical_index)
+        else:
+            super().paintSection(painter, rect, logical_index)
+            if self._column_keys.get(logical_index) == self._active_sort_key:
+                self._paint_sort_arrow(painter, rect)
+        if self._column_has_active_filter(logical_index):
+            self._paint_filter_dot(painter, rect)
+
+    def _sort_arrow_glyph(self):
+        model = self.model()
+        return "\u25bc" if (model is not None and model._sort_reverse) else "\u25b2"
+
+    def _paint_sort_arrow(self, painter, rect, right_margin=4):
+        painter.save()
+        painter.setPen(QColor(SORT_ARROW_COLOR))
+        arrow_rect = QRect(rect.right() - SORT_ARROW_ZONE_WIDTH - right_margin, rect.top(),
+                            SORT_ARROW_ZONE_WIDTH, rect.height())
+        painter.drawText(arrow_rect, Qt.AlignCenter, self._sort_arrow_glyph())
+        painter.restore()
+
+    def _column_has_active_filter(self, column):
+        model = self.model()
+        if model is None:
+            return False
+        if column == COL_MANA:
+            return bool(model.mana_excluded_colors) or model.mana_mono_only
+        return bool(model._column_filters.get(column))
+
+    def _paint_filter_dot(self, painter, rect):
+        painter.save()
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(FILTER_DOT_COLOR))
+        painter.drawEllipse(rect.left() + 4, rect.top() + 4, FILTER_DOT_SIZE, FILTER_DOT_SIZE)
+        painter.restore()
 
     def _paint_split_section(self, painter, rect):
         painter.save()
@@ -769,10 +861,11 @@ class SplitDropdownHeader(QHeaderView):
         # fixed position within each half, so "Ed"/"Rar" never move.
         painter.drawText(left_rect, Qt.AlignCenter, "Ed")
         painter.drawText(right_rect, Qt.AlignCenter, "Rar")
-        if self._active_sort_key == "set":
-            painter.drawText(left_rect.adjusted(0, 0, -4, 0), Qt.AlignRight | Qt.AlignVCenter, "▲")
-        elif self._active_sort_key == "rarity":
-            painter.drawText(right_rect.adjusted(0, 0, -4, 0), Qt.AlignRight | Qt.AlignVCenter, "▲")
+        if self._active_sort_key in ("set", "rarity"):
+            target_rect = left_rect if self._active_sort_key == "set" else right_rect
+            painter.setPen(QColor(SORT_ARROW_COLOR))
+            painter.drawText(target_rect.adjusted(0, 0, -4, 0), Qt.AlignRight | Qt.AlignVCenter,
+                              self._sort_arrow_glyph())
 
         painter.setPen(self.palette().mid().color())
         painter.drawLine(mid_x, rect.top() + 4, mid_x, rect.bottom() - 4)
@@ -802,6 +895,14 @@ class SplitDropdownHeader(QHeaderView):
         arrow_rect = QRect(rect.right() - self.ARROW_WIDTH, rect.top(), self.ARROW_WIDTH, rect.height())
         painter.drawText(arrow_rect, Qt.AlignCenter, "▾")
         painter.restore()
+
+        # Sort arrow (if this column is the active sort) sits just to the
+        # LEFT of the dropdown-arrow zone rather than overlapping it -- the
+        # two are unrelated (one opens a menu, the other shows sort state)
+        # and this column shape is the only one where both can be present
+        # on the same section at once.
+        if self._column_keys.get(logical_index) == self._active_sort_key:
+            self._paint_sort_arrow(painter, rect, right_margin=self.ARROW_WIDTH)
 
     # --- Manual resize: press near a border, drag, release -------------------
     def _resize_target_at(self, pos):
@@ -1165,6 +1266,17 @@ class CardTableView(QTableView):
         self.tag_source = None
         self._tag_dialog = None
 
+        # The fixed corner a Ctrl+Shift+Arrow/Home/End chain extends FROM --
+        # see keyPressEvent's anchor-tracking comment and _extend_selection_to
+        # for why this has to be tracked explicitly rather than re-derived
+        # from currentIndex() each time.
+        self._selection_anchor = QModelIndex()
+
+        clear_filters_shortcut = QShortcut(QKeySequence("Ctrl+Alt+F"), self)
+        clear_filters_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+        clear_filters_shortcut.activated.connect(self.card_model.clear_all_filters)
+        self._clear_filters_shortcut = clear_filters_shortcut  # keep alive
+
     def mousePressEvent(self, event):
         if event.button() == Qt.RightButton:
             # Deliberately swallowed rather than passed to the default
@@ -1182,6 +1294,13 @@ class CardTableView(QTableView):
             event.accept()
             return
         super().mousePressEvent(event)
+        # A plain click (no Shift/Ctrl) starts a brand new selection --
+        # this is the moment a future Ctrl+Shift+Arrow/Home/End chain
+        # should extend FROM. Shift/Ctrl-modified clicks deliberately
+        # don't touch the anchor (Shift-click extends from whatever's
+        # already there, same as Excel).
+        if event.button() == Qt.LeftButton and event.modifiers() == Qt.NoModifier:
+            self._selection_anchor = self.currentIndex()
 
     def contextMenuEvent(self, event):
         index = self.indexAt(event.pos())
@@ -1271,6 +1390,8 @@ class CardTableView(QTableView):
 
         modifiers = event.modifiers()
         key = event.key()
+        shift_held = bool(modifiers & Qt.ShiftModifier)
+        ctrl_shift = modifiers == (Qt.ControlModifier | Qt.ShiftModifier)
 
         if key == Qt.Key_Space and modifiers == Qt.ShiftModifier:
             # Excel: Shift+Space selects the entire current row.
@@ -1287,56 +1408,129 @@ class CardTableView(QTableView):
             return
 
         if modifiers == Qt.ControlModifier and key == Qt.Key_Home:
-            self.setCurrentIndex(self.card_model.index(0, 0))
+            self._move_current_clearing_selection(self.card_model.index(0, 0))
             return
 
         if modifiers == Qt.ControlModifier and key == Qt.Key_End:
             last_row = self.card_model.rowCount() - 1
             last_col = self.card_model.columnCount() - 1
             if last_row >= 0:
-                self.setCurrentIndex(self.card_model.index(last_row, last_col))
+                self._move_current_clearing_selection(self.card_model.index(last_row, last_col))
             return
 
-        if modifiers == (Qt.ControlModifier | Qt.ShiftModifier) and key in (
-            Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right
-        ):
+        if ctrl_shift and key in (Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right):
             self._extend_selection_to_edge(key)
+            return
+
+        if ctrl_shift and key == Qt.Key_Home:
+            self._extend_selection_to(self.card_model.index(0, 0))
+            return
+
+        if ctrl_shift and key == Qt.Key_End:
+            last_row = self.card_model.rowCount() - 1
+            last_col = self.card_model.columnCount() - 1
+            if last_row >= 0:
+                self._extend_selection_to(self.card_model.index(last_row, last_col))
             return
 
         super().keyPressEvent(event)
 
+        # ANCHOR TRACKING: any navigation Qt just handled NATIVELY (plain
+        # arrows, Home/End, Tab/Backtab, Page Up/Down) without Shift held
+        # is where a FUTURE Ctrl+Shift+Arrow/Home/End chain should extend
+        # FROM. Deliberately skipped when Shift IS held -- Qt's own native
+        # Shift+Arrow extend-selection handling uses its own internal
+        # anchor concept, which (since it's never touched here except by
+        # a genuine non-shift move) stays implicitly in sync with this
+        # one: both always point at "wherever the cursor was the last time
+        # a plain, non-extending move happened." That's what lets a mixed
+        # chain -- e.g. plain Shift+Right (native Qt), then
+        # Ctrl+Shift+Down (ours) -- extend from the SAME original cell
+        # instead of the two mechanisms disagreeing about where "the
+        # selection started" was.
+        if not shift_held and key in (
+            Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right,
+            Qt.Key_Home, Qt.Key_End, Qt.Key_PageUp, Qt.Key_PageDown,
+            Qt.Key_Tab, Qt.Key_Backtab,
+        ):
+            self._selection_anchor = self.currentIndex()
+
+    def _move_current_clearing_selection(self, target):
+        """
+        Ctrl+Home/Ctrl+End: moves the current cell to `target` and
+        COLLAPSES the selection down to just that one cell, matching
+        Excel. Plain QAbstractItemView.setCurrentIndex() doesn't reliably
+        do this -- it can leave the PREVIOUS selection in place and just
+        add the new cell to it, which is what made Ctrl+End look like it
+        selected "both the current cell and the last cell." Going through
+        the selection model directly with an explicit ClearAndSelect
+        command is what actually REPLACES the selection instead of
+        appending to it.
+        """
+        self.selectionModel().setCurrentIndex(target, QItemSelectionModel.ClearAndSelect)
+        self._selection_anchor = target
+
+    def _extend_selection_to(self, target):
+        """
+        Shared authority behind every Ctrl+Shift+... extension: selects
+        the full rectangle between the fixed ANCHOR cell (see keyPressEvent's
+        anchor-tracking comment) and `target`, then moves the current/
+        active cell to `target` without disturbing that selection. Always
+        a fresh ClearAndSelect over the WHOLE anchor-to-target rectangle
+        (never an incremental add onto whatever was already selected) --
+        that's what makes repeated presses always show exactly one
+        rectangle, never a leftover shape from an earlier, different
+        extension.
+        """
+        current = self.currentIndex()
+        if not current.isValid():
+            return
+        if not self._selection_anchor.isValid():
+            self._selection_anchor = current
+        self.selectionModel().select(
+            QItemSelection(self._selection_anchor, target), QItemSelectionModel.ClearAndSelect
+        )
+        # NOT self.setCurrentIndex(target) -- see _move_current_clearing_
+        # selection's docstring for why that's unreliable here. NoUpdate
+        # repositions the current-cell cursor without touching the
+        # selection just set above.
+        self.selectionModel().setCurrentIndex(target, QItemSelectionModel.NoUpdate)
+
     def _extend_selection_to_edge(self, key):
         """
-        Excel-familiar Ctrl+Shift+Arrow: extends the selection from the
-        current cell toward an edge. SIMPLIFIED compared to real Excel,
-        which jumps to the edge of the current contiguous block of
-        non-empty cells (requires scanning for the nearest "gap" in the
-        data, not implemented here) -- this always jumps straight to the
-        table's actual edge (first/last row or column), which is still a
-        genuinely useful "select to the end" action even if it doesn't
-        replicate Excel's contiguous-block-aware jump precisely.
+        Excel-familiar Ctrl+Shift+Arrow: moves ONE axis of the current
+        cell's position toward an edge, and lets _extend_selection_to
+        re-derive the full rectangle from the fixed anchor every time.
+        This is what makes a Right-then-Down chain select a whole
+        rectangle (anchor corner to bottom-right corner) instead of
+        collapsing to just the last axis pressed: only the axis the
+        arrow key actually points along changes here; the OTHER axis is
+        inherited from wherever the PREVIOUS extension already reached
+        (self.currentIndex()), not reset back to the anchor's own row/
+        column the way a naive "always pair with the anchor" formula
+        would.
+
+        SIMPLIFIED compared to real Excel, which jumps to the edge of the
+        current contiguous block of non-empty cells (requires scanning
+        for the nearest "gap" in the data, not implemented here) -- this
+        always jumps straight to the table's actual edge (first/last row
+        or column), which is still a genuinely useful "select to the
+        end" action even if it doesn't replicate Excel's contiguous-
+        block-aware jump precisely.
         """
         current = self.currentIndex()
         if not current.isValid():
             return
         row, col = current.row(), current.column()
         if key == Qt.Key_Up:
-            target = self.card_model.index(0, col)
+            row = 0
         elif key == Qt.Key_Down:
-            target = self.card_model.index(self.card_model.rowCount() - 1, col)
+            row = self.card_model.rowCount() - 1
         elif key == Qt.Key_Left:
-            target = self.card_model.index(row, 0)
+            col = 0
         else:  # Key_Right
-            target = self.card_model.index(row, self.card_model.columnCount() - 1)
-        self.selectionModel().select(QItemSelection(current, target), QItemSelectionModel.Select)
-        # NOT self.setCurrentIndex(target) -- that routes through the
-        # view's own selectionCommand() logic, which for a plain
-        # setCurrentIndex() call effectively clears and replaces the
-        # selection with just the new cell, wiping out the range we just
-        # selected above. Moving the current-cell cursor via the selection
-        # model directly, with an explicit NoUpdate command, repositions it
-        # without touching the selection at all.
-        self.selectionModel().setCurrentIndex(target, QItemSelectionModel.NoUpdate)
+            col = self.card_model.columnCount() - 1
+        self._extend_selection_to(self.card_model.index(row, col))
 
     def _copy_selection_to_clipboard(self):
         indexes = self.selectionModel().selectedIndexes()

@@ -64,23 +64,53 @@ FIVE PIECES OF CUSTOM MACHINERY WORTH CALLING OUT:
    instead of the real cause.
 """
 
-from PySide6.QtWidgets import (
-    QDialog, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QFrame,
-    QToolButton, QMenu, QListWidget, QListWidgetItem, QApplication, QSizePolicy,
-    QPushButton,
+from PySide6.QtCore import (
+    QEvent,
+    QPoint,
+    QPointF,
+    QRect,
+    QRectF,
+    QSize,
+    Qt,
+    QTimer,
+    Signal,
 )
-from PySide6.QtCore import Qt, Signal, QSize, QEvent, QTimer, QRect, QRectF, QPoint, QPointF
-from PySide6.QtGui import QFontMetrics, QColor, QPainter
+from PySide6.QtGui import QColor, QFontMetrics, QPainter
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QListWidget,
+    QListWidgetItem,
+    QMenu,
+    QPushButton,
+    QSizePolicy,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from frameless_dialog import FramelessDialog
 from mock_data import (
-    get_card_by_name, get_card_prints, get_card_legalities, get_card_rulings,
-    swatch_for_card, FORMATS, PRICE_SOURCES, LANGUAGES, CONDITIONS,
+    CONDITIONS,
+    FORMATS,
+    LANGUAGES,
+    PRICE_SOURCES,
+    get_card_by_name,
+    get_card_legalities,
+    get_card_prints,
+    get_card_rulings,
+    swatch_for_card,
 )
 
 LEGALITY_COLORS = {
-    "legal": "#4caf50", "not_legal": "#8a8d8f",
-    "banned": "#d3202a", "restricted": "#e67e22",
+    "legal": "#4caf50",
+    "not_legal": "#8a8d8f",
+    "banned": "#d3202a",
+    "restricted": "#e67e22",
 }
 
 # Two distinct gaps, deliberately different sizes so the visual hierarchy
@@ -200,8 +230,16 @@ class StatField(QWidget):
     than measure. No estimate, no drift.
     """
 
-    def __init__(self, title, width=None, clickable=False, align=Qt.AlignLeft,
-                 caption_half_width=False, wrap=False, dynamic_anchor=False):
+    def __init__(
+        self,
+        title,
+        width=None,
+        clickable=False,
+        align=Qt.AlignLeft,
+        caption_half_width=False,
+        wrap=False,
+        dynamic_anchor=False,
+    ):
         """
         width=None means "no fixed width -- let the containing layout's
         stretch factor govern my size instead" (used for the proportional
@@ -248,7 +286,7 @@ class StatField(QWidget):
         """
         super().__init__()
         self._fixed_width = width
-        self._anchor_grid = None    # see set_grid_anchor()
+        self._anchor_grid = None  # see set_grid_anchor()
         self._anchor_row = None
         self._anchor_col = None
         if width is not None:
@@ -265,7 +303,9 @@ class StatField(QWidget):
 
         title_label = QLabel(title)
         title_label.setStyleSheet("color: #a8adb5; font-size: 10px;")
-        self.title_label = title_label  # kept so dynamic_anchor fields can reposition it in set_text()
+        self.title_label = (
+            title_label  # kept so dynamic_anchor fields can reposition it in set_text()
+        )
 
         if dynamic_anchor:
             # Positioned via the exact same anchor-point/indent-margin
@@ -360,7 +400,11 @@ class StatField(QWidget):
         # may still report a stale pre-layout value the first time this
         # runs -- fall back to a generous estimate rather than aggressively
         # over-eliding before the real layout has ever run.
-        available = self.width() if (self._fixed_width is not None or self.width() > 40) else 260
+        available = (
+            self.width()
+            if (self._fixed_width is not None or self.width() > 40)
+            else 260
+        )
 
         # Hard ceiling on the button's own width, independent of whatever
         # Qt's internal multi-line size calculation thinks it needs for
@@ -399,7 +443,9 @@ class StatField(QWidget):
             # between them," not something that needs deriving.
             ref_width = 0
             if self._anchor_grid is not None:
-                ref_width = self._anchor_grid.cellRect(self._anchor_row, self._anchor_col).width()
+                ref_width = self._anchor_grid.cellRect(
+                    self._anchor_row, self._anchor_col
+                ).width()
             if ref_width <= 40:
                 # Pre-layout fallback (same staleness pattern `available`
                 # itself guards against elsewhere in this method) --
@@ -456,7 +502,9 @@ class StatField(QWidget):
                 # instead of a stale pre-layout one.
                 target.setText(full_text)
             else:
-                elided = metrics.elidedText(full_text, Qt.ElideRight, available - indent - 12)
+                elided = metrics.elidedText(
+                    full_text, Qt.ElideRight, available - indent - 12
+                )
                 target.setText(elided)
             target.setToolTip(full_text)
             return
@@ -529,6 +577,7 @@ class ClickableArt(QFrame):
     click stops that propagation at the source instead of requiring
     ImageZoomWidget to somehow guess which propagated events to ignore.
     """
+
     clicked = Signal()
 
     def mousePressEvent(self, event):
@@ -647,7 +696,9 @@ class ImageZoomWidget(QWidget):
     collapsible_pane.py needing an app-level event filter for Tab.
     """
 
-    BASE_SIZE = QSize(300, 420)  # the card's own aspect ratio (~2.5:3.5) -- a ratio reference only
+    BASE_SIZE = QSize(
+        300, 420
+    )  # the card's own aspect ratio (~2.5:3.5) -- a ratio reference only
     MIN_ZOOM = 0.3
     # Explicit ceiling, requested after an earlier design let effective
     # magnification run away far higher than a single wheel-out tick
@@ -671,17 +722,17 @@ class ImageZoomWidget(QWidget):
         self._pan_center = QPointF(0.5, 0.5)
 
         # Reticle drag state -- None whenever a Ctrl+drag isn't active.
-        self._reticle_start = None   # QPoint, local widget coords
-        self._reticle_rect = None    # QRect, current drag extent, for the overlay
+        self._reticle_start = None  # QPoint, local widget coords
+        self._reticle_rect = None  # QRect, current drag extent, for the overlay
 
         # Plain-drag state -- exactly ONE of these two pairs is active at
         # a time, decided at press-time by whether there's anything to
         # pan to (see mousePressEvent). Window-move:
         self._drag_offset = None
         # Pan:
-        self._pan_start = None            # QPoint, local widget coords at press
-        self._pan_center_start = None     # QPointF, _pan_center at press
-        self._pan_visible_frac = None     # (float, float), visible fraction at press
+        self._pan_start = None  # QPoint, local widget coords at press
+        self._pan_center_start = None  # QPointF, _pan_center at press
+        self._pan_visible_frac = None  # (float, float), visible fraction at press
 
         self.setFocusPolicy(Qt.StrongFocus)
 
@@ -713,8 +764,10 @@ class ImageZoomWidget(QWidget):
         current zoom level actually looks like.
         """
         avail = screen.availableGeometry()
-        fit_zoom = min(avail.width() / self.BASE_SIZE.width(),
-                       avail.height() / self.BASE_SIZE.height())
+        fit_zoom = min(
+            avail.width() / self.BASE_SIZE.width(),
+            avail.height() / self.BASE_SIZE.height(),
+        )
         image_w = self.BASE_SIZE.width() * fit_zoom * self._zoom
         image_h = self.BASE_SIZE.height() * fit_zoom * self._zoom
         window_w = min(image_w, float(avail.width()))
@@ -793,7 +846,9 @@ class ImageZoomWidget(QWidget):
         painter.save()
         label = f"{zoom_multiplier:.1f}\u00d7"  # e.g. "3.2×"
         pad = 6
-        text_rect = painter.fontMetrics().boundingRect(label).adjusted(-pad, -pad, pad, pad)
+        text_rect = (
+            painter.fontMetrics().boundingRect(label).adjusted(-pad, -pad, pad, pad)
+        )
         text_rect.moveTopLeft(self.rect().topLeft() + QPoint(10, 10))
         painter.setBrush(QColor(20, 21, 23, 200))
         painter.setPen(Qt.NoPen)
@@ -827,7 +882,10 @@ class ImageZoomWidget(QWidget):
 
         screen = self.screen() or QApplication.primaryScreen()
         _, vis_w, vis_h = self._geometry_for_zoom(screen)
-        if vis_w < self._FULLY_VISIBLE_THRESHOLD or vis_h < self._FULLY_VISIBLE_THRESHOLD:
+        if (
+            vis_w < self._FULLY_VISIBLE_THRESHOLD
+            or vis_h < self._FULLY_VISIBLE_THRESHOLD
+        ):
             # The image exceeds the screen on at least one axis at the
             # current zoom -- there's real content outside the window
             # for _pan_center to point at, so plain drag pans instead of
@@ -842,7 +900,9 @@ class ImageZoomWidget(QWidget):
 
     def mouseMoveEvent(self, event):
         if self._reticle_start is not None:
-            self._reticle_rect = QRect(self._reticle_start, event.position().toPoint()).normalized()
+            self._reticle_rect = QRect(
+                self._reticle_start, event.position().toPoint()
+            ).normalized()
             self.update()
             return
         if self._pan_start is not None:
@@ -871,7 +931,11 @@ class ImageZoomWidget(QWidget):
             global_release_pos = event.globalPosition().toPoint()
             self._reticle_start = None
             self._reticle_rect = None
-            big_enough = rect is not None and rect.width() >= self.MIN_RETICLE_SIZE and rect.height() >= self.MIN_RETICLE_SIZE
+            big_enough = (
+                rect is not None
+                and rect.width() >= self.MIN_RETICLE_SIZE
+                and rect.height() >= self.MIN_RETICLE_SIZE
+            )
             if big_enough:
                 self._finish_reticle(rect, global_release_pos)
             else:
@@ -891,7 +955,11 @@ class ImageZoomWidget(QWidget):
         clipping -- the smaller of the two per-axis fit ratios) and a new
         _pan_center (the selection's own center).
         """
-        screen = QApplication.screenAt(global_release_pos) or self.screen() or QApplication.primaryScreen()
+        screen = (
+            QApplication.screenAt(global_release_pos)
+            or self.screen()
+            or QApplication.primaryScreen()
+        )
         w, h = self.width(), self.height()
         _, vis_w, vis_h = self._geometry_for_zoom(screen)
 
@@ -939,8 +1007,11 @@ class ImageZoomWidget(QWidget):
         (watched.window() IS self), so none of them are affected by
         this check.
         """
-        if (event.type() == QEvent.MouseButtonPress
-                and isinstance(watched, QWidget) and watched.window() is not self):
+        if (
+            event.type() == QEvent.MouseButtonPress
+            and isinstance(watched, QWidget)
+            and watched.window() is not self
+        ):
             self.close()
         return super().eventFilter(watched, event)
 
@@ -1005,7 +1076,9 @@ class CardDetailDialog(FramelessDialog):
         panes_row.setSpacing(0)
         panes_row.addLayout(self._build_card_pane(), stretch=3)
         panes_row.addWidget(_vline())
-        panes_row.addLayout(self._build_legality_pane())  # no stretch -- sized to content, see below
+        panes_row.addLayout(
+            self._build_legality_pane()
+        )  # no stretch -- sized to content, see below
         panes_row.addWidget(_vline())
         panes_row.addLayout(self._build_rulings_pane(), stretch=2)
         self.content_layout.addLayout(panes_row)
@@ -1084,7 +1157,9 @@ class CardDetailDialog(FramelessDialog):
         than that fixed value, regardless of what any individual cell's
         internal size hint claims.
         """
-        col_width = self.card_grid.cellRect(1, 0).width()  # Edition's cell -- authoritative real column-0 width
+        col_width = self.card_grid.cellRect(
+            1, 0
+        ).width()  # Edition's cell -- authoritative real column-0 width
         if col_width <= 40:
             return  # still pre-layout somehow; nothing reliable to lock in yet
 
@@ -1092,8 +1167,13 @@ class CardDetailDialog(FramelessDialog):
             self.card_grid.setColumnMinimumWidth(col, col_width)
 
         single_column_fields = (
-            self.mana_field, self.edition_field, self.rarity_field, self.price_field,
-            self.language_field, self.condition_field, self.foil_toggle,
+            self.mana_field,
+            self.edition_field,
+            self.rarity_field,
+            self.price_field,
+            self.language_field,
+            self.condition_field,
+            self.foil_toggle,
         )
         for field in single_column_fields:
             field.setMaximumWidth(col_width)
@@ -1169,13 +1249,21 @@ class CardDetailDialog(FramelessDialog):
             self.card_grid.setColumnStretch(col, 1)
 
         self.type_field = StatField("Type", width=None, wrap=True, dynamic_anchor=True)
-        self.mana_field = StatField("Mana Cost", width=None, align=Qt.AlignHCenter, wrap=True)
-        self.card_grid.addWidget(self.type_field, 0, 0, 1, 2)  # row 0, col 0, spans 2 columns
+        self.mana_field = StatField(
+            "Mana Cost", width=None, align=Qt.AlignHCenter, wrap=True
+        )
+        self.card_grid.addWidget(
+            self.type_field, 0, 0, 1, 2
+        )  # row 0, col 0, spans 2 columns
         self.card_grid.addWidget(self.mana_field, 0, 2)
 
-        self.edition_field = StatField("Edition", width=None, clickable=True, align=Qt.AlignHCenter)
+        self.edition_field = StatField(
+            "Edition", width=None, clickable=True, align=Qt.AlignHCenter
+        )
         self.rarity_field = StatField("Rarity", width=None, align=Qt.AlignHCenter)
-        self.price_field = StatField("Price", width=None, clickable=True, align=Qt.AlignHCenter)
+        self.price_field = StatField(
+            "Price", width=None, clickable=True, align=Qt.AlignHCenter
+        )
         self.card_grid.addWidget(self.edition_field, 1, 0)
         self.card_grid.addWidget(self.rarity_field, 1, 1)
         self.card_grid.addWidget(self.price_field, 1, 2)
@@ -1186,8 +1274,12 @@ class CardDetailDialog(FramelessDialog):
         # set_grid_anchor()'s docstring.
         self.type_field.set_grid_anchor(self.card_grid, anchor_row=1, anchor_col=0)
 
-        self.language_field = StatField("Language", width=None, clickable=True, align=Qt.AlignHCenter, wrap=True)
-        self.condition_field = StatField("Condition", width=None, clickable=True, align=Qt.AlignHCenter, wrap=True)
+        self.language_field = StatField(
+            "Language", width=None, clickable=True, align=Qt.AlignHCenter, wrap=True
+        )
+        self.condition_field = StatField(
+            "Condition", width=None, clickable=True, align=Qt.AlignHCenter, wrap=True
+        )
         self.foil_toggle = FoilToggle()
         if self.collection_card is not None:
             self.foil_toggle.setChecked(self.collection_card.get("foil", False))
@@ -1245,7 +1337,9 @@ class CardDetailDialog(FramelessDialog):
     def _build_legality_pane(self):
         layout = self._pane_layout("Legality")
         self.legality_list = QListWidget()
-        self.legality_list.setWordWrap(True)  # fallback for anything the fixed width still can't fit
+        self.legality_list.setWordWrap(
+            True
+        )  # fallback for anything the fixed width still can't fit
         self.legality_list.setFixedWidth(self._legality_column_width())
         layout.addWidget(self.legality_list)
         return layout
@@ -1261,11 +1355,16 @@ class CardDetailDialog(FramelessDialog):
         probe = QListWidget()
         metrics = QFontMetrics(probe.font())
         widest = max(
-            (f'{fmt}:  {status.replace("_", " ").title()}'
-             for fmt in FORMATS for status in LEGALITY_COLORS),
+            (
+                f"{fmt}:  {status.replace('_', ' ').title()}"
+                for fmt in FORMATS
+                for status in LEGALITY_COLORS
+            ),
             key=lambda text: metrics.horizontalAdvance(text),
         )
-        return metrics.horizontalAdvance(widest) + 44  # padding for list margins + scrollbar
+        return (
+            metrics.horizontalAdvance(widest) + 44
+        )  # padding for list margins + scrollbar
 
     def _build_rulings_pane(self):
         layout = self._pane_layout("Rulings")
@@ -1281,29 +1380,39 @@ class CardDetailDialog(FramelessDialog):
     def _build_edition_menu(self):
         menu = QMenu(self)
         for i, print_info in enumerate(self.prints):
-            action = menu.addAction(f'{print_info["set"].upper()}  ({print_info["rarity"]})')
-            action.triggered.connect(lambda checked=False, idx=i: self._select_print(idx))
+            action = menu.addAction(
+                f"{print_info['set'].upper()}  ({print_info['rarity']})"
+            )
+            action.triggered.connect(
+                lambda checked=False, idx=i: self._select_print(idx)
+            )
         self.edition_field.set_menu(menu)
 
     def _build_price_menu(self):
         menu = QMenu(self)
         for source_key, label in PRICE_SOURCES:
             action = menu.addAction(label)
-            action.triggered.connect(lambda checked=False, k=source_key: self._select_price_source(k))
+            action.triggered.connect(
+                lambda checked=False, k=source_key: self._select_price_source(k)
+            )
         self.price_field.set_menu(menu)
 
     def _build_language_menu(self):
         menu = QMenu(self)
         for lang in LANGUAGES:
             action = menu.addAction(lang)
-            action.triggered.connect(lambda checked=False, l=lang: self._select_language(l))
+            action.triggered.connect(
+                lambda checked=False, l=lang: self._select_language(l)
+            )
         self.language_field.set_menu(menu)
 
     def _build_condition_menu(self):
         menu = QMenu(self)
         for cond in CONDITIONS:
             action = menu.addAction(cond)
-            action.triggered.connect(lambda checked=False, c=cond: self._select_condition(c))
+            action.triggered.connect(
+                lambda checked=False, c=cond: self._select_condition(c)
+            )
         self.condition_field.set_menu(menu)
 
     def _select_print(self, index):
@@ -1333,7 +1442,7 @@ class CardDetailDialog(FramelessDialog):
         self.language_field.set_text(self.language)
         self.condition_field.set_text(self.condition)
         self.rarity_field.set_text(print_info["rarity"].capitalize())
-        self.price_field.set_text(f'${print_info.get(self.price_source, 0):.2f}')
+        self.price_field.set_text(f"${print_info.get(self.price_source, 0):.2f}")
         self.oracle_text_label.setText(self.oracle["oracle_text"])
         self.flavor_text_label.setText(print_info.get("flavor_text", ""))
         self.art_box.set_color(swatch_for_card(self.oracle))
@@ -1342,7 +1451,7 @@ class CardDetailDialog(FramelessDialog):
         legalities = get_card_legalities(self.oracle["name"])
         for fmt in FORMATS:
             status = legalities.get(fmt, "not_legal")
-            item = QListWidgetItem(f'{fmt}:  {status.replace("_", " ").title()}')
+            item = QListWidgetItem(f"{fmt}:  {status.replace('_', ' ').title()}")
             item.setForeground(QColor(LEGALITY_COLORS.get(status, "#e3e3e3")))
             self.legality_list.addItem(item)
 

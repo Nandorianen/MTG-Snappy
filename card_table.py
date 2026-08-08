@@ -1453,6 +1453,24 @@ class CardTableView(QTableView):
                 self._move_current_clearing_selection(current)
                 return
 
+        if key in (Qt.Key_Up, Qt.Key_Down) and modifiers == Qt.ShiftModifier:
+            # Plain Shift+Up/Down (extend by one row, same column) is
+            # handled explicitly rather than left to Qt's own native
+            # Shift+Arrow extend. Reason: a group-header row is given a
+            # full-width setSpan() (see _reapply_group_spans), and Qt's
+            # native keyboard-selection-extend doesn't cleanly skip over
+            # that span -- crossing one via native Shift+Down was
+            # selecting the ENTIRE spanned row on both sides of it (every
+            # column, not just the current one), not just the next real
+            # card row in the current column. Computing the "next real
+            # row" ourselves (skipping any header in between) and
+            # extending through the already-span-safe _extend_selection_to
+            # (see that method) sidesteps the quirk instead of fighting it.
+            target = self._adjacent_selectable_row_target(key)
+            if target is not None:
+                self._extend_selection_to(target)
+            return
+
         if key == Qt.Key_Space and modifiers == Qt.ShiftModifier:
             # Excel: Shift+Space selects the entire current row.
             current = self.currentIndex()
@@ -1586,52 +1604,84 @@ class CardTableView(QTableView):
 
     def _extend_selection_to(self, target):
         """
-        Shared authority behind every Ctrl+Shift+... extension: selects
-        the full rectangle between the fixed ANCHOR cell (see keyPressEvent's
-        anchor-tracking comment) and `target`, then moves the current/
-        active cell to `target` without disturbing that selection. Always
-        a fresh ClearAndSelect over the WHOLE anchor-to-target rectangle
-        (never an incremental add onto whatever was already selected) --
-        that's what makes repeated presses always show exactly one
-        rectangle, never a leftover shape from an earlier, different
-        extension.
+        Shared authority behind every Shift/Ctrl+Shift+... extension:
+        selects the rectangle between the fixed ANCHOR cell (see
+        keyPressEvent's anchor-tracking comment) and `target`, then moves
+        the current/active cell to `target` without disturbing that
+        selection. Always a fresh ClearAndSelect over the WHOLE
+        anchor-to-target span (never an incremental add onto whatever was
+        already selected) -- that's what makes repeated presses always
+        show exactly one selection, never a leftover shape from an
+        earlier, different extension.
+
+        BUILT AS ONE QItemSelection PER CONTIGUOUS RUN OF REAL (non-header)
+        ROWS, not one flat QItemSelection(anchor, target) rectangle --
+        this matters whenever the anchor-to-target span crosses a
+        group-header row. Group headers get a full-width setSpan() (see
+        _reapply_group_spans), and a flat rectangle selection that merely
+        PASSES THROUGH a spanned row -- even though that row's own cells
+        aren't individually selectable (see CardTableModel.flags()) --
+        gets rendered by QTableView as the ENTIRE spanned row selected,
+        every column, not just the ones actually being selected. Splitting
+        the selection at each header row and skipping it entirely (rather
+        than trying to exclude just that one row from a single rectangle,
+        which QItemSelection can't express) sidesteps the span quirk
+        instead of fighting it. Degrades to exactly the old single-
+        rectangle behavior whenever no header row falls in the span (the
+        common case, and the only case when nothing's grouped).
         """
         current = self.currentIndex()
         if not current.isValid():
             return
         if not self._selection_anchor.isValid():
             self._selection_anchor = current
-        self.selectionModel().select(
-            QItemSelection(self._selection_anchor, target), QItemSelectionModel.ClearAndSelect
-        )
+        anchor = self._selection_anchor
+        top, bottom = sorted((anchor.row(), target.row()))
+        left, right = sorted((anchor.column(), target.column()))
+
+        selection = QItemSelection()
+        row = top
+        while row <= bottom:
+            if self.card_model.is_group_header(row):
+                row += 1
+                continue
+            run_start = row
+            while row <= bottom and not self.card_model.is_group_header(row):
+                row += 1
+            selection.select(
+                self.card_model.index(run_start, left), self.card_model.index(row - 1, right)
+            )
+        self.selectionModel().select(selection, QItemSelectionModel.ClearAndSelect)
         # NOT self.setCurrentIndex(target) -- see _move_current_clearing_
         # selection's docstring for why that's unreliable here. NoUpdate
         # repositions the current-cell cursor without touching the
         # selection just set above.
         self.selectionModel().setCurrentIndex(target, QItemSelectionModel.NoUpdate)
 
-    def _current_group_bounds(self):
+    def _group_bounds_for_row(self, row):
         """
-        (first_row, last_row) of the CURRENT cell's group -- the range of
-        real card rows between the group header immediately above it (or
-        the top of the table) and the next group header (or the bottom of
-        the table). Every Ctrl+Up/Down and Ctrl+Shift+Up/Down edge lookup
-        goes through this (see _edge_target_for_key) so grouped navigation
-        stops at the CURRENT group's own boundary instead of rolling
-        straight through to the table's absolute top/bottom row, which
-        could easily be sitting in a completely different group. Returns
-        the whole table's row range, unchanged, when nothing's grouped --
-        identical to the old ungrouped behavior.
+        (first_row, last_row) of the group containing `row` -- the range
+        of real card rows between the group header immediately above it
+        (or the top of the table) and the next group header (or the
+        bottom of the table). Returns None if `row` is outside the
+        table's actual range (0 <= row < rowCount) -- this is what lets
+        _edge_target_for_key ask "is there a group PAST this edge at
+        all?" and get a clean, unambiguous "no" instead of a clamped
+        in-range guess. When nothing's grouped, every valid row's
+        "group" is just the whole table.
         """
         total = self.card_model.rowCount()
-        if not self.card_model.group_by or total == 0:
-            return 0, max(total - 1, 0)
-        current = self.currentIndex()
-        row = current.row() if current.isValid() else 0
+        if row < 0 or row >= total:
+            return None
+        if not self.card_model.group_by:
+            return 0, total - 1
         if self.card_model.is_group_header(row):
-            # Shouldn't normally happen (header rows are never selectable/
-            # current -- see CardTableModel.flags()), but guards against a
-            # stray call with a header row anyway rather than assuming.
+            # Shouldn't normally happen for the CURRENT cell specifically
+            # (header rows are never selectable/current -- see
+            # CardTableModel.flags()), but this method is also used to
+            # probe rows that are deliberately expected to land ON a
+            # header (see _edge_target_for_key's group-hop) -- step past
+            # it into the group it introduces rather than assuming.
             row = min(row + 1, total - 1)
         start = row
         while start > 0 and not self.card_model.is_group_header(start - 1):
@@ -1640,6 +1690,41 @@ class CardTableView(QTableView):
         while end < total - 1 and not self.card_model.is_group_header(end + 1):
             end += 1
         return start, end
+
+    def _current_group_bounds(self):
+        """(first_row, last_row) of the CURRENT cell's group -- see
+        _group_bounds_for_row. Falls back to the whole table's row range
+        if there's no current cell or the table is empty."""
+        current = self.currentIndex()
+        row = current.row() if current.isValid() else 0
+        bounds = self._group_bounds_for_row(row)
+        if bounds is not None:
+            return bounds
+        total = self.card_model.rowCount()
+        return 0, max(total - 1, 0)
+
+    def _adjacent_selectable_row_target(self, key):
+        """
+        The index one real row away from the current cell in the given
+        vertical direction, in the SAME column, skipping over any inert
+        group-header row in between (there's at most one between any two
+        groups, but this loops just in case more than one ever exists) --
+        what a plain Shift+Up/Down should land on (see keyPressEvent).
+        Returns None at the table's actual top/bottom edge, where there's
+        nothing further to extend to.
+        """
+        current = self.currentIndex()
+        if not current.isValid():
+            return None
+        row, col = current.row(), current.column()
+        step = 1 if key == Qt.Key_Down else -1
+        total = self.card_model.rowCount()
+        next_row = row + step
+        while 0 <= next_row < total and self.card_model.is_group_header(next_row):
+            next_row += step
+        if not (0 <= next_row < total):
+            return None
+        return self.card_model.index(next_row, col)
 
     def _first_selectable_row(self):
         """
@@ -1710,13 +1795,30 @@ class CardTableView(QTableView):
         so this is identical to the old always-jump-to-the-table's-edge
         behavior.
 
+        ALREADY AT THAT EDGE -- e.g. Ctrl+Up pressed again while already
+        sitting on the current group's own top row: rather than staying
+        put (a no-op that made it impossible to reach an ADJACENT group
+        with Ctrl+Up/Down at all, short of the wrapping Ctrl+Tab), this
+        hops past the (always inert, always immediately-adjacent) header
+        row into the neighboring group and lands on ITS far edge -- the
+        previous group's bottom row for Ctrl+Up, the next group's top row
+        for Ctrl+Down. Repeated presses walk group edge to group edge:
+        current-top, previous-bottom, previous-top, before-that-bottom,
+        ... A header row always sits exactly one row outside its own
+        group's near edge (first_row - 1 for the top, last_row + 1 for
+        the bottom), so the ADJACENT group's far edge is exactly two rows
+        further out (first_row - 2 / last_row + 2) -- _group_bounds_for_row
+        resolves that row's own group boundaries, or returns None if it's
+        off the table entirely (already in the first/last group), in
+        which case this just clamps at the current edge as before.
+
         SIMPLIFIED compared to real Excel, which jumps to the edge of the
         current contiguous block of non-empty cells (requires scanning
         for the nearest "gap" in the data -- not implemented here, see
-        NOTES.md) -- this jumps to the table's (or current group's) actual
-        edge, which is still a genuinely useful "go to the end" action
-        even if it doesn't replicate Excel's contiguous-block-aware jump
-        precisely.
+        NOTES.md) -- this jumps to the table's (or current/adjacent
+        group's) actual edge, which is still a genuinely useful "go to
+        the end" action even if it doesn't replicate Excel's contiguous-
+        block-aware jump precisely.
         """
         current = self.currentIndex()
         if not current.isValid():
@@ -1724,7 +1826,18 @@ class CardTableView(QTableView):
         row, col = current.row(), current.column()
         if key in (Qt.Key_Up, Qt.Key_Down):
             first_row, last_row = self._current_group_bounds()
-            row = first_row if key == Qt.Key_Up else last_row
+            if key == Qt.Key_Up:
+                if row > first_row:
+                    row = first_row
+                else:
+                    adjacent = self._group_bounds_for_row(first_row - 2)
+                    row = adjacent[1] if adjacent is not None else first_row
+            else:
+                if row < last_row:
+                    row = last_row
+                else:
+                    adjacent = self._group_bounds_for_row(last_row + 2)
+                    row = adjacent[0] if adjacent is not None else last_row
         elif key == Qt.Key_Left:
             col = 0
         else:  # Key_Right

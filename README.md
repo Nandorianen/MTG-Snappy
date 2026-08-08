@@ -2,6 +2,41 @@
 
 ## Keyboard navigation polish: group-aware edges, focus return, edge-collapse (this round)
 
+Two follow-up fixes on top of the five below, both from real usage after
+the first pass landed:
+
+- **Ctrl+Up/Down at a group's edge now hops into the ADJACENT group**
+  instead of staying put. Previously, once Ctrl+Up reached the current
+  group's top row, pressing it again was a no-op -- there was no way to
+  reach a neighboring group with Ctrl+Up/Down at all, short of the
+  wrapping Ctrl+Tab. `_edge_target_for_key` now checks whether the
+  current cell is ALREADY at that edge; if so, it looks two rows past it
+  (`_group_bounds_for_row(first_row - 2)` / `(last_row + 2)` -- a header
+  row always sits exactly one row outside its own group's near edge, so
+  the neighboring group's FAR edge is exactly two rows further out) and
+  jumps there instead. Repeated presses walk edge-to-edge, group by
+  group, clamping (not wrapping) at the table's actual ends --
+  `_current_group_bounds` is now a thin wrapper around the new, more
+  general `_group_bounds_for_row`.
+- **Fixed a real selection-rendering bug**: extending a selection (plain
+  Shift+Up/Down, or Ctrl+Shift+Up/Down once it crosses a group boundary)
+  was selecting the ENTIRE spanned header row's width on both sides of
+  the crossing, not just the current column -- because
+  `_extend_selection_to` built one flat `QItemSelection(anchor, target)`
+  rectangle, and a rectangle that merely PASSES THROUGH a group-header
+  row (full-width `setSpan()`, see `_reapply_group_spans`) gets rendered
+  by `QTableView` as that whole row selected, even though the header's
+  own cells aren't individually selectable. Fixed by building the
+  selection as one `QItemSelection` PER CONTIGUOUS RUN of real rows,
+  skipping header rows entirely, rather than one flat rectangle that
+  could unintentionally include one. Plain Shift+Up/Down also no longer
+  relies on Qt's own native extend at all (same span quirk applied there
+  too) -- a new `_adjacent_selectable_row_target` computes the next real
+  row directly, skipping any header, and routes through the now-fixed
+  `_extend_selection_to`.
+
+## Keyboard navigation polish: group-aware edges, focus return, edge-collapse (earlier round)
+
 Five small, independent fixes to the table's keyboard handling, all in
 `card_table.py` (plus one line in `card_database_view.py`):
 

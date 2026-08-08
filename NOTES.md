@@ -188,15 +188,39 @@ be about.
 ## Full Excel keyboard parity (raised alongside the F2/Shift+Space/etc additions)
 
 This round added F2 (edit Qty), Shift+Space (select row), Ctrl+Space (select
-column), Ctrl+Home/End (jump to first/last cell), and Ctrl+Shift+ Arrow (extend
-selection to an edge). Still missing, for whenever more Excel-familiarity is
-wanted: Ctrl+Arrow (jump, WITHOUT extending, to the edge of a contiguous block
-of non-empty cells -- what's implemented now always jumps to the table's actual
-edge, not the nearest "gap" in the data, which needs scanning logic this doesn't
-have yet); Tab/Enter moving the current cell after committing an edit; a
-formula-bar-style edit experience; and Ctrl+Z/Y (tracked separately under the
-undo/redo note below, since cell edits should probably feed the same history as
+column), Ctrl+Home/End (jump to first/last cell), Ctrl+Shift+Arrow (extend
+selection to an edge), plain Ctrl+Arrow (jump, without extending, to the
+table's actual edge), and Ctrl+Tab/Ctrl+Shift+Tab (jump to the next/previous
+group's first row, only when the table is currently grouped -- a deliberate
+no-op otherwise, since real Excel has no behavior on Ctrl+Tab at all). Still
+missing, for whenever more Excel-familiarity is wanted: true contiguous-
+block-aware jumping (both plain Ctrl+Arrow and Ctrl+Shift+Arrow always jump
+to the table's actual edge, not the nearest "gap" in the data -- needs
+scanning logic this doesn't have yet); Tab/Enter moving the current cell
+after committing an edit; a formula-bar-style edit experience; and Ctrl+Z/Y
+(tracked separately under the undo/redo note below, since cell edits should
+probably feed the same history as
 everything else eventually).
+
+## TODO: option to stop cell-selection movement at a group boundary (raised alongside Ctrl+Tab group-jumping)
+
+Not designed yet. When the table is grouped (Group by Type/Color -- see the
+Card Database entry above and card_table.py's `_jump_to_adjacent_group`),
+plain arrow-key movement currently walks straight through group-header rows
+as if they weren't there (they're inert/unselectable, per
+`CardTableModel.flags()`, so the CURRENT cell just lands on the next real
+card row past the header instead). Idea: a configurable option (belongs in
+the Options window's Interface tab alongside the other table-behavior
+toggles) for whether moving down/up should instead STOP at the edge of the
+current group -- i.e. pressing Down on the last card of a group would do
+nothing (or show some "you've hit the group edge" feedback) rather than
+silently crossing into the next group, similar to how a real spreadsheet's
+frozen-pane or outline-grouping boundary sometimes behaves. Open questions:
+should this apply to Ctrl+Arrow/Ctrl+Shift+Arrow's edge-jump too (probably
+yes, for consistency -- "edge" would mean "edge of the group," not "edge of
+the table," when this option is on), and whether it should default on or
+off (leaning off, since always being able to fall through is the more
+Excel-familiar default and this is explicitly an opt-in refinement).
 
 ## Theming: system accent colors + light/dark presets (raised while polishing colors)
 

@@ -1,6 +1,42 @@
 # MTG Local Database — Prototype
 
-## Startup empty-state, tab reorder, Excel-parity fixes (this round)
+## Header cleanup, Ctrl+Arrow/Ctrl+Tab, mono-color-X fix (this round)
+
+- **Fixed a real bug**: two stray sort arrows painted on the Checkbox and
+  Actions columns from the very first launch, before anything had ever
+  been sorted. Cause: `dict.get()` on a column with no sort key returns
+  `None`, and the header's freshly-initialized `_active_sort_key` is also
+  `None` -- `None == None` was `True`, so both columns looked like they
+  matched the (nonexistent) active sort. Fixed with an explicit
+  `is not None` guard in `SplitDropdownHeader.paintSection`.
+- **Type/Mana Cost/Price no longer have a separate dropdown-arrow zone.**
+  "Group by Type," "Group by Color," and "Price Source" all moved into
+  the same right-click filter menu the value checklist already lives in
+  (as checkable actions / a submenu) -- see `_build_context_menu`. This
+  removed a second, visually similar ▾ glyph that used to sit right next
+  to the new sort arrow and was genuinely confusing (one opened a menu,
+  the other just showed sort state). Clicking anywhere in one of these
+  headers now just sorts, like every other column; the space the old
+  dropdown-arrow zone reserved is just more room for the sort arrow now.
+- **Mana Cost's "Monocolored only" no longer excludes colorless/X-cost
+  cards.** Was `len(card_colors) != 1` (colorless has 0 colors, so it got
+  excluded); now `len(card_colors) not in (0, 1)` -- still excludes
+  genuine multicolor cards, but a card whose only "color" info is really
+  just a generic/X symbol is meant to be untouched by ANY mana filter,
+  this one included, not just the per-color checkboxes.
+- **Plain Ctrl+Arrow now moves (doesn't extend) to the table's edge** --
+  the missing sibling to Ctrl+Shift+Arrow, sharing its edge-computation
+  via the new `_edge_target_for_key` helper.
+- **Ctrl+Tab / Ctrl+Shift+Tab jump between groups** when the table is
+  currently grouped (first card row of the next/previous group), and are
+  a deliberate no-op otherwise -- real Excel has no worksheet-level
+  behavior on Ctrl+Tab at all (it's an OS-level combo there), so "do
+  nothing when there's nothing group-shaped to jump between" was the
+  more faithful choice over inventing a new meaning for it.
+- Parked in NOTES.md: an option to stop cell-selection movement at a
+  group boundary instead of always falling through to the next group.
+
+## Startup empty-state, tab reorder, Excel-parity fixes (earlier round)
 
 - **App opens with NO tab selected** -- an empty pane ("Open any of the
   tabs on the left...") instead of defaulting to Tag Database. SideNav no

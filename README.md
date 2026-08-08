@@ -1,6 +1,41 @@
 # MTG Local Database — Prototype
 
-## Header cleanup, Ctrl+Arrow/Ctrl+Tab, mono-color-X fix (this round)
+## Keyboard navigation polish: group-aware edges, focus return, edge-collapse (this round)
+
+Five small, independent fixes to the table's keyboard handling, all in
+`card_table.py` (plus one line in `card_database_view.py`):
+
+- **Ctrl+Arrow/Ctrl+Shift+Arrow now stop at the CURRENT group's edge, not
+  the table's.** New `CardTableView._current_group_bounds()` walks
+  outward from the current cell to the nearest group-header rows on
+  either side (or the table's real top/bottom when nothing's grouped) --
+  `_edge_target_for_key` reads Up/Down targets from this instead of
+  always jumping to row 0 / the last row. Landing row is guaranteed to be
+  a real CARD row, never the inert header itself, since the walk steps
+  one row past a header before it starts.
+- **Page Up/Down jump between groups** (clamped at the first/last group,
+  a no-op past either end) when the table is grouped; native paging is
+  untouched when it isn't. **Ctrl+Tab/Ctrl+Shift+Tab now wrap around**
+  (past the last group jumps back to the first, and vice versa) --
+  `_jump_to_adjacent_group` gained a `wrap` flag so the same method backs
+  all three keys, cycling for Tab, clamping for Page Up/Down.
+- **Headers/menus now hand keyboard focus back to the table when they
+  close.** New `SplitDropdownHeader.focus_requested` signal (connected to
+  `CardTableView.setFocus` in `__init__`), emitted after a sort-click and
+  after any right-click context menu (filter checklist, group-by, price
+  source) closes; `CardDatabaseView`'s standalone Columns menu does the
+  same inline, since it isn't opened through the header. Previously the
+  table needed a fresh click before arrow keys did anything again.
+- **An arrow press with nothing selected now selects the top-left cell**
+  (`_top_left_selectable_index` -- skips a leading group-header row the
+  same way group-edge lookups do) instead of extending/edge-jumping from
+  an undefined anchor.
+- **A plain arrow already at the table's edge collapses the selection**
+  to just that one cell (`_at_edge_for_key`) instead of silently doing
+  nothing -- so a Ctrl+Shift+Left run to column 0 followed by one more
+  Left actually clears the multi-cell selection, matching Excel.
+
+## Header cleanup, Ctrl+Arrow/Ctrl+Tab, mono-color-X fix (earlier round)
 
 - **Fixed a real bug**: two stray sort arrows painted on the Checkbox and
   Actions columns from the very first launch, before anything had ever

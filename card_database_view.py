@@ -148,6 +148,11 @@ class CardDatabaseView(QWidget):
     def _show_columns_menu(self):
         menu = self.table.header.build_show_columns_menu()
         menu.exec(self.columns_button.mapToGlobal(self.columns_button.rect().bottomLeft()))
+        # Same reasoning as SplitDropdownHeader.focus_requested (card_table.py)
+        # -- this menu isn't opened via the header itself, so it doesn't go
+        # through that signal, but the table should still get keyboard focus
+        # back once it closes rather than leaving it on the Columns button.
+        self.table.setFocus()
 
     def _sync_toggle_buttons(self):
         for button, column in (

@@ -819,6 +819,15 @@ class SplitDropdownHeader(QHeaderView):
     """
 
     sort_requested = Signal(str)
+    # Emitted after a sort-click is handled and after a right-click context
+    # menu (filter checklist, group-by, price source, ...) closes -- see
+    # CardTableView.__init__'s connection to self.setFocus. Without this,
+    # clicking a header (to sort) or right-clicking it (to filter) leaves
+    # keyboard focus sitting on the header/menu instead of back on the
+    # table, so the very next arrow-key press does nothing until the user
+    # clicks a cell first -- a real, felt keyboard-flow gap now that the
+    # table has this much keyboard support built in elsewhere.
+    focus_requested = Signal()
 
     RESIZE_MARGIN = 6      # pixels at each section edge reserved purely for resizing
     MIN_SECTION_WIDTH = 24
@@ -959,6 +968,7 @@ class SplitDropdownHeader(QHeaderView):
             self._active_sort_key = sort_key
             self.sort_requested.emit(sort_key)
             self.update()
+            self.focus_requested.emit()
             event.accept()
             return
 
@@ -972,6 +982,7 @@ class SplitDropdownHeader(QHeaderView):
             self._active_sort_key = key
             self.sort_requested.emit(key)
             self.update()
+            self.focus_requested.emit()
         event.accept()
 
     def mouseMoveEvent(self, event):
@@ -1004,6 +1015,11 @@ class SplitDropdownHeader(QHeaderView):
         if menu.isEmpty():
             return
         menu.exec(global_pos)
+        # The menu (filter checklist, group-by, price source, ...) just
+        # closed, whether via a selection or Escape/click-away -- hand
+        # keyboard focus back to the table so arrow keys immediately work
+        # again instead of doing nothing until the user clicks a cell.
+        self.focus_requested.emit()
 
     def _build_context_menu(self, column):
         menu = _StayOpenMenu(self)
@@ -1237,6 +1253,10 @@ class CardTableView(QTableView):
         self.header = SplitDropdownHeader(column_keys)
         self.setHorizontalHeader(self.header)
         self.header.sort_requested.connect(self.card_model.sort_by_key)
+        # See SplitDropdownHeader.focus_requested's own comment -- returns
+        # keyboard focus to the table after a sort-click or a right-click
+        # menu (filter checklist, group-by, price source) closes.
+        self.header.focus_requested.connect(self.setFocus)
         # Price-source selection now lives inside the header's own
         # right-click filter menu (SplitDropdownHeader._build_context_menu)
         # rather than a separate dropdown -- no signal to wire up here
@@ -1406,6 +1426,32 @@ class CardTableView(QTableView):
         shift_held = bool(modifiers & Qt.ShiftModifier)
         plain_ctrl = modifiers == Qt.ControlModifier
         ctrl_shift = modifiers == (Qt.ControlModifier | Qt.ShiftModifier)
+        arrow_keys = (Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right)
+
+        if key in arrow_keys and not self.currentIndex().isValid():
+            # Nothing selected at all (fresh table, or a filter/sort reset
+            # cleared the selection) -- ANY arrow, whatever modifiers are
+            # held, should just plant a single-cell selection at the
+            # table's top-left selectable cell, rather than trying to
+            # extend-from or edge-jump-from an anchor that was never set.
+            target = self._top_left_selectable_index()
+            if target is not None:
+                self._move_current_clearing_selection(target)
+            return
+
+        if key in arrow_keys and modifiers == Qt.NoModifier:
+            current = self.currentIndex()
+            if self._at_edge_for_key(current, key):
+                # Already at the edge in this direction (e.g. current cell
+                # is column 0 and Left was pressed again) -- there's
+                # nowhere further to move. Rather than silently doing
+                # nothing and leaving a stale multi-cell selection (e.g.
+                # from an earlier Ctrl+Shift+Arrow) sitting on screen,
+                # collapse the selection down to just this one edge cell
+                # -- matching Excel's own "one more press at the edge
+                # clears the selection" behavior.
+                self._move_current_clearing_selection(current)
+                return
 
         if key == Qt.Key_Space and modifiers == Qt.ShiftModifier:
             # Excel: Shift+Space selects the entire current row.
@@ -1452,8 +1498,23 @@ class CardTableView(QTableView):
             # otherwise (see _jump_to_adjacent_group), rather than falling
             # through to Qt's own default Tab-moves-focus-to-next-widget
             # behavior, which would be a confusing surprise mid-table.
-            self._jump_to_adjacent_group(1)
+            # Wraps back to the first group once past the last one --
+            # unlike Page Down below, which clamps -- since Ctrl+Tab reads
+            # as "cycle through," the same expectation Ctrl+Tab carries in
+            # a browser's own tab strip.
+            self._jump_to_adjacent_group(1, wrap=True)
             return
+
+        if modifiers == Qt.NoModifier and key in (Qt.Key_PageUp, Qt.Key_PageDown):
+            if self.card_model.group_by:
+                # Repurposed the same way Ctrl+Tab is, just clamped
+                # (wrap=False) instead of cycling -- Page Up/Down stopping
+                # at the first/last group mirrors how it already stops at
+                # the table's edge when nothing's grouped (handled by
+                # falling through to Qt's own native paging via super()
+                # below when this branch doesn't apply).
+                self._jump_to_adjacent_group(1 if key == Qt.Key_PageDown else -1, wrap=False)
+                return
 
         if modifiers & Qt.ControlModifier and (
             key == Qt.Key_Backtab or (key == Qt.Key_Tab and shift_held)
@@ -1463,7 +1524,7 @@ class CardTableView(QTableView):
             # platforms, or Key_Tab with ShiftModifier set on others),
             # same belt-and-suspenders reasoning _MenuSearchBox's own
             # Shift+Tab handling already uses elsewhere in this file.
-            self._jump_to_adjacent_group(-1)
+            self._jump_to_adjacent_group(-1, wrap=True)
             return
 
         if ctrl_shift and key in (Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right):
@@ -1549,30 +1610,121 @@ class CardTableView(QTableView):
         # selection just set above.
         self.selectionModel().setCurrentIndex(target, QItemSelectionModel.NoUpdate)
 
+    def _current_group_bounds(self):
+        """
+        (first_row, last_row) of the CURRENT cell's group -- the range of
+        real card rows between the group header immediately above it (or
+        the top of the table) and the next group header (or the bottom of
+        the table). Every Ctrl+Up/Down and Ctrl+Shift+Up/Down edge lookup
+        goes through this (see _edge_target_for_key) so grouped navigation
+        stops at the CURRENT group's own boundary instead of rolling
+        straight through to the table's absolute top/bottom row, which
+        could easily be sitting in a completely different group. Returns
+        the whole table's row range, unchanged, when nothing's grouped --
+        identical to the old ungrouped behavior.
+        """
+        total = self.card_model.rowCount()
+        if not self.card_model.group_by or total == 0:
+            return 0, max(total - 1, 0)
+        current = self.currentIndex()
+        row = current.row() if current.isValid() else 0
+        if self.card_model.is_group_header(row):
+            # Shouldn't normally happen (header rows are never selectable/
+            # current -- see CardTableModel.flags()), but guards against a
+            # stray call with a header row anyway rather than assuming.
+            row = min(row + 1, total - 1)
+        start = row
+        while start > 0 and not self.card_model.is_group_header(start - 1):
+            start -= 1
+        end = row
+        while end < total - 1 and not self.card_model.is_group_header(end + 1):
+            end += 1
+        return start, end
+
+    def _first_selectable_row(self):
+        """
+        The first row that isn't a synthetic group-header row -- row 0
+        when the table isn't grouped (nothing to skip), or the first real
+        card row once grouping puts an inert header bar ahead of it. None
+        for a genuinely empty table.
+        """
+        for row in range(self.card_model.rowCount()):
+            if not self.card_model.is_group_header(row):
+                return row
+        return None
+
+    def _top_left_selectable_index(self):
+        """
+        Row 0/column 0 isn't always a valid target once grouping can place
+        an inert header row at the very top of the table -- this is what
+        "select the top-left cell" (see keyPressEvent) actually means: the
+        first genuinely selectable cell, reading top-to-bottom then
+        left-to-right.
+        """
+        row = self._first_selectable_row()
+        return None if row is None else self.card_model.index(row, 0)
+
+    def _at_edge_for_key(self, index, key):
+        """
+        Whether `index` already sits at the table's edge in the direction
+        `key` would move -- i.e. a plain, unmodified press of that arrow
+        genuinely has nowhere further to go. Used to collapse a leftover
+        multi-cell selection down to one cell instead of the press
+        silently doing nothing (see keyPressEvent). Deliberately keyed to
+        the whole TABLE's edge, not the current group's -- Ctrl+Up/Down
+        already has its own group-aware stopping point (see
+        _current_group_bounds); a plain arrow reaching the edge of a
+        group mid-table should just keep walking into the next group like
+        normal row-to-row navigation always has.
+        """
+        if not index.isValid():
+            return False
+        if key == Qt.Key_Left:
+            return index.column() <= 0
+        if key == Qt.Key_Right:
+            return index.column() >= self.card_model.columnCount() - 1
+        if key == Qt.Key_Up:
+            first_row = self._first_selectable_row()
+            return first_row is None or index.row() <= first_row
+        if key == Qt.Key_Down:
+            return index.row() >= self.card_model.rowCount() - 1
+        return False
+
     def _edge_target_for_key(self, key):
         """
         Shared by plain Ctrl+Arrow (moves) and Ctrl+Shift+Arrow (extends):
         the cell reached by moving ONE axis of the CURRENT cell's position
-        all the way to the table's edge in the given direction, leaving
-        the other axis untouched. Returns None if there's no current cell
-        to move from.
+        all the way to an edge in the given direction, leaving the other
+        axis untouched. Returns None if there's no current cell to move
+        from.
+
+        Left/Right always go to the table's actual first/last column --
+        columns aren't grouped, so there's no narrower boundary to respect
+        there. Up/Down go through _current_group_bounds() instead of the
+        table's absolute first/last row: when the table is grouped, this
+        is what stops Ctrl+Up/Down at the edge of the CURRENT group
+        (landing on the first/last real CARD row of that group, never the
+        inert header row itself) rather than rolling all the way to a
+        completely different group. When nothing's grouped,
+        _current_group_bounds() just returns the whole table's row range,
+        so this is identical to the old always-jump-to-the-table's-edge
+        behavior.
 
         SIMPLIFIED compared to real Excel, which jumps to the edge of the
         current contiguous block of non-empty cells (requires scanning
         for the nearest "gap" in the data -- not implemented here, see
-        NOTES.md) -- this always jumps straight to the table's actual
-        edge (first/last row or column), which is still a genuinely
-        useful "go to the end" action even if it doesn't replicate
-        Excel's contiguous-block-aware jump precisely.
+        NOTES.md) -- this jumps to the table's (or current group's) actual
+        edge, which is still a genuinely useful "go to the end" action
+        even if it doesn't replicate Excel's contiguous-block-aware jump
+        precisely.
         """
         current = self.currentIndex()
         if not current.isValid():
             return None
         row, col = current.row(), current.column()
-        if key == Qt.Key_Up:
-            row = 0
-        elif key == Qt.Key_Down:
-            row = self.card_model.rowCount() - 1
+        if key in (Qt.Key_Up, Qt.Key_Down):
+            first_row, last_row = self._current_group_bounds()
+            row = first_row if key == Qt.Key_Up else last_row
         elif key == Qt.Key_Left:
             col = 0
         else:  # Key_Right
@@ -1590,18 +1742,25 @@ class CardTableView(QTableView):
             and not self.card_model.is_group_header(r + 1)
         ]
 
-    def _jump_to_adjacent_group(self, direction):
+    def _jump_to_adjacent_group(self, direction, wrap=False):
         """
-        Ctrl+Tab (direction=1) / Ctrl+Shift+Tab (direction=-1): moves the
-        current cell to the first card row of the next/previous group,
-        keeping the same column, and collapses the selection down to that
-        one cell -- only meaningful when the table is currently grouped
-        (Group by Type/Color, set via a column's own right-click menu --
-        see SplitDropdownHeader._build_context_menu). A deliberate no-op
-        when nothing's grouped or there's no further group to jump to,
-        rather than falling back to Qt's default Tab behavior -- see
-        keyPressEvent's comment for why Ctrl+Tab is intercepted
-        unconditionally rather than only when grouping happens to be on.
+        Ctrl+Tab (direction=1) / Ctrl+Shift+Tab (direction=-1) / Page Down
+        (direction=1) / Page Up (direction=-1, both only when grouped):
+        moves the current cell to the first card row of the next/previous
+        group, keeping the same column, and collapses the selection down
+        to that one cell -- only meaningful when the table is currently
+        grouped (Group by Type/Color, set via a column's own right-click
+        menu -- see SplitDropdownHeader._build_context_menu). A deliberate
+        no-op when nothing's grouped, rather than falling back to Qt's
+        default Tab-moves-focus behavior -- see keyPressEvent's comment
+        for why Ctrl+Tab is intercepted unconditionally.
+
+        wrap=True (Ctrl+Tab/Ctrl+Shift+Tab) cycles back to the first/last
+        group once past the other end, the same "keep cycling" expectation
+        a browser's own Ctrl+Tab carries. wrap=False (Page Up/Down) clamps
+        at the ends instead -- a no-op past the first/last group, matching
+        how Page Up/Down already stops at the table's edge when nothing's
+        grouped rather than wrapping around.
         """
         if not self.card_model.group_by:
             return
@@ -1614,10 +1773,20 @@ class CardTableView(QTableView):
         row, col = current.row(), current.column()
         if direction > 0:
             candidates = [r for r in starts if r > row]
-            target_row = candidates[0] if candidates else None
+            if candidates:
+                target_row = candidates[0]
+            elif wrap:
+                target_row = starts[0]
+            else:
+                target_row = None
         else:
             candidates = [r for r in starts if r < row]
-            target_row = candidates[-1] if candidates else None
+            if candidates:
+                target_row = candidates[-1]
+            elif wrap:
+                target_row = starts[-1]
+            else:
+                target_row = None
         if target_row is None:
             return
         self._move_current_clearing_selection(self.card_model.index(target_row, col))

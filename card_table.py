@@ -677,18 +677,20 @@ class _MenuSearchBox(QLineEdit):
        manually finding and clicking the matching checkbox.
     3. Distinct focused/unfocused border colors and left-padded
        placeholder text.
-    4. Pressing Up with NOTHING further above to highlight (the search box
-       itself is "above" the first item, and there's nothing above THAT)
-       now COLLAPSES the menu entirely, instead of just clamping in place
-       -- see _move_highlight's `allow_collapse` argument, passed True only
-       for the literal Key_Up handler below. This is what lets a
-       keyboard-focused column header (SplitDropdownHeader.focus_column)
-       collapse an open menu back down to just itself with one Up press --
-       see that class's docstring. Shift+Tab/Backtab share the exact same
-       clamping arithmetic (moving "up" through the checklist) but do NOT
-       get this treatment, since collapsing the whole menu would be a
-       surprising side effect of what's otherwise just checklist
-       navigation there.
+    4. Pressing Up steps back through the checklist one row at a time, same
+       as always -- but once NOTHING is highlighted (either you started
+       there, or a previous Up already stepped back to "nothing
+       highlighted" from row 0), one MORE Up COLLAPSES the menu entirely
+       -- see _move_highlight's `allow_collapse` argument and its own
+       docstring for the two-step reasoning, passed True only for the
+       literal Key_Up handler below. This is what lets a keyboard-focused
+       column header (SplitDropdownHeader.focus_column) collapse an open
+       menu back down to just itself, one Up press at a time from
+       wherever the highlight currently is -- see that class's docstring.
+       Shift+Tab/Backtab share the exact same clamping arithmetic (moving
+       "up" through the checklist) but do NOT get this treatment, since
+       collapsing the whole menu would be a surprising side effect of
+       what's otherwise just checklist navigation there.
     """
 
     def __init__(self, menu, on_enter=None):
@@ -719,26 +721,57 @@ class _MenuSearchBox(QLineEdit):
         return [a for a in self._menu.actions() if a.isVisible() and a.isCheckable()]
 
     def _move_highlight(self, direction, allow_collapse=False):
+        """
+        `allow_collapse` only ever matters for direction < 0 (Up), and
+        even then only in the "nothing is currently highlighted" case --
+        see the two-step design below.
+
+        TWO-STEP UP, deliberately not a direct item-0-to-collapse jump:
+        pressing Up while SOME row is highlighted (including the very
+        first one) always lands on "nothing highlighted" first -- the
+        same state the search box itself represents -- rather than
+        collapsing the menu outright. Only a SECOND Up press, pressed
+        while ALREADY in that nothing-highlighted state, actually closes
+        the menu (allow_collapse's real effect). This matters because
+        "nothing highlighted" already IS effectively "back at the search
+        box" (real Qt keyboard focus never actually leaves the search box
+        the whole time a filter menu is open -- see this class's own
+        docstring point 1), so collapsing straight from row 0 skipped
+        that intermediate, meaningful stop entirely. Was a real, reported
+        bug: pressing Up with any row highlighted closed the whole menu
+        instead of stepping back up to "search box active" first.
+        """
         actions = self._visible_checkable_actions()
         if not actions:
             if allow_collapse and direction < 0:
                 self._menu.close()
             return
         current = self._menu.activeAction()
-        if current in actions:
-            index = actions.index(current) + direction
+        was_highlighted = current in actions
+        if not was_highlighted:
+            if direction < 0:
+                # Already at/above the top (nothing highlighted) -- THIS
+                # is the one case Up should collapse, and only when the
+                # caller opted in (allow_collapse) -- see class docstring
+                # point 4. Reached either by starting here fresh, or by a
+                # PRIOR Up press that already stepped back to this state
+                # (see the `index < 0` branch below).
+                if allow_collapse:
+                    self._menu.close()
+                else:
+                    self._menu.setActiveAction(None)  # stays clamped -- e.g. Shift+Tab's own Up-direction reuse
+                return
+            index = 0  # Down from nothing highlighted starts at the first item
         else:
-            # Nothing highlighted yet: Down starts at the first item; Up
-            # stays clamped (there's nothing "above" the search box) --
-            # unless allow_collapse, in which case "nothing above" is
-            # exactly the signal to close instead (see class docstring
-            # point 4).
-            index = 0 if direction > 0 else -1
+            index = actions.index(current) + direction
+
         if index < 0:
-            if allow_collapse:
-                self._menu.close()
-            else:
-                self._menu.setActiveAction(None)  # back to "nothing highlighted" / clamped top
+            # Was highlighted on the FIRST item and moved up one more --
+            # land back on "nothing highlighted" (the search box) rather
+            # than collapsing immediately, regardless of allow_collapse.
+            # Collapsing only happens on the NEXT Up press, once this
+            # state is what "not was_highlighted" sees above.
+            self._menu.setActiveAction(None)
             return
         index = min(index, len(actions) - 1)  # clamp bottom
         self._menu.setActiveAction(actions[index])
@@ -1484,12 +1517,46 @@ class SplitDropdownHeader(QHeaderView):
         # Control modifier doesn't change which direction this goes,
         # only Shift does.
         if key == Qt.Key_Backtab or (key == Qt.Key_Tab and mods & Qt.ShiftModifier):
-            self.table_focus_requested.emit(True)
+            self._release_focus_to_table(backward=True)
             return
         if key == Qt.Key_Tab:
-            self.table_focus_requested.emit(False)
+            self._release_focus_to_table(backward=False)
             return
         super().keyPressEvent(event)
+
+    def _release_focus_to_table(self, backward):
+        """
+        Explicitly clears THIS header's own keyboard-focus state (the
+        ring, self._focused_column) and calls clearFocus() BEFORE
+        emitting table_focus_requested -- rather than pressing Tab and
+        just trusting an eventual focusOutEvent to notice real Qt focus
+        left, the way the rest of this class's focus-loss handling
+        normally works.
+
+        WHY THIS EXTRA STEP WAS NEEDED (a real, reported bug): QHeaderView
+        is a QAbstractItemView subclass, and Qt's own internal item-view
+        key handling can interact with a plain Tab/Backtab press in ways
+        that don't reliably leave this header in a clean "I no longer
+        have focus" state after CardTableView.focus_table_for_metabutton_
+        tab calls setFocus() on the table -- the cell selection moved
+        (proving table_focus_requested's connected slot DID run), but the
+        header's own focus ring and real Qt focus were observed staying
+        put regardless. Same general class of "Qt's internal Tab handling
+        doesn't reliably defer to widget-level key logic" issue already
+        documented (and worked around the same way -- act BEFORE relying
+        on Qt's own routing) in collapsible_pane.py's module docstring and
+        card_database_view.py's meta-button event filter. Clearing state
+        HERE, directly and unconditionally, removes any dependency on
+        exactly how/when Qt's own internal handling processes the same
+        keypress -- the header relinquishes itself deterministically
+        before the table ever tries to claim focus, rather than the two
+        racing.
+        """
+        self._focused_column = None
+        self._suppress_focus_clear = False  # no menu is open at this point; nothing to protect
+        self.clearFocus()
+        self.update()
+        self.table_focus_requested.emit(backward)
 
 
 class CardTableView(QTableView):

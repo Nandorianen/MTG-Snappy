@@ -31,6 +31,24 @@ opened via the new keyboard paths keep focus on the header column
 afterward (`SplitDropdownHeader._run_context_menu`'s `keyboard` flag) --
 deliberate, so this doesn't disturb the already-documented mouse workflow.
 
+**Two follow-up fixes, same round:**
+- **Tab/Shift+Tab from a focused header now actually releases focus.**
+  The cell selection was already moving correctly, but the header itself
+  kept real Qt focus (and its ring) afterward -- same general "Qt's
+  internal Tab handling doesn't reliably defer to widget-level key logic"
+  issue this app has hit before (collapsible_pane.py,
+  card_database_view.py's meta-button event filter). Fixed by having the
+  header explicitly clear its own focus state and call `clearFocus()`
+  itself, before handing off, rather than trusting an eventual
+  `focusOutEvent` to notice -- see `SplitDropdownHeader._release_focus_to_table`.
+- **Up in an open filter menu is now two steps, not one.** Pressing Up
+  while any row is highlighted (including the first one) now lands on
+  "nothing highlighted" -- the same state the search box itself
+  represents -- rather than collapsing the menu immediately. A SECOND Up
+  press, from that already-nothing-highlighted state, is what actually
+  collapses. Previously a single Up from row 0 skipped straight past that
+  intermediate stop. See `_MenuSearchBox._move_highlight`'s docstring.
+
 # MTG Local Database — Prototype
 
 ## Row context menu rework: selection-scoped actions, no more per-row "..." column (this round)

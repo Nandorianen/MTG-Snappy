@@ -170,11 +170,14 @@ class CardDatabaseView(QWidget):
     def _show_columns_menu(self):
         menu = self.table.header.build_show_columns_menu()
         menu.exec(self.columns_button.mapToGlobal(self.columns_button.rect().bottomLeft()))
-        # Same reasoning as SplitDropdownHeader.focus_requested (card_table.py)
-        # -- this menu isn't opened via the header itself, so it doesn't go
-        # through that signal, but the table should still get keyboard focus
-        # back once it closes rather than leaving it on the Columns button.
-        self.table.setFocus()
+        # Focus goes back to the BUTTON that opened this, not the table.
+        # Unlike SplitDropdownHeader's own filter/group-by menus (which
+        # open FROM the table's header and hand focus back to the table
+        # when they close), this menu opens from a button that lives
+        # outside the table entirely -- closing it (via a selection, or
+        # Escape) should leave the user right back where they started,
+        # not silently relocate them into the table underneath.
+        self.columns_button.setFocus()
 
     def _sync_toggle_buttons(self):
         for button, column in (
@@ -221,12 +224,29 @@ class CardDatabaseView(QWidget):
         # a live popup menu grabs the keyboard for the whole application
         # while showing, so a shortcut on a background widget simply
         # doesn't get delivered until it closes.
+        #
+        # Each hotkey ACTIVATES its button (button.click()), not just
+        # focuses it -- Alt+1 should behave like actually pressing the
+        # Inventory button, toggling it off again on a second press, the
+        # same as clicking it would. click() already does the right thing
+        # whether the button is checkable (Inventory/Wishlist -- toggles)
+        # or a one-shot action (Columns opens its menu, Clear Filters
+        # runs), so there's no need to branch on which kind of button this
+        # particular hotkey happens to target.
         self._metabutton_shortcuts = []  # kept alive -- QShortcut has no other owner
         for i, button in enumerate(self._meta_buttons, start=1):
             shortcut = QShortcut(QKeySequence(f"Alt+{i}"), self)
             shortcut.setContext(Qt.WidgetWithChildrenShortcut)
-            shortcut.activated.connect(lambda b=button: b.setFocus(Qt.ShortcutFocusReason))
+            shortcut.activated.connect(lambda b=button: self._activate_metabutton(b))
             self._metabutton_shortcuts.append(shortcut)
+
+    def _activate_metabutton(self, button):
+        """Focuses AND activates a meta-button, as if it had been clicked
+        -- see _install_metabutton_keyboard_nav's comment on the Alt+1..4
+        hotkeys for why click() alone is enough regardless of which of the
+        four buttons this is."""
+        button.setFocus(Qt.ShortcutFocusReason)
+        button.click()
 
     def eventFilter(self, watched, event):
         if event.type() == QEvent.KeyPress and watched in self._meta_buttons:
@@ -238,6 +258,20 @@ class CardDatabaseView(QWidget):
                 return True
             if key in (Qt.Key_Right, Qt.Key_Down):
                 self._focus_adjacent_metabutton(watched, 1)
+                return True
+
+            if key == Qt.Key_Escape:
+                # A quick, NON-destructive way out of this row -- unlike
+                # Tab/Shift+Tab/Ctrl+Tab below (which deliberately jump the
+                # table's cell selection to a specific group boundary, see
+                # focus_table_for_metabutton_tab), Escape just hands focus
+                # back to the table exactly as it already was, leaving
+                # whatever cell selection was active before the user
+                # tabbed up here completely untouched. A plain setFocus()
+                # -- no selection-model call at all -- is what guarantees
+                # that: Qt doesn't touch selection state just because
+                # focus moves within the same window.
+                self.table.setFocus()
                 return True
 
             # Shift+Tab: Qt reports this as a distinct Key_Backtab on most

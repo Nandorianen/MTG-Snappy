@@ -2037,14 +2037,25 @@ class CardTableView(QTableView):
         """
         Ctrl+Tab (direction=1) / Ctrl+Shift+Tab (direction=-1) / Page Down
         (direction=1) / Page Up (direction=-1, both only when grouped):
-        moves the current cell to the first card row of the next/previous
-        group, keeping the same column, and collapses the selection down
-        to that one cell -- only meaningful when the table is currently
+        moves the current cell to the TOP-LEFT (first row, first column)
+        of the next/previous group, and collapses the selection down to
+        that one cell -- only meaningful when the table is currently
         grouped (Group by Type/Color, set via a column's own right-click
         menu -- see SplitDropdownHeader._build_context_menu). A deliberate
         no-op when nothing's grouped, rather than falling back to Qt's
         default Tab-moves-focus behavior -- see keyPressEvent's comment
         for why Ctrl+Tab is intercepted unconditionally.
+
+        ALWAYS COLUMN 0, not "whatever column you were already in" (an
+        earlier version kept the current column) -- a group jump landing
+        at a different column every time depending on where you happened
+        to be standing made the destination unpredictable, especially
+        landing on some arbitrary column when what you actually wanted was
+        "the top of the next group." Column 0 is a fixed, always-visible,
+        always-meaningful landing spot regardless of prior position -- the
+        same reasoning CardDatabaseView's meta-button row uses when handing
+        focus INTO the table via Tab/Shift+Tab/Ctrl+Tab (see
+        focus_table_for_metabutton_tab), which this keeps consistent with.
 
         wrap=True (Ctrl+Tab/Ctrl+Shift+Tab) cycles back to the first/last
         group once past the other end, the same "keep cycling" expectation
@@ -2061,7 +2072,7 @@ class CardTableView(QTableView):
         starts = self._group_start_rows()
         if not starts:
             return
-        row, col = current.row(), current.column()
+        row = current.row()
         if direction > 0:
             candidates = [r for r in starts if r > row]
             if candidates:
@@ -2080,7 +2091,7 @@ class CardTableView(QTableView):
                 target_row = None
         if target_row is None:
             return
-        self._move_current_clearing_selection(self.card_model.index(target_row, col))
+        self._move_current_clearing_selection(self.card_model.index(target_row, 0))
 
     def _copy_selection_to_clipboard(self):
         indexes = self.selectionModel().selectedIndexes()

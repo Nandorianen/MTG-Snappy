@@ -1247,6 +1247,19 @@ class CardTableView(QTableView):
         # shift around and any previously-spanned header rows need to be
         # recomputed from scratch.
         self.card_model.modelReset.connect(self._reapply_group_spans)
+        # A model reset ALSO unconditionally clears Qt's selection model
+        # (beginResetModel/endResetModel does this regardless of what
+        # triggered it), leaving currentIndex() invalid until something
+        # re-selects a real cell. Left alone, that showed up as two
+        # separate symptoms: nothing visibly looked selected after a
+        # filter/sort/group-by change, and keyboard paths that need a REAL
+        # current cell to know where to move FROM (Ctrl+Tab's group-jump,
+        # Tab/Shift+Tab landing correctly when arriving from
+        # CardDatabaseView's meta-button row) silently did nothing or fell
+        # through to Qt's own default focus-chain instead. See
+        # _select_default_cell_if_unselected's own docstring for why this
+        # is safe to run unconditionally on every reset.
+        self.card_model.modelReset.connect(self._select_default_cell_if_unselected)
 
         self.horizontalHeader().setStretchLastSection(False)
         self.setColumnWidth(COL_SELECTED, 28)
@@ -1299,6 +1312,40 @@ class CardTableView(QTableView):
             shortcut.setContext(Qt.WidgetWithChildrenShortcut)
             shortcut.activated.connect(slot)
             self._selection_action_shortcuts.append(shortcut)
+
+        # The initial table build (CardTableModel.__init__) never goes
+        # through _commit_reorder()/modelReset at all (see that method's
+        # own comment on why), so the modelReset connection above never
+        # fires for the very first render -- call the same fallback
+        # directly here too, so a cell is highlighted from the moment the
+        # table first appears, not only after the first sort/filter/group
+        # change.
+        self._select_default_cell_if_unselected()
+
+    def _select_default_cell_if_unselected(self):
+        """
+        Selects the table's top-left cell IF nothing is currently selected
+        -- called once directly at the end of __init__ (first render) and
+        on every subsequent modelReset (sort/filter/group-by changes all
+        clear the selection outright; see __init__'s comment on why that's
+        worth compensating for). A real, visible current cell should
+        always exist rather than leaving currentIndex() invalid until the
+        user happens to click something.
+
+        Genuinely a no-op whenever something else already restored a real
+        selection: _run_preserving_selection's own reselection logic runs
+        immediately AFTER the mutation that triggered the modelReset this
+        is connected to (i.e. strictly after this method), and
+        unconditionally sets whatever selection it's restoring -- silently
+        overriding the top-left fallback this picked in the meantime. This
+        is purely a safety net for resets that DON'T bring their own
+        follow-up selection (a plain sort/filter/group-by toggle).
+        """
+        if self.selectionModel().currentIndex().isValid():
+            return
+        target = self._top_left_selectable_index()
+        if target is not None:
+            self._move_current_clearing_selection(target)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.RightButton:

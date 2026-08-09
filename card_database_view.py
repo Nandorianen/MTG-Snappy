@@ -49,7 +49,7 @@ actually applied, which is worse than not having the buttons show state
 at all.
 """
 
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QApplication
 from PySide6.QtCore import Qt, QEvent
 from PySide6.QtGui import QKeySequence, QShortcut
 
@@ -207,9 +207,21 @@ class CardDatabaseView(QWidget):
     # (Up/Down) already use elsewhere in this app, rather than subclassing
     # QPushButton four times over for one-off key handling.
     def _install_metabutton_keyboard_nav(self):
-        for button in self._meta_buttons:
-            button.installEventFilter(self)
-
+        # Installed on the APPLICATION rather than directly on each
+        # button. A per-widget installEventFilter() looked like it should
+        # be enough on paper (Qt delivers to installed filters before an
+        # object's own event() handling either way) -- but in practice it
+        # only reliably caught plain Tab and Ctrl+Tab, not Shift+Tab (Qt
+        # reports Shift+Tab as a distinct Key_Backtab, and Qt's own
+        # internal Tab/Backtab focus-navigation can act on it before a
+        # plain per-object filter gets a real chance to consume it first).
+        # collapsible_pane.py's module docstring documents this exact
+        # class of bug for its own Tab handling and fixes it the same
+        # way: an application-level filter runs ahead of that internal
+        # handling unconditionally, for every keypress anywhere in the
+        # app -- we narrow it straight back down to "was this actually
+        # one of our four buttons" inside eventFilter below.
+        QApplication.instance().installEventFilter(self)
         # Alt+1..4, in the same order as self._meta_buttons -- a faster,
         # mouse-free way to jump straight to a specific meta-button instead
         # of arrowing over from wherever focus currently is. Deliberately

@@ -561,9 +561,22 @@ class CardTableModel(QAbstractTableModel):
 
         self._cards = [c for c in self._source_cards if self._passes_filters(c)]
 
-        key_funcs = self._key_funcs()
-        func = key_funcs.get(self._sort_key, key_funcs["name"])
-        self._cards.sort(key=func, reverse=self._sort_reverse)
+        # Only sort if the user has actually picked a sort column. Falling
+        # back to "sort by name" here used to be unconditional -- but the
+        # table's INITIAL display (built directly in __init__, above) never
+        # goes through this method at all, so the very first time
+        # _commit_reorder() ran for ANY reason (a filter click, a group-by
+        # toggle, or a selection-scoped bulk action like Add to Inventory)
+        # would silently jump the table from its original order to
+        # alphabetical -- a real, visible "why did that just resort itself"
+        # surprise, not something the user asked for. Skipping the sort
+        # entirely when _sort_key is None preserves self._source_cards'
+        # original order instead, consistent with what's already on screen
+        # before anything triggers a reorder.
+        if self._sort_key is not None:
+            key_funcs = self._key_funcs()
+            func = key_funcs.get(self._sort_key, key_funcs["name"])
+            self._cards.sort(key=func, reverse=self._sort_reverse)
         # A second, separate stable sort by group rank -- Python's sort is
         # guaranteed stable, so this regroups the list WITHOUT disturbing
         # the within-group order the line above just established.

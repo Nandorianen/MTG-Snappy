@@ -1896,6 +1896,37 @@ class CardTableView(QTableView):
         row = self._first_selectable_row()
         return None if row is None else self.card_model.index(row, 0)
 
+    def focus_table_for_metabutton_tab(self, backward=False):
+        """
+        Called by CardDatabaseView when Tab/Ctrl+Tab (forward) or
+        Shift+Tab (backward) is pressed while focus is on one of the
+        meta-buttons above this table (Inventory/Wishlist/Columns/Clear
+        Filters -- see that class's eventFilter). Rather than leaving
+        whatever cell was selected before untouched, this places the
+        current cell somewhere that matches which direction focus is
+        arriving FROM -- the same "Tab lands on the first thing,
+        Shift+Tab lands on the last thing" convention any normal focus
+        chain gives you when moving between two widgets:
+          - forward (Tab, Ctrl+Tab): the table's first selectable cell
+            (top-left, or the first real card row of the first group).
+          - backward (Shift+Tab): the first row of the LAST group, when
+            the table is currently grouped -- mirrors "the last thing in
+            this widget." Falls back to the same top-left cell as the
+            forward case when nothing's grouped, since there's no other
+            meaningful "last" position to distinguish it from "first"
+            without groups to divide the table up.
+        """
+        target = None
+        if backward and self.card_model.group_by:
+            starts = self._group_start_rows()
+            if starts:
+                target = self.card_model.index(starts[-1], 0)
+        if target is None:
+            target = self._top_left_selectable_index()
+        self.setFocus()
+        if target is not None:
+            self._move_current_clearing_selection(target)
+
     def _at_edge_for_key(self, index, key):
         """
         Whether `index` already sits at the table's edge in the direction

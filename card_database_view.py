@@ -50,6 +50,8 @@ at all.
 """
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton
+from PySide6.QtCore import Qt, QEvent
+from PySide6.QtGui import QKeySequence, QShortcut
 
 from card_table import CardTableView, COL_QTY, COL_CROSS_QTY
 
@@ -66,6 +68,16 @@ QPushButton:checked {
 }
 QPushButton:hover:!checked {
     background-color: #313338;
+}
+QPushButton:focus {
+    /* Same "outline: 0" trick main.py's SideNav buttons already use to
+       drop Qt's native dashed focus rectangle -- replaced here with an
+       underline on the button's own text instead, a much less visually
+       jarring "this has keyboard focus" cue for a row of small buttons
+       than a box drawn around them. See _install_metabutton_keyboard_nav
+       below for how these buttons are actually navigated once focused. */
+    outline: none;
+    text-decoration: underline;
 }
 """
 
@@ -131,6 +143,16 @@ class CardDatabaseView(QWidget):
         # than needing a bespoke signal per code path that can change a filter.
         self.table.card_model.modelReset.connect(self._sync_toggle_buttons)
 
+        # Ordered list of every focusable button in this row -- the single
+        # source of truth both the looped-arrow-key navigation and the
+        # Alt+1..4 hotkeys below index into, so the two can never disagree
+        # about "button 3" being a different button.
+        self._meta_buttons = [
+            self.inventory_toggle, self.wishlist_toggle,
+            self.columns_button, self.clear_filters_button,
+        ]
+        self._install_metabutton_keyboard_nav()
+
         button_row = QHBoxLayout()
         button_row.setContentsMargins(8, 6, 8, 6)
         button_row.addWidget(self.inventory_toggle)
@@ -170,3 +192,82 @@ class CardDatabaseView(QWidget):
             button.blockSignals(True)
             button.setChecked(self.table.card_model.is_value_excluded(column, "0"))
             button.blockSignals(False)
+
+    # --- Meta-button keyboard navigation ---------------------------------
+    # Plain QPushButtons in a QHBoxLayout don't loop on arrow keys, and Qt's
+    # normal Tab chain would just walk off the last button into whatever's
+    # next in the window's focus order (the table, but via the DEFAULT
+    # chain, not deliberately). Both are handled explicitly here via an
+    # event filter on the four buttons themselves -- same "install a filter
+    # to catch a key before the widget's own default handling" pattern
+    # collapsible_pane.py (Tab) and card_table.py's _MenuSearchBox
+    # (Up/Down) already use elsewhere in this app, rather than subclassing
+    # QPushButton four times over for one-off key handling.
+    def _install_metabutton_keyboard_nav(self):
+        for button in self._meta_buttons:
+            button.installEventFilter(self)
+
+        # Alt+1..4, in the same order as self._meta_buttons -- a faster,
+        # mouse-free way to jump straight to a specific meta-button instead
+        # of arrowing over from wherever focus currently is. Deliberately
+        # NUMBERED rather than per-button letter mnemonics (Qt's normal
+        # "&Inventory" -> Alt+I convention) to avoid colliding with this
+        # app's existing Alt+A/D/E/W row-action hotkeys (card_table.py).
+        # Scoped via WidgetWithChildrenShortcut to this widget (which
+        # contains both the buttons AND the table) -- same scoping
+        # tree_pane.py's own shortcuts use -- so these only fire while
+        # focus is genuinely somewhere in Card Database, and (for free,
+        # with no extra guard needed) not at all while a QMenu is open:
+        # a live popup menu grabs the keyboard for the whole application
+        # while showing, so a shortcut on a background widget simply
+        # doesn't get delivered until it closes.
+        self._metabutton_shortcuts = []  # kept alive -- QShortcut has no other owner
+        for i, button in enumerate(self._meta_buttons, start=1):
+            shortcut = QShortcut(QKeySequence(f"Alt+{i}"), self)
+            shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(lambda b=button: b.setFocus(Qt.ShortcutFocusReason))
+            self._metabutton_shortcuts.append(shortcut)
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.KeyPress and watched in self._meta_buttons:
+            key = event.key()
+            mods = event.modifiers()
+
+            if key in (Qt.Key_Left, Qt.Key_Up):
+                self._focus_adjacent_metabutton(watched, -1)
+                return True
+            if key in (Qt.Key_Right, Qt.Key_Down):
+                self._focus_adjacent_metabutton(watched, 1)
+                return True
+
+            # Shift+Tab: Qt reports this as a distinct Key_Backtab on most
+            # platforms rather than Key_Tab with ShiftModifier set, so both
+            # forms are checked -- same belt-and-suspenders check used for
+            # this exact ambiguity elsewhere in the app (_MenuSearchBox,
+            # CardTableView.keyPressEvent).
+            if key == Qt.Key_Backtab or (key == Qt.Key_Tab and mods & Qt.ShiftModifier):
+                self.table.focus_table_for_metabutton_tab(backward=True)
+                return True
+            if key == Qt.Key_Tab and mods in (Qt.NoModifier, Qt.ControlModifier):
+                # Plain Tab and Ctrl+Tab both just hand focus to the table
+                # here (landing on its first cell/group) -- Ctrl+Tab's
+                # OWN meaning (jump to the next group) only applies once
+                # focus is actually inside the table; see
+                # CardTableView.keyPressEvent for what Ctrl+Tab does from
+                # there on.
+                self.table.focus_table_for_metabutton_tab(backward=False)
+                return True
+
+        return super().eventFilter(watched, event)
+
+    def _focus_adjacent_metabutton(self, current_button, direction):
+        """
+        Moves focus one step (+1/-1) along self._meta_buttons from
+        `current_button`, WRAPPING at both ends (Python's % already wraps
+        negative indices correctly) -- unlike Tab, which deliberately
+        leaves this row instead of looping (see eventFilter above), arrow
+        keys are meant to stay a closed loop over just these buttons.
+        """
+        index = self._meta_buttons.index(current_button)
+        next_index = (index + direction) % len(self._meta_buttons)
+        self._meta_buttons[next_index].setFocus(Qt.TabFocusReason)

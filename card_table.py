@@ -27,6 +27,26 @@ pair, plus custom machinery layered on top:
    only in the MODEL's presentation layer (self._display_rows) -- the real
    card data (self._cards) is never contaminated with fake rows.
 
+3. HEADERS ARE NOW FULLY KEYBOARD-FOCUSABLE (this round). A column can hold
+   KEYBOARD focus independently of Qt's own real focus -- see
+   SplitDropdownHeader._focused_column, focus_column(), activate_column().
+   Reachable via Alt+Shift+Up/Down from the table (CardTableView.
+   keyPressEvent, jumping from the current cell's column) or Ctrl+Tab from
+   CardDatabaseView's meta-button row (landing on the leftmost column).
+   Once a column has keyboard focus: Left/Right cycles between columns
+   (wrapping, same convention CardDatabaseView's own meta-button row
+   arrow-keys already use), Down opens that column's filter/context menu
+   (if it has one), Enter/Space sorts by it (the keyboard equivalent of a
+   left-click), and Tab/Ctrl+Tab/Shift+Tab hand focus back to the table
+   (SAME group-aware landing CardDatabaseView's meta-buttons already use --
+   see table_focus_requested). While a menu is open, pressing Up at the
+   very top of the checklist (nothing left to highlight) now COLLAPSES the
+   menu back to just the header button instead of silently clamping -- see
+   _MenuSearchBox._move_highlight's allow_collapse. This is scoped so it
+   ONLY changes behavior for keyboard-opened menus; a mouse right-click
+   still hands focus back to the TABLE when its menu closes, exactly as
+   before -- see _run_context_menu's `keyboard` flag.
+
 WHY THERE'S NO PER-ROW "..." ACTIONS COLUMN ANYMORE:
 An earlier version had a rightmost "actions" column (ActionButtonDelegate)
 painting a small "..." button per row and reacting to its own click.
@@ -116,6 +136,14 @@ SORT_ARROW_COLOR = "#e3e3e3"
 FILTER_DOT_COLOR = "#e6c15c"
 FILTER_DOT_SIZE = 6
 SORT_ARROW_ZONE_WIDTH = 14
+
+# Ring drawn around whichever column currently holds KEYBOARD focus (see
+# SplitDropdownHeader.focus_column/_paint_focus_ring) -- the same accent
+# blue used for table-cell selection and every "primary action" button
+# elsewhere in the app (CardDatabaseView's toggles, Apply buttons), so
+# "this is the keyboard-active thing" reads as one consistent color
+# language across the whole app rather than inventing a new hue here.
+HEADER_FOCUS_RING_COLOR = "#4f8fc0"
 
 # Columns offered in the right-click "Filter by..." value checklist. Skipped
 # for the checkbox/actions utility columns (nothing meaningful to filter by)
@@ -617,7 +645,7 @@ class _StayOpenMenu(QMenu):
 class _MenuSearchBox(QLineEdit):
     """
     The Excel-style "narrow the checklist" search box embedded in a filter
-    menu. Three behaviors plain QLineEdit doesn't have:
+    menu. Four behaviors plain QLineEdit doesn't have:
 
     1. Up/Down arrow keys move QMenu's visual "active action" highlight
        WITHOUT ever transferring real Qt keyboard focus away from this
@@ -640,16 +668,27 @@ class _MenuSearchBox(QLineEdit):
        this action" that doesn't depend on who technically has keyboard
        focus, so keeping focus right here on the search box the entire
        time and driving the highlight manually sidesteps that whole class
-       of bug. Only VISIBLE, checkable actions are ever targeted, and
-       Up/Down are clamped at the top/bottom (Up when nothing is
-       highlighted yet does nothing; Down past the last item does nothing
-       further).
+       of bug. Only VISIBLE, checkable actions are ever targeted.
+       Up is clamped UNLESS `allow_collapse` (see point 4 below); Down past
+       the last item does nothing further.
     2. Enter applies the typed text as a real filter (excluding every
        offered value that doesn't contain it) and closes the menu --
        a fast path for "I know what I'm looking for" that doesn't require
        manually finding and clicking the matching checkbox.
     3. Distinct focused/unfocused border colors and left-padded
        placeholder text.
+    4. Pressing Up with NOTHING further above to highlight (the search box
+       itself is "above" the first item, and there's nothing above THAT)
+       now COLLAPSES the menu entirely, instead of just clamping in place
+       -- see _move_highlight's `allow_collapse` argument, passed True only
+       for the literal Key_Up handler below. This is what lets a
+       keyboard-focused column header (SplitDropdownHeader.focus_column)
+       collapse an open menu back down to just itself with one Up press --
+       see that class's docstring. Shift+Tab/Backtab share the exact same
+       clamping arithmetic (moving "up" through the checklist) but do NOT
+       get this treatment, since collapsing the whole menu would be a
+       surprising side effect of what's otherwise just checklist
+       navigation there.
     """
 
     def __init__(self, menu, on_enter=None):
@@ -679,19 +718,27 @@ class _MenuSearchBox(QLineEdit):
     def _visible_checkable_actions(self):
         return [a for a in self._menu.actions() if a.isVisible() and a.isCheckable()]
 
-    def _move_highlight(self, direction):
+    def _move_highlight(self, direction, allow_collapse=False):
         actions = self._visible_checkable_actions()
         if not actions:
+            if allow_collapse and direction < 0:
+                self._menu.close()
             return
         current = self._menu.activeAction()
         if current in actions:
             index = actions.index(current) + direction
         else:
             # Nothing highlighted yet: Down starts at the first item; Up
-            # stays clamped (there's nothing "above" the search box).
+            # stays clamped (there's nothing "above" the search box) --
+            # unless allow_collapse, in which case "nothing above" is
+            # exactly the signal to close instead (see class docstring
+            # point 4).
             index = 0 if direction > 0 else -1
         if index < 0:
-            self._menu.setActiveAction(None)  # back to "nothing highlighted" / clamped top
+            if allow_collapse:
+                self._menu.close()
+            else:
+                self._menu.setActiveAction(None)  # back to "nothing highlighted" / clamped top
             return
         index = min(index, len(actions) - 1)  # clamp bottom
         self._menu.setActiveAction(actions[index])
@@ -713,7 +760,7 @@ class _MenuSearchBox(QLineEdit):
         # CODE alone rather than insisting on a specific receiver identity.
         if event.type() == QEvent.KeyPress:
             if event.key() == Qt.Key_Up:
-                self._move_highlight(-1)
+                self._move_highlight(-1, allow_collapse=True)
                 return True   # consumed: stop it reaching QMenu's own handling
             if event.key() == Qt.Key_Down:
                 self._move_highlight(1)
@@ -793,6 +840,14 @@ class SplitDropdownHeader(QHeaderView):
         menu's contents, just no longer wires it in HERE.
       - A few pixels at each section border are reserved EXCLUSIVELY for
         drag-to-resize, checked first, before any of the above.
+      - KEYBOARD FOCUS (this round): a column can hold keyboard focus
+        independently of Qt's own real focus (self._focused_column, drawn
+        as a ring via _paint_focus_ring) -- see focus_column()/
+        activate_column() and keyPressEvent below. This is the part that
+        makes right-click menus, sorting, and column visibility all
+        reachable without a mouse at all: Alt+Shift+Up/Down from the table
+        (CardTableView.keyPressEvent) or Ctrl+Tab from CardDatabaseView's
+        meta-button row both land here.
 
     TYPE/MANA/PRICE HEADER CLEANUP: these three used to paint a SECOND
     small arrow glyph (▾, opening a "group by"/"price source" menu) right
@@ -835,8 +890,21 @@ class SplitDropdownHeader(QHeaderView):
     # keyboard focus sitting on the header/menu instead of back on the
     # table, so the very next arrow-key press does nothing until the user
     # clicks a cell first -- a real, felt keyboard-flow gap now that the
-    # table has this much keyboard support built in elsewhere.
+    # table has this much keyboard support built in elsewhere. STILL used
+    # for every MOUSE-driven interaction, unchanged; see _run_context_menu
+    # for how the KEYBOARD path differs (it keeps focus on the header
+    # column instead -- see table_focus_requested below for how a
+    # keyboard-focused header eventually hands off to the table instead).
     focus_requested = Signal()
+    # Emitted by a header column that currently holds KEYBOARD focus (see
+    # focus_column/keyPressEvent) when Tab/Ctrl+Tab (backward=False) or
+    # Shift+Tab/Ctrl+Shift+Tab (backward=True) is pressed -- CardTableView
+    # connects this straight to its own focus_table_for_metabutton_tab, the
+    # exact same group-aware landing method CardDatabaseView's meta-button
+    # row already uses for its own Tab/Shift+Tab. One shared "how Tab
+    # arrives at the table from above it" convention, whether that
+    # "somewhere above" is the meta-button row or a column header.
+    table_focus_requested = Signal(bool)  # True = backward
 
     RESIZE_MARGIN = 6      # pixels at each section edge reserved purely for resizing
     MIN_SECTION_WIDTH = 24
@@ -848,14 +916,29 @@ class SplitDropdownHeader(QHeaderView):
         self._active_sort_key = None
         self._resizing_column = None
         self._resize_start_x = None
-        self._resize_start_width = None
+
+        # --- Keyboard column focus -------------------------------------
+        # A QHeaderView defaults to Qt.NoFocus (setFocus() is a no-op
+        # without this). Nothing routes ordinary Tab-traversal INTO the
+        # header by accident -- the only entry points are the explicit
+        # focus_column()/activate_column() calls below, reached from
+        # CardTableView (Alt+Shift+Up/Down) or CardDatabaseView (Ctrl+Tab
+        # from the meta-button row). Once focused, keyPressEvent always
+        # intercepts Tab/Backtab itself (emitting table_focus_requested)
+        # rather than letting it fall through to Qt's generic focus chain,
+        # so there's no path where a stray Tab press strands focus here.
+        self.setFocusPolicy(Qt.StrongFocus)
+        self._focused_column = None        # int column index, or None -- see focus_column()
+        self._keyboard_menu_column = None  # set while a KEYBOARD-opened menu is showing -- see _run_context_menu
+        self._suppress_focus_clear = False  # True while a menu we opened is showing -- see focusOutEvent
 
     def paintSection(self, painter: QPainter, rect: QRect, logical_index: int):
         # Sort arrows are painted INSIDE _paint_split_section (it needs to
         # dodge the split divider and pick a half); every other column
         # gets its sort arrow painted here, right after Qt's own default
-        # section painting. The filter dot is uniform across every column
-        # shape, so it's always painted last, from this one place.
+        # section painting. The filter dot and keyboard-focus ring are
+        # both uniform across every column shape, so they're always
+        # painted last, from this one place.
         if logical_index == COL_EDITION_RARITY:
             self._paint_split_section(painter, rect)
         else:
@@ -870,6 +953,8 @@ class SplitDropdownHeader(QHeaderView):
                 self._paint_sort_arrow(painter, rect)
         if self._column_has_active_filter(logical_index):
             self._paint_filter_dot(painter, rect)
+        if logical_index == self._focused_column:
+            self._paint_focus_ring(painter, rect)
 
     def _sort_arrow_glyph(self):
         model = self.model()
@@ -896,6 +981,21 @@ class SplitDropdownHeader(QHeaderView):
         painter.setPen(Qt.NoPen)
         painter.setBrush(QColor(FILTER_DOT_COLOR))
         painter.drawEllipse(rect.left() + 4, rect.top() + 4, FILTER_DOT_SIZE, FILTER_DOT_SIZE)
+        painter.restore()
+
+    def _paint_focus_ring(self, painter, rect):
+        """Drawn around whichever column self._focused_column names,
+        regardless of whether the header currently holds REAL Qt focus --
+        it can legitimately lose that to an open QMenu (a separate
+        top-level popup) while still being the logically "active" column;
+        see focusOutEvent's _suppress_focus_clear guard."""
+        painter.save()
+        pen = painter.pen()
+        pen.setColor(QColor(HEADER_FOCUS_RING_COLOR))
+        pen.setWidth(2)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRect(rect.adjusted(1, 1, -2, -2))
         painter.restore()
 
     def _paint_split_section(self, painter, rect):
@@ -974,9 +1074,7 @@ class SplitDropdownHeader(QHeaderView):
             section_width = self.sectionSize(logical_index)
             rel_x = pos.x() - section_x
             sort_key = "set" if rel_x < section_width / 2 else "rarity"
-            self._active_sort_key = sort_key
-            self.sort_requested.emit(sort_key)
-            self.update()
+            self._apply_sort(sort_key)
             self.focus_requested.emit()
             event.accept()
             return
@@ -988,9 +1086,7 @@ class SplitDropdownHeader(QHeaderView):
         # gone (those controls live in the right-click menu now).
         key = self._column_keys.get(logical_index)
         if key:
-            self._active_sort_key = key
-            self.sort_requested.emit(key)
-            self.update()
+            self._apply_sort(key)
             self.focus_requested.emit()
         event.accept()
 
@@ -1012,23 +1108,81 @@ class SplitDropdownHeader(QHeaderView):
             return
         super().mouseReleaseEvent(event)
 
+    def _apply_sort(self, sort_key):
+        """
+        Shared by every path that can trigger a sort: a left-click (see
+        mousePressEvent) and a keyboard Enter/Space press on a focused
+        column (see _trigger_sort_for_focused_column) both funnel through
+        here, so the two can never drift on what "sorting this column"
+        actually does.
+        """
+        self._active_sort_key = sort_key
+        self.sort_requested.emit(sort_key)
+        self.update()
 
     # --- Right-click: per-column filter + column visibility ------------------
     def _show_context_menu(self, column, global_pos):
+        self._run_context_menu(column, global_pos, keyboard=False)
+
+    def _run_context_menu(self, column, global_pos, keyboard):
+        """
+        Shared by the mouse right-click path (_show_context_menu) and the
+        keyboard path (activate_column): builds and runs `column`'s
+        context menu, then decides where keyboard focus ends up once it
+        closes.
+
+        `keyboard=True` (opened via Alt+Shift+Up/Down from the table, or
+        Down on an already-focused header) keeps focus on THIS header
+        column afterward -- via focus_column(), re-drawing the same focus
+        ring rather than silently losing it -- so Left/Right, Down, Enter,
+        and Tab/Ctrl+Tab are all still meaningful the instant the menu
+        closes, however it closed (picking a value, Enter, Escape, or the
+        new Up-at-the-top collapse -- see _MenuSearchBox._move_highlight's
+        allow_collapse).
+
+        `keyboard=False` (mouse right-click) preserves the ORIGINAL,
+        already-established behavior unchanged: hand focus back to the
+        table via focus_requested, exactly as before headers were
+        keyboard-focusable at all -- a mouse user filtering via right-
+        click should never suddenly need to Tab back to the table
+        afterward.
+
+        self._keyboard_menu_column tracks which column (if any) the
+        CURRENTLY open menu was opened for via the keyboard path -- read
+        back after menu.exec() returns, since the menu's own Up-collapse
+        (_MenuSearchBox) has no direct reference to `keyboard` and closes
+        the same way regardless of how the menu was opened; this is what
+        lets the SAME close event route differently depending on how the
+        menu got there in the first place.
+        """
         menu = self._build_context_menu(column)
         # Show Columns used to live here too, so EVERY column's right-click
         # menu had at least one item even when nothing was filterable
         # (Checkbox, Actions). Now that it's a standalone button (see
         # CardDatabaseView), those columns have nothing left to show --
-        # better to show no menu at all than an empty popup box.
+        # better to show no menu at all than an empty popup. Also means
+        # Down-to-open on a keyboard-focused Checkbox column is a
+        # deliberate no-op -- there's genuinely nothing there to open.
         if menu.isEmpty():
             return
+        if keyboard:
+            self._keyboard_menu_column = column
+        # A QMenu is a separate top-level popup -- showing it genuinely
+        # steals real Qt focus away from this header for as long as it's
+        # open. Suppressing focusOutEvent's clear here is what keeps the
+        # focus ring drawn (self._focused_column untouched) the whole time
+        # instead of flickering off and back on around every menu.
+        self._suppress_focus_clear = True
         menu.exec(global_pos)
+        self._suppress_focus_clear = False
         # The menu (filter checklist, group-by, price source, ...) just
-        # closed, whether via a selection or Escape/click-away -- hand
-        # keyboard focus back to the table so arrow keys immediately work
-        # again instead of doing nothing until the user clicks a cell.
-        self.focus_requested.emit()
+        # closed, whether via a selection, Enter, Escape/click-away, or
+        # the keyboard's own Up-collapse.
+        if self._keyboard_menu_column == column:
+            self._keyboard_menu_column = None
+            self.focus_column(column)
+        else:
+            self.focus_requested.emit()
 
     def _build_context_menu(self, column):
         menu = _StayOpenMenu(self)
@@ -1071,7 +1225,9 @@ class SplitDropdownHeader(QHeaderView):
             menu.addAction(search_action)
             # Auto-focus the search box the instant the menu appears, so
             # you can start typing immediately on right-click without an
-            # extra click into the box first.
+            # extra click into the box first -- also what satisfies "focus
+            # on the dropdown menu and arrow controls" for the KEYBOARD
+            # entry path (activate_column), since it's the same menu.
             menu.aboutToShow.connect(search_box.setFocus)
 
             # "Group by Type" / "Price Source" -- moved here from a
@@ -1199,6 +1355,142 @@ class SplitDropdownHeader(QHeaderView):
                 non_matching = {v for v in offered_values if text not in v.lower()}
                 self.model().set_column_filter(column, non_matching)
 
+    # --- Keyboard column focus ------------------------------------------
+    def focus_column(self, column):
+        """
+        Gives the header itself real keyboard focus and marks `column` as
+        the keyboard-active one (drawn with a focus ring -- see
+        _paint_focus_ring, called from paintSection). Focus-ONLY: doesn't
+        open anything. See activate_column for the "also open its filter
+        menu" variant used when ARRIVING at a header fresh (Alt+Shift+
+        Up/Down from the table), or Down on an already-focused header
+        (_open_menu_for_focused_column) -- also what a menu's own
+        Up-collapse (_MenuSearchBox) returns to via _run_context_menu.
+        """
+        self._focused_column = column
+        self.setFocus(Qt.ShortcutFocusReason)
+        self.update()
+
+    def activate_column(self, column):
+        """
+        focus_column() plus immediately opening that column's filter/
+        context menu, if it has one -- what CardTableView's Alt+Shift+
+        Up/Down (arriving fresh from the table) and this header's own
+        Down key (_open_menu_for_focused_column, once a column already
+        has keyboard focus) both do. A column with nothing to filter
+        (Checkbox) just gets plain focus -- see _run_context_menu's
+        isEmpty() check, the same "no menu at all" rule right-click
+        already follows.
+        """
+        self.focus_column(column)
+        section_x = self.sectionViewportPosition(column)
+        rect = QRect(section_x, 0, self.sectionSize(column), self.height())
+        self._run_context_menu(column, self.mapToGlobal(rect.bottomLeft()), keyboard=True)
+
+    def _visible_columns(self):
+        return [c for c in range(self.count()) if not self.isSectionHidden(c)]
+
+    def _move_focused_column(self, direction):
+        """
+        Left/Right while a header column has keyboard focus -- steps to
+        the adjacent VISIBLE column, WRAPPING at both ends. Wrapping (not
+        clamping) deliberately matches CardDatabaseView's own meta-button
+        row (_focus_adjacent_metabutton) -- one consistent "arrow keys
+        loop over a fixed row of things" convention for both keyboard-
+        navigable rows above the table, not two different ones.
+        """
+        columns = self._visible_columns()
+        if self._focused_column not in columns:
+            return
+        index = columns.index(self._focused_column)
+        self.focus_column(columns[(index + direction) % len(columns)])
+
+    def _open_menu_for_focused_column(self):
+        if self._focused_column is not None:
+            self.activate_column(self._focused_column)
+
+    def _trigger_sort_for_focused_column(self):
+        """
+        Enter/Return/Space on a keyboard-focused header -- the keyboard
+        equivalent of a left-click, so a header is fully operable without
+        a mouse, not just filterable. The Edition/Rarity split column has
+        no keyboard equivalent of "which half did you click" (that's
+        mouse-x-position-only information) -- Enter defaults to its SET
+        half; Rarity is still reachable by sorting once, then pressing
+        Enter again to flip direction, same as clicking the same half
+        twice would via _apply_sort's existing toggle-on-repeat behavior
+        (see CardTableModel.sort_by_key). Deliberately does NOT emit
+        focus_requested -- unlike a mouse click, this keeps keyboard focus
+        right here on the header column, so the next keypress (Left/
+        Right, Down, Tab...) still has something to act on.
+        """
+        column = self._focused_column
+        if column is None:
+            return
+        if column == COL_EDITION_RARITY:
+            self._apply_sort("set")
+            return
+        key = self._column_keys.get(column)
+        if key:
+            self._apply_sort(key)
+
+    def focusOutEvent(self, event):
+        """
+        Clears the focus ring when focus genuinely leaves the header --
+        e.g. Tab/Ctrl+Tab/Shift+Tab handing off to the table
+        (keyPressEvent below), or a plain mouse-driven sort-click's
+        focus_requested stealing focus back to the table. Suppressed
+        (_suppress_focus_clear) while a menu THIS header opened is
+        showing -- see _run_context_menu's comment for why that's a
+        genuine, expected, temporary loss of real Qt focus that shouldn't
+        be read as "the user navigated away."
+        """
+        if not self._suppress_focus_clear:
+            self._focused_column = None
+            self.update()
+        super().focusOutEvent(event)
+
+    def keyPressEvent(self, event):
+        """
+        Only meaningful once a column actually holds keyboard focus (see
+        focus_column/activate_column -- reached via CardTableView's
+        Alt+Shift+Up/Down or CardDatabaseView's Ctrl+Tab from the
+        meta-button row). A header that's never been given keyboard focus
+        falls straight through to Qt's default QHeaderView handling,
+        exactly as before headers were keyboard-focusable at all.
+        """
+        if self._focused_column is None:
+            super().keyPressEvent(event)
+            return
+
+        key = event.key()
+        mods = event.modifiers()
+
+        if key in (Qt.Key_Left, Qt.Key_Right):
+            self._move_focused_column(-1 if key == Qt.Key_Left else 1)
+            return
+        if key == Qt.Key_Down:
+            self._open_menu_for_focused_column()
+            return
+        if key in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space):
+            self._trigger_sort_for_focused_column()
+            return
+        # Shift+Tab: Qt reports this as a distinct Key_Backtab on most
+        # platforms rather than Key_Tab with ShiftModifier set, so both
+        # forms are checked -- same belt-and-suspenders check used for
+        # this exact ambiguity elsewhere in the app (_MenuSearchBox,
+        # CardTableView.keyPressEvent). Ctrl+Tab/Ctrl+Shift+Tab fall
+        # through to the plain Tab/Backtab branches below too -- the
+        # Control modifier doesn't change which direction this goes,
+        # only Shift does.
+        if key == Qt.Key_Backtab or (key == Qt.Key_Tab and mods & Qt.ShiftModifier):
+            self.table_focus_requested.emit(True)
+            return
+        if key == Qt.Key_Tab:
+            self.table_focus_requested.emit(False)
+            return
+        super().keyPressEvent(event)
+
 
 class CardTableView(QTableView):
     """
@@ -1228,9 +1520,17 @@ class CardTableView(QTableView):
         self.setHorizontalHeader(self.header)
         self.header.sort_requested.connect(self.card_model.sort_by_key)
         # See SplitDropdownHeader.focus_requested's own comment -- returns
-        # keyboard focus to the table after a sort-click or a right-click
-        # menu (filter checklist, group-by, price source) closes.
+        # keyboard focus to the table after a MOUSE-driven sort-click or
+        # right-click menu (filter checklist, group-by, price source)
+        # closes.
         self.header.focus_requested.connect(self.setFocus)
+        # A header column that itself holds KEYBOARD focus hands off to
+        # the table the same group-aware way CardDatabaseView's own
+        # meta-button row already does (Tab/Ctrl+Tab forward, Shift+Tab
+        # backward) -- see SplitDropdownHeader.keyPressEvent and this
+        # method's own docstring below. One shared "how Tab arrives at
+        # the table from above it" convention for both entry points.
+        self.header.table_focus_requested.connect(self.focus_table_for_metabutton_tab)
         # Price-source selection now lives inside the header's own
         # right-click filter menu (SplitDropdownHeader._build_context_menu)
         # rather than a separate dropdown -- no signal to wire up here
@@ -1617,6 +1917,24 @@ class CardTableView(QTableView):
 
         modifiers = event.modifiers()
         key = event.key()
+
+        if key in (Qt.Key_Up, Qt.Key_Down) and modifiers == (Qt.AltModifier | Qt.ShiftModifier):
+            # Jump from the current cell's COLUMN into that column's own
+            # header and activate it (open its filter menu, if it has
+            # one) -- see SplitDropdownHeader.activate_column. Either
+            # arrow reaches the SAME header: it sits directly above the
+            # table with nothing "further" in either vertical direction
+            # from here, so Up and Down are just two equally-sensible ways
+            # to ask for it, not two different destinations. Checked
+            # first, before the generic arrow-key branches below
+            # (including the "nothing selected" one just below, which has
+            # no modifier guard at all) so this combo can never be
+            # swallowed by them.
+            current = self.currentIndex()
+            column = current.column() if current.isValid() else 0
+            self.header.activate_column(column)
+            return
+
         shift_held = bool(modifiers & Qt.ShiftModifier)
         plain_ctrl = modifiers == Qt.ControlModifier
         ctrl_shift = modifiers == (Qt.ControlModifier | Qt.ShiftModifier)
@@ -1945,10 +2263,14 @@ class CardTableView(QTableView):
 
     def focus_table_for_metabutton_tab(self, backward=False):
         """
-        Called by CardDatabaseView when Tab/Ctrl+Tab (forward) or
+        Called both by CardDatabaseView when Tab/Ctrl+Tab (forward) or
         Shift+Tab (backward) is pressed while focus is on one of the
         meta-buttons above this table (Inventory/Wishlist/Columns/Clear
-        Filters -- see that class's eventFilter). Rather than leaving
+        Filters -- see that class's eventFilter), AND by this table's own
+        header when Tab/Ctrl+Tab/Shift+Tab is pressed while a column has
+        keyboard focus (see SplitDropdownHeader.table_focus_requested) --
+        one shared "how Tab arrives at the table from somewhere above it"
+        convention for both entry points, not two. Rather than leaving
         whatever cell was selected before untouched, this places the
         current cell somewhere that matches which direction focus is
         arriving FROM -- the same "Tab lands on the first thing,
@@ -1973,6 +2295,25 @@ class CardTableView(QTableView):
         self.setFocus()
         if target is not None:
             self._move_current_clearing_selection(target)
+
+    def focus_leftmost_header(self):
+        """
+        Jumps keyboard focus from the meta-button row straight into the
+        table's HEADER -- its leftmost VISIBLE column -- rather than a
+        cell. Called by CardDatabaseView's meta-button row specifically on
+        Ctrl+Tab (see that class's eventFilter); plain Tab there still
+        lands on a cell via focus_table_for_metabutton_tab, unchanged.
+        Focus-ONLY, like SplitDropdownHeader.focus_column -- deliberately
+        doesn't open that column's filter menu, since arriving via a
+        plain focus hop shouldn't also trigger an action (the same reason
+        Tab-ing onto a button focuses it without clicking it).
+        """
+        columns = [c for c in range(self.card_model.columnCount())
+                   if not self.header.isSectionHidden(c)]
+        if not columns:
+            self.setFocus()
+            return
+        self.header.focus_column(columns[0])
 
     def _at_edge_for_key(self, index, key):
         """

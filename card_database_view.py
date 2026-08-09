@@ -47,6 +47,13 @@ Only syncing one direction would let a manual header-checklist edit leave
 a button showing the wrong state -- silently lying about what filter is
 actually applied, which is worse than not having the buttons show state
 at all.
+
+KEYBOARD ACCESS TO TABLE HEADERS (this round): headers are now themselves
+keyboard-focusable (see card_table.py's SplitDropdownHeader). This row's
+own Ctrl+Tab (below) reflects that: it now jumps straight to the table's
+HEADER (leftmost visible column) rather than a cell, since a header is a
+meaningfully different, closer destination now that it's operable on its
+own. Plain Tab is unchanged -- it still lands on a cell.
 """
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QApplication
@@ -294,13 +301,25 @@ class CardDatabaseView(QWidget):
             if key == Qt.Key_Backtab or (key == Qt.Key_Tab and mods & Qt.ShiftModifier):
                 self.table.focus_table_for_metabutton_tab(backward=True)
                 return True
-            if key == Qt.Key_Tab and mods in (Qt.NoModifier, Qt.ControlModifier):
-                # Plain Tab and Ctrl+Tab both just hand focus to the table
-                # here (landing on its first cell/group) -- Ctrl+Tab's
-                # OWN meaning (jump to the next group) only applies once
-                # focus is actually inside the table; see
-                # CardTableView.keyPressEvent for what Ctrl+Tab does from
-                # there on.
+            if key == Qt.Key_Tab and mods == Qt.ControlModifier:
+                # Ctrl+Tab specifically goes one level UP from a cell --
+                # straight to the table's HEADER row (its leftmost visible
+                # column) instead of a card row. Split out from plain Tab
+                # below now that headers are keyboard-focusable in their
+                # own right (see card_table.py's SplitDropdownHeader) --
+                # Ctrl+Tab is the fast, direct path to column sorting/
+                # filtering without detouring through the grid first.
+                # Focus-only (see CardTableView.focus_leftmost_header) --
+                # arriving via a plain focus hop shouldn't also open that
+                # column's filter menu.
+                self.table.focus_leftmost_header()
+                return True
+            if key == Qt.Key_Tab and mods == Qt.NoModifier:
+                # Plain Tab hands focus to a CELL in the table (landing on
+                # its first cell/group) -- see CardTableView.keyPressEvent
+                # for what Ctrl+Tab means once focus is actually IN the
+                # table (jump to the next group), a separate, later
+                # meaning from the header-focused Ctrl+Tab above.
                 self.table.focus_table_for_metabutton_tab(backward=False)
                 return True
 

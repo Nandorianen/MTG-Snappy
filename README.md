@@ -1,3 +1,36 @@
+## Keyboard access for table headers (this round)
+
+Headers were completely mouse-only until now -- no way to sort, filter, or
+open a column's menu without clicking. Fixed by making a column header
+itself keyboard-focusable, unified with the meta-button row's existing
+arrow-key/Tab conventions (card_database_view.py):
+
+- **Alt+Shift+Up or Alt+Shift+Down from any cell** jumps to that column's
+  own header and opens its filter/context menu (if it has one), with focus
+  on the menu's search box -- same as right-clicking, just from the
+  keyboard. A column with nothing to filter (Checkbox) just gets plain
+  focus; there's nothing to open.
+- **Left/Right** between headers **wraps** at both ends, once a header has
+  keyboard focus -- deliberately matching CardDatabaseView's own
+  meta-button row, not a new convention.
+- **Down** opens the focused column's menu; **Up at the very top of an open
+  menu's checklist** (nothing left to highlight) now collapses the menu
+  back to the header button instead of clamping in place.
+- **Enter/Space** sorts by the focused column -- the keyboard equivalent of
+  a left-click.
+- **Tab / Ctrl+Tab / Shift+Tab** hand focus to the table, landing group-
+  aware (first cell of the first/last group) via the exact same
+  `focus_table_for_metabutton_tab` the meta-button row already used.
+- **Ctrl+Tab from the meta-button row** now goes straight to the table's
+  leftmost column header (focus only, no menu) instead of a cell -- plain
+  Tab from there still lands on a cell as before.
+
+Mouse-driven right-click filtering is **unchanged**: closing a menu that
+way still hands focus back to the table exactly as before. Only menus
+opened via the new keyboard paths keep focus on the header column
+afterward (`SplitDropdownHeader._run_context_menu`'s `keyboard` flag) --
+deliberate, so this doesn't disturb the already-documented mouse workflow.
+
 # MTG Local Database — Prototype
 
 ## Row context menu rework: selection-scoped actions, no more per-row "..." column (this round)

@@ -5,20 +5,10 @@ The central spreadsheet: a QAbstractTableModel (data) + QTableView (display)
 pair, plus custom machinery layered on top:
 
 1. SplitDropdownHeader (QHeaderView subclass) -- draws the "Edition / Rarity"
-   column as two independently-sortable halves; draws a small direction-
-   aware sort arrow and filter-active dot on every column via paintSection;
-   and handles RIGHT-click for a per-column value filter, PLUS (for Type/
-   Mana Cost/Price specifically) the "Group by Type," "Group by Color," and
-   "Price Source" controls that used to live behind a separate dropdown-
-   arrow zone in the header itself. Consolidating those into the same
-   right-click menu the value checklist already lives in removed a second,
-   visually near-identical arrow glyph that used to sit right next to the
-   new sort arrow (see the "Type/Mana/Price header cleanup" note below) --
-   one right-click menu per column is simpler to explain than "click here
-   to sort, click 4px to the right of that to open a totally different
-   menu." Also builds the "Show Columns" visibility-picker menu
-   (build_show_columns_menu below), though that's no longer shown FROM the
-   header itself -- see CardDatabaseView's standalone Columns button.
+   column as two independently-sortable halves; draws a dropdown arrow on
+   Price/Type/Mana Cost that opens a menu instead of sorting (price source,
+   or "group by" for Type/Mana); and handles RIGHT-click for a per-column
+   value filter plus a "Show Columns" visibility picker.
 
 2. ActionButtonDelegate (QStyledItemDelegate subclass) -- draws a small
    button-looking cell in the rightmost column and reacts to clicks, WITHOUT
@@ -51,7 +41,7 @@ from PySide6.QtCore import (
     Qt, QAbstractTableModel, QModelIndex, Signal, QTimer, QRect, QEvent,
     QItemSelection, QItemSelectionModel,
 )
-from PySide6.QtGui import QKeySequence, QPainter, QColor, QBrush, QShortcut
+from PySide6.QtGui import QKeySequence, QPainter, QColor, QBrush
 
 from mock_data import RARITY_ORDER, PRICE_SOURCES
 from card_popover import CardPopover
@@ -91,15 +81,19 @@ COL_TOUGHNESS = 8
 COL_PRICE = 9
 COL_ACTIONS = 10
 
-# Custom-painted header sections (just the split Edition/Rarity column now
-# -- see the "Type/Mana/Price header cleanup" note below) can't rely on
-# self.palette().button().color() for their background -- that reads the
-# widget's base QPalette, which the app's QSS stylesheet (main.py's
-# STYLE_SHEET, `QHeaderView::section { background-color: ... }`) does NOT
-# update; QSS and QPalette are separate systems in Qt, and only Qt's OWN
-# default section painting (used by every other column) actually goes
-# through the style sheet. Without this shared constant, custom-painted
-# headers visibly mismatched the plain ones.
+# Columns whose header has a dropdown-arrow zone (as opposed to just sorting
+# on click). Price opens a price-source picker; Type/Mana open a "group by"
+# toggle. Clicking anywhere else in these headers still sorts, same as before.
+DROPDOWN_COLUMNS = {COL_TYPE, COL_MANA, COL_PRICE}
+
+# Custom-painted header sections (the split Edition/Rarity column, and any
+# DROPDOWN_COLUMNS section) can't rely on self.palette().button().color()
+# for their background -- that reads the widget's base QPalette, which the
+# app's QSS stylesheet (main.py's STYLE_SHEET, `QHeaderView::section {
+# background-color: ... }`) does NOT update; QSS and QPalette are separate
+# systems in Qt, and only Qt's OWN default section painting (used by every
+# OTHER column) actually goes through the style sheet. Without this shared
+# constant, custom-painted headers visibly mismatched the plain ones.
 #
 # Color choice: deliberately darker than the row background (#2b2d31) --
 # this used to happen by accident (palette().button() rendering near-black)
@@ -108,20 +102,6 @@ COL_ACTIONS = 10
 # this in sync with QHeaderView::section's background-color in main.py's
 # STYLE_SHEET.
 HEADER_BG = "#141517"
-
-# Small header overlays -- a sort arrow (direction-aware) and a "this
-# column has an active filter" dot, added so the header alone tells you
-# what's currently sorted/filtered without having to right-click every
-# column to check (Excel shows the same two things via its own header
-# glyphs). SORT_ARROW_COLOR matches the app's normal text color; the
-# filter dot reuses the same gold accent tag_apply_dialog.py already uses
-# for "this is actively toggled on" (CHECKED_COLOR there) -- a different
-# hue from the blue selection color, so the two kinds of "something is
-# active here" don't read as the same signal.
-SORT_ARROW_COLOR = "#e3e3e3"
-FILTER_DOT_COLOR = "#e6c15c"
-FILTER_DOT_SIZE = 6
-SORT_ARROW_ZONE_WIDTH = 14
 
 # Columns offered in the right-click "Filter by..." value checklist. Skipped
 # for the checkbox/actions utility columns (nothing meaningful to filter by)
@@ -161,24 +141,6 @@ COLOR_NAMES = {"W": "White", "U": "Blue", "B": "Black", "R": "Red", "G": "Green"
 NAME_TO_COLOR_LETTER = {name: letter for letter, name in COLOR_NAMES.items()}
 
 
-def _real_colors(colors):
-    """
-    Filters a card's raw `colors` list down to genuine WUBRG letters.
-    Real Scryfall data never contains anything else, but this app is meant
-    to tolerate whatever valid-ish data it's pointed at (see the app's
-    offline-first "pick up whatever data the user supplies" priority) --
-    a non-color symbol like "X" (generic/variable mana -- conceptually
-    the same as any other numeric pip, e.g. the "1" in "{1}{G}") ending
-    up in this list should be inert everywhere colors are used for
-    categorizing, grouping, or filtering, exactly like a plain number
-    already is, rather than crashing a COLOR_NAMES[...] lookup or
-    silently counting toward "how many colors does this card have."
-    Every call site that reads a card's raw colors for category/rank/
-    filter purposes goes through this first.
-    """
-    return [c for c in colors if c in COLOR_NAMES]
-
-
 def _type_category(type_line):
     stripped = type_line
     for supertype in SUPERTYPES_TO_STRIP:
@@ -195,7 +157,6 @@ def _type_rank(card):
 
 
 def _color_category(colors):
-    colors = _real_colors(colors)
     if not colors:
         return "Colorless"
     if len(colors) == 1:
@@ -213,7 +174,7 @@ def _color_rank(card):
     compare their second element against each other because their first
     elements (0-5 vs 10+) always differ first.
     """
-    colors = _real_colors(card.get("colors", []))
+    colors = card.get("colors", [])
     if not colors:
         return (0, "")
     if len(colors) == 1:
@@ -434,24 +395,6 @@ class CardTableModel(QAbstractTableModel):
             current.discard(value)
         self.set_column_filter(column, current)  # already calls _commit_reorder()
 
-    def clear_all_filters(self):
-        """
-        Resets every per-column value-exclusion filter AND the Mana Cost
-        row's separate mono-only/excluded-color state back to "nothing
-        filtered," in one action -- the single underlying operation both
-        CardDatabaseView's "Clear Filters" button and CardTableView's
-        Ctrl+Alt+F shortcut call, so the two can never drift on what
-        "clear filters" actually resets. Sorting and grouping are left
-        untouched -- this only clears FILTERS, matching what a "clear
-        filters" action should do rather than also rearranging the table.
-        """
-        if not self._column_filters and not self.mana_mono_only and not self.mana_excluded_colors:
-            return  # already clear -- skip a pointless model reset
-        self._column_filters = {}
-        self.mana_mono_only = False
-        self.mana_excluded_colors = set()
-        self._commit_reorder()
-
     def distinct_values_for_column(self, column):
         values = set()
         for card in self._source_cards:
@@ -517,27 +460,14 @@ class CardTableModel(QAbstractTableModel):
                 continue
             if self._raw_filter_value(card, column) in excluded:
                 return False
-        # _real_colors() strips anything that isn't a genuine WUBRG letter
-        # (e.g. a stray "X" from generic/variable mana) before either check
-        # below -- a card whose only "color" info is really just a generic/X
-        # symbol is exactly as colorless as a card whose cost is all plain
-        # numbers, and should be exempt from both checks the identical way.
-        card_colors = _real_colors(card.get("colors", []))
+        card_colors = card.get("colors", [])
         # Colorless cards (card_colors == []) never intersect ANY excluded
         # set, so they're structurally exempt here too -- same principle as
         # the checklist never offering a "Colorless" checkbox in the first
         # place: colorless just isn't part of this filtering dimension at all.
         if self.mana_excluded_colors and any(c in self.mana_excluded_colors for c in card_colors):
             return False
-        # Colorless is also exempt from "Monocolored only" -- earlier this
-        # excluded colorless cards (len == 0 != 1), which is the correct
-        # reading of "monocolored" in the abstract, but conflicts with this
-        # app's actual rule for colorless/X cards specifically: they're
-        # meant to be untouched by ANY mana filter, this one included, not
-        # just the per-color checkboxes above. `len(card_colors) not in
-        # (0, 1)` -- i.e. still excludes genuine MULTICOLOR cards, just no
-        # longer colorless ones.
-        if self.mana_mono_only and len(card_colors) not in (0, 1):
+        if self.mana_mono_only and len(card_colors) != 1:
             return False
         return True
 
@@ -709,46 +639,6 @@ class _MenuSearchBox(QLineEdit):
             if event.key() == Qt.Key_Down:
                 self._move_highlight(1)
                 return True
-            if event.key() == Qt.Key_Backtab or (
-                event.key() == Qt.Key_Tab and event.modifiers() & Qt.ShiftModifier
-            ):
-                # Shift+Tab -- Qt reports this as a distinct Key_Backtab on
-                # most platforms rather than Key_Tab with ShiftModifier set,
-                # so both forms are checked to be safe.
-                self._move_highlight(-1)
-                return True
-            if event.key() == Qt.Key_Tab:
-                # Previously unhandled -- fell through to QMenu's own
-                # default Tab navigation, which walks EVERY action
-                # (including the disabled "Filter by X" header label and
-                # the Show Columns submenu trigger), neither of which
-                # should ever be a navigable stop. Routing through the
-                # same _move_highlight() Up/Down already use fixes this for
-                # free: it already filters to isCheckable() actions only
-                # (see _visible_checkable_actions()), and neither the
-                # disabled header label nor a submenu-opening action is
-                # checkable, so both are already excluded by the exact
-                # logic that's already proven correct for arrow-key nav.
-                self._move_highlight(1)
-                return True
-            if event.key() == Qt.Key_Space:
-                # Real QMenu only toggles a checkable action on Space when
-                # the MENU ITSELF has actual keyboard focus -- which we
-                # deliberately never hand over (focus stays on this search
-                # box the whole time, so typing keeps narrowing the list).
-                # Without this, Space was always just a literal character
-                # typed into the field, never reaching any toggle logic at
-                # all -- not a regression, just never implemented.
-                # Only intercepted once an action is actually highlighted
-                # (i.e. Up/Down has been pressed at least once) -- before
-                # that, Space still types normally, so a multi-word search
-                # term like "Lightly Played" isn't broken by this.
-                active = self._menu.activeAction()
-                if active is not None and active.isCheckable():
-                    active.trigger()  # toggles without closing -- same as
-                                       # _StayOpenMenu's own click handling
-                    return True
-                # No action highlighted yet -- fall through to normal typing.
             if event.key() in (Qt.Key_Return, Qt.Key_Enter):
                 if self._on_enter is not None:
                     self._on_enter(self.text())
@@ -762,40 +652,14 @@ class SplitDropdownHeader(QHeaderView):
     """
     Custom header handling:
       - Edition/Rarity: painted as two halves, each independently sortable.
-      - Every other section: default Qt painting, plus two small overlays
-        this class adds -- a direction-aware sort arrow (▲/▼) on whichever
-        column is the active sort, and a filter-active dot on whichever
-        columns currently have a filter applied. Type/Mana Cost/Price used
-        to ALSO reserve a separate dropdown-arrow zone here for "group by"/
-        "price source" -- that's gone now (see "Type/Mana/Price header
-        cleanup" below); those controls moved into the same right-click
-        menu the value-filter checklist already lives in, so clicking
-        ANYWHERE in one of these headers just sorts, same as any other
-        column, and the arrow zone that used to be reserved for the old
-        dropdown is now just more room for the sort arrow.
+      - Price/Type/Mana Cost: a dropdown-arrow zone on the right edge opens
+        a menu (price source, or group-by) instead of sorting; clicking
+        elsewhere in these headers still sorts normally.
       - RIGHT-click anywhere: a context menu with a per-column value
-        checklist filter (where applicable) -- for Type/Mana Cost/Price
-        specifically, also "Group by Type"/"Group by Color"/"Price
-        Source" (see _build_context_menu) -- empty (and shown as no menu
-        at all) for columns with nothing to filter or configure. Column-
-        visibility toggling ("Show Columns") lives in a separate top-level
-        button now (CardDatabaseView), not duplicated into every column's
-        own menu -- build_show_columns_menu() below still builds that
-        menu's contents, just no longer wires it in HERE.
+        checklist filter (where applicable) and a "Show Columns" submenu
+        for toggling column visibility live.
       - A few pixels at each section border are reserved EXCLUSIVELY for
         drag-to-resize, checked first, before any of the above.
-
-    TYPE/MANA/PRICE HEADER CLEANUP: these three used to paint a SECOND
-    small arrow glyph (▾, opening a "group by"/"price source" menu) right
-    next to where the sort arrow now lives, and the two looked confusingly
-    similar side by side while also being genuinely different affordances
-    (sort-on-click vs. open-a-menu). Moving "Group by Type," "Group by
-    Color," and "Price Source" into the existing right-click filter menu
-    (as ordinary checkable actions / a submenu, alongside the value
-    checklist that menu already has) removes that visual clash entirely --
-    one menu per column for "everything about how this column is
-    filtered/grouped/sourced," one click-anywhere-to-sort behavior for
-    every header, no second arrow to explain.
 
     Reads/writes model state directly via self.model() (Qt wires this up
     automatically once the header is attached to a view via
@@ -806,10 +670,10 @@ class SplitDropdownHeader(QHeaderView):
     Qt's own QHeaderView normally detects "click near a border" internally
     and starts a resize drag on its own. But since this header already
     intercepts every mousePressEvent to decide between sort / split-sort /
-    right-click-filter, and those decisions were being made using OUR OWN
-    idea of where the section boundary is, a click near an edge kept
-    getting swallowed as "sort this column" before Qt's internal resize
-    detection ever got a chance to see it -- which is exactly the bug
+    dropdown-menu / right-click-filter, and those decisions were being made
+    using OUR OWN idea of where the section boundary is, a click near an
+    edge kept getting swallowed as "sort this column" before Qt's internal
+    resize detection ever got a chance to see it -- which is exactly the bug
     reported ("clicking the border is read as sort"). Rather than hope our
     margin and Qt's internal margin happen to agree, RESIZE_MARGIN below is
     checked FIRST and, when it matches, this class does the entire
@@ -819,17 +683,10 @@ class SplitDropdownHeader(QHeaderView):
     """
 
     sort_requested = Signal(str)
-    # Emitted after a sort-click is handled and after a right-click context
-    # menu (filter checklist, group-by, price source, ...) closes -- see
-    # CardTableView.__init__'s connection to self.setFocus. Without this,
-    # clicking a header (to sort) or right-clicking it (to filter) leaves
-    # keyboard focus sitting on the header/menu instead of back on the
-    # table, so the very next arrow-key press does nothing until the user
-    # clicks a cell first -- a real, felt keyboard-flow gap now that the
-    # table has this much keyboard support built in elsewhere.
-    focus_requested = Signal()
+    price_menu_requested = Signal(object)
 
     RESIZE_MARGIN = 6      # pixels at each section edge reserved purely for resizing
+    ARROW_WIDTH = 18       # width reserved for the dropdown arrow glyph
     MIN_SECTION_WIDTH = 24
 
     def __init__(self, column_keys):
@@ -842,52 +699,13 @@ class SplitDropdownHeader(QHeaderView):
         self._resize_start_width = None
 
     def paintSection(self, painter: QPainter, rect: QRect, logical_index: int):
-        # Sort arrows are painted INSIDE _paint_split_section (it needs to
-        # dodge the split divider and pick a half); every other column
-        # gets its sort arrow painted here, right after Qt's own default
-        # section painting. The filter dot is uniform across every column
-        # shape, so it's always painted last, from this one place.
         if logical_index == COL_EDITION_RARITY:
             self._paint_split_section(painter, rect)
-        else:
-            super().paintSection(painter, rect, logical_index)
-            # `is not None` matters here, not just style: _column_keys has
-            # no entry at all for the checkbox/actions columns, so
-            # dict.get() returns None for them -- comparing that directly
-            # against a genuinely-unset _active_sort_key (also None) used
-            # to be True, painting a stray sort arrow on BOTH of those
-            # columns at startup before anything had ever been sorted.
-            if self._active_sort_key is not None and self._column_keys.get(logical_index) == self._active_sort_key:
-                self._paint_sort_arrow(painter, rect)
-        if self._column_has_active_filter(logical_index):
-            self._paint_filter_dot(painter, rect)
-
-    def _sort_arrow_glyph(self):
-        model = self.model()
-        return "\u25bc" if (model is not None and model._sort_reverse) else "\u25b2"
-
-    def _paint_sort_arrow(self, painter, rect, right_margin=4):
-        painter.save()
-        painter.setPen(QColor(SORT_ARROW_COLOR))
-        arrow_rect = QRect(rect.right() - SORT_ARROW_ZONE_WIDTH - right_margin, rect.top(),
-                            SORT_ARROW_ZONE_WIDTH, rect.height())
-        painter.drawText(arrow_rect, Qt.AlignCenter, self._sort_arrow_glyph())
-        painter.restore()
-
-    def _column_has_active_filter(self, column):
-        model = self.model()
-        if model is None:
-            return False
-        if column == COL_MANA:
-            return bool(model.mana_excluded_colors) or model.mana_mono_only
-        return bool(model._column_filters.get(column))
-
-    def _paint_filter_dot(self, painter, rect):
-        painter.save()
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor(FILTER_DOT_COLOR))
-        painter.drawEllipse(rect.left() + 4, rect.top() + 4, FILTER_DOT_SIZE, FILTER_DOT_SIZE)
-        painter.restore()
+            return
+        if logical_index in DROPDOWN_COLUMNS:
+            self._paint_section_with_arrow(painter, rect, logical_index)
+            return
+        super().paintSection(painter, rect, logical_index)
 
     def _paint_split_section(self, painter, rect):
         painter.save()
@@ -905,14 +723,38 @@ class SplitDropdownHeader(QHeaderView):
         # fixed position within each half, so "Ed"/"Rar" never move.
         painter.drawText(left_rect, Qt.AlignCenter, "Ed")
         painter.drawText(right_rect, Qt.AlignCenter, "Rar")
-        if self._active_sort_key in ("set", "rarity"):
-            target_rect = left_rect if self._active_sort_key == "set" else right_rect
-            painter.setPen(QColor(SORT_ARROW_COLOR))
-            painter.drawText(target_rect.adjusted(0, 0, -4, 0), Qt.AlignRight | Qt.AlignVCenter,
-                              self._sort_arrow_glyph())
+        if self._active_sort_key == "set":
+            painter.drawText(left_rect.adjusted(0, 0, -4, 0), Qt.AlignRight | Qt.AlignVCenter, "▲")
+        elif self._active_sort_key == "rarity":
+            painter.drawText(right_rect.adjusted(0, 0, -4, 0), Qt.AlignRight | Qt.AlignVCenter, "▲")
 
         painter.setPen(self.palette().mid().color())
         painter.drawLine(mid_x, rect.top() + 4, mid_x, rect.bottom() - 4)
+        painter.restore()
+
+    def _paint_section_with_arrow(self, painter, rect, logical_index):
+        """
+        Centers the label within the FULL section width -- consistent with
+        how every other (non-dropdown) header is centered -- rather than
+        reserving arrow space and left-aligning within what's left, which
+        made the label's position depend on the arrow's presence (and read
+        inconsistently against plain headers). The dropdown arrow is drawn
+        as a fixed overlay pinned to the right edge; it doesn't factor into
+        where the label sits at all. These are short, fixed, known label
+        strings ("Type," "Mana Cost," "Price") that never grow at runtime,
+        so there's no real risk of the centered text colliding with the
+        arrow in practice -- unlike arbitrary user data, eliding isn't
+        needed here either.
+        """
+        painter.save()
+        painter.fillRect(rect, QColor(HEADER_BG))
+
+        label = COLUMNS[logical_index][1]
+        painter.setPen(self.palette().text().color())
+        painter.drawText(rect, Qt.AlignCenter, label)
+
+        arrow_rect = QRect(rect.right() - self.ARROW_WIDTH, rect.top(), self.ARROW_WIDTH, rect.height())
+        painter.drawText(arrow_rect, Qt.AlignCenter, "▾")
         painter.restore()
 
     # --- Manual resize: press near a border, drag, release -------------------
@@ -960,29 +802,35 @@ class SplitDropdownHeader(QHeaderView):
             event.accept()
             return
 
+        section_x = self.sectionViewportPosition(logical_index)
+        section_width = self.sectionSize(logical_index)
+        rel_x = pos.x() - section_x
+
         if logical_index == COL_EDITION_RARITY:
-            section_x = self.sectionViewportPosition(logical_index)
-            section_width = self.sectionSize(logical_index)
-            rel_x = pos.x() - section_x
             sort_key = "set" if rel_x < section_width / 2 else "rarity"
             self._active_sort_key = sort_key
             self.sort_requested.emit(sort_key)
             self.update()
-            self.focus_requested.emit()
             event.accept()
             return
 
-        # Every other column: clicking anywhere in it sorts, full stop.
-        # Type/Mana Cost/Price used to reserve a right-edge zone here that
-        # opened a totally different menu instead -- see the class
-        # docstring's "Type/Mana/Price header cleanup" note for why that's
-        # gone (those controls live in the right-click menu now).
+        if logical_index in DROPDOWN_COLUMNS:
+            if rel_x > section_width - 20:
+                self._show_dropdown_menu(logical_index, self.mapToGlobal(pos))
+            else:
+                key = self._column_keys.get(logical_index)
+                if key:
+                    self._active_sort_key = key
+                    self.sort_requested.emit(key)
+                    self.update()
+            event.accept()
+            return
+
         key = self._column_keys.get(logical_index)
         if key:
             self._active_sort_key = key
             self.sort_requested.emit(key)
             self.update()
-            self.focus_requested.emit()
         event.accept()
 
     def mouseMoveEvent(self, event):
@@ -1003,23 +851,28 @@ class SplitDropdownHeader(QHeaderView):
             return
         super().mouseReleaseEvent(event)
 
+    # --- Dropdown-arrow menus (Price source / Group by) ---------------------
+    def _show_dropdown_menu(self, column, global_pos):
+        if column == COL_PRICE:
+            self.price_menu_requested.emit(global_pos)
+            return
+        menu = self._build_dropdown_menu(column)
+        if menu is not None:
+            menu.exec(global_pos)
+
+    def _build_dropdown_menu(self, column):
+        mode = "type" if column == COL_TYPE else "color"
+        label = "Type" if mode == "type" else "Color"
+        menu = QMenu(self)
+        action = menu.addAction(f"Group by {label}")
+        action.setCheckable(True)
+        action.setChecked(self.model().group_by == mode)
+        action.triggered.connect(lambda checked=False, m=mode: self.model().set_group_by(m))
+        return menu
 
     # --- Right-click: per-column filter + column visibility ------------------
     def _show_context_menu(self, column, global_pos):
-        menu = self._build_context_menu(column)
-        # Show Columns used to live here too, so EVERY column's right-click
-        # menu had at least one item even when nothing was filterable
-        # (Checkbox, Actions). Now that it's a standalone button (see
-        # CardDatabaseView), those columns have nothing left to show --
-        # better to show no menu at all than an empty popup box.
-        if menu.isEmpty():
-            return
-        menu.exec(global_pos)
-        # The menu (filter checklist, group-by, price source, ...) just
-        # closed, whether via a selection or Escape/click-away -- hand
-        # keyboard focus back to the table so arrow keys immediately work
-        # again instead of doing nothing until the user clicks a cell.
-        self.focus_requested.emit()
+        self._build_context_menu(column).exec(global_pos)
 
     def _build_context_menu(self, column):
         menu = _StayOpenMenu(self)
@@ -1065,46 +918,12 @@ class SplitDropdownHeader(QHeaderView):
             # extra click into the box first.
             menu.aboutToShow.connect(search_box.setFocus)
 
-            # "Group by Type" / "Price Source" -- moved here from a
-            # separate dropdown-arrow zone that used to live in the header
-            # itself (see the class docstring's "Type/Mana/Price header
-            # cleanup" note). Checkable + toggled (not triggered) so it
-            # behaves like every other control in this STAY-OPEN menu:
-            # click it, see the effect, keep going, rather than the menu
-            # snapping shut the way the old separate dropdown did.
-            if column == COL_TYPE:
-                group_action = menu.addAction("Group by Type")
-                group_action.setCheckable(True)
-                group_action.setChecked(self.model().group_by == "type")
-                group_action.toggled.connect(lambda checked, m="type": self.model().set_group_by(m))
-                menu.addSeparator()
-
-            if column == COL_PRICE:
-                # A plain (non-stay-open) submenu -- picking a price source
-                # is a one-shot "choose exactly one" action, same as the
-                # old standalone price-source dropdown was, so closing on
-                # selection is the expected behavior here, unlike the
-                # stay-open checklist below it.
-                price_menu = menu.addMenu("Price Source")
-                for source_key, source_label in PRICE_SOURCES:
-                    price_action = price_menu.addAction(source_label)
-                    price_action.setCheckable(True)
-                    price_action.setChecked(self.model().price_source == source_key)
-                    price_action.triggered.connect(
-                        lambda checked=False, k=source_key: self.model().set_price_source(k)
-                    )
-                menu.addSeparator()
-
             mono_action = None
             if column == COL_MANA:
                 mono_action = menu.addAction("Monocolored only")
                 mono_action.setCheckable(True)
                 mono_action.setChecked(self.model().mana_mono_only)
                 mono_action.toggled.connect(self.model().set_mana_mono_only)
-                group_color_action = menu.addAction("Group by Color")
-                group_color_action.setCheckable(True)
-                group_color_action.setChecked(self.model().group_by == "color")
-                group_color_action.toggled.connect(lambda checked, m="color": self.model().set_group_by(m))
                 menu.addSeparator()
 
             excluded = self.model()._column_filters.get(column, set())
@@ -1133,24 +952,9 @@ class SplitDropdownHeader(QHeaderView):
                     action.setVisible(needle in value.lower())
             search_box.textChanged.connect(_narrow_checklist)
 
-        return menu
+            menu.addSeparator()
 
-    def build_show_columns_menu(self):
-        """
-        Standalone "Show Columns" visibility-toggle menu -- pulled out of
-        _build_context_menu (where it used to be rebuilt IDENTICALLY inside
-        every single column's right-click menu, the exact same "same lens,
-        rebuilt N times" redundancy already resolved elsewhere in this app
-        for Inventory/Wishlist/All-Card-Database). Now built exactly once,
-        on demand, for the single "Columns" button CardDatabaseView puts in
-        its button row alongside Inventory/Wishlist.
-
-        Returns a _StayOpenMenu (not built inline by the caller) so
-        toggling several columns' visibility in one sitting doesn't require
-        reopening the menu between each click -- same stay-open behavior
-        the per-column value checklists already have.
-        """
-        menu = _StayOpenMenu(self)
+        columns_menu = menu.addMenu("Show Columns")
         for index, (_key, label, _kind) in enumerate(COLUMNS):
             if index == COL_QTY:
                 display_label = self.model().qty_label
@@ -1158,10 +962,11 @@ class SplitDropdownHeader(QHeaderView):
                 display_label = self.model().cross_qty_label
             else:
                 display_label = label or MENU_COLUMN_LABELS.get(index, f"Column {index}")
-            action = menu.addAction(display_label)
+            action = columns_menu.addAction(display_label)
             action.setCheckable(True)
             action.setChecked(not self.isSectionHidden(index))
             action.toggled.connect(lambda checked, i=index: self.setSectionHidden(i, not checked))
+
         return menu
 
     def _on_filter_toggled(self, column, value, checked):
@@ -1253,14 +1058,7 @@ class CardTableView(QTableView):
         self.header = SplitDropdownHeader(column_keys)
         self.setHorizontalHeader(self.header)
         self.header.sort_requested.connect(self.card_model.sort_by_key)
-        # See SplitDropdownHeader.focus_requested's own comment -- returns
-        # keyboard focus to the table after a sort-click or a right-click
-        # menu (filter checklist, group-by, price source) closes.
-        self.header.focus_requested.connect(self.setFocus)
-        # Price-source selection now lives inside the header's own
-        # right-click filter menu (SplitDropdownHeader._build_context_menu)
-        # rather than a separate dropdown -- no signal to wire up here
-        # anymore, see that method's "Price Source" submenu.
+        self.header.price_menu_requested.connect(self._show_price_menu)
         # The header is a separate sibling widget from the viewport, not a
         # region within it -- moving the mouse from the viewport up onto the
         # header doesn't fire the VIEW's mouseMoveEvent/leaveEvent at all
@@ -1299,17 +1097,6 @@ class CardTableView(QTableView):
         self.tag_source = None
         self._tag_dialog = None
 
-        # The fixed corner a Ctrl+Shift+Arrow/Home/End chain extends FROM --
-        # see keyPressEvent's anchor-tracking comment and _extend_selection_to
-        # for why this has to be tracked explicitly rather than re-derived
-        # from currentIndex() each time.
-        self._selection_anchor = QModelIndex()
-
-        clear_filters_shortcut = QShortcut(QKeySequence("Ctrl+Alt+F"), self)
-        clear_filters_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
-        clear_filters_shortcut.activated.connect(self.card_model.clear_all_filters)
-        self._clear_filters_shortcut = clear_filters_shortcut  # keep alive
-
     def mousePressEvent(self, event):
         if event.button() == Qt.RightButton:
             # Deliberately swallowed rather than passed to the default
@@ -1327,13 +1114,6 @@ class CardTableView(QTableView):
             event.accept()
             return
         super().mousePressEvent(event)
-        # A plain click (no Shift/Ctrl) starts a brand new selection --
-        # this is the moment a future Ctrl+Shift+Arrow/Home/End chain
-        # should extend FROM. Shift/Ctrl-modified clicks deliberately
-        # don't touch the anchor (Shift-click extends from whatever's
-        # already there, same as Excel).
-        if event.button() == Qt.LeftButton and event.modifiers() == Qt.NoModifier:
-            self._selection_anchor = self.currentIndex()
 
     def contextMenuEvent(self, event):
         index = self.indexAt(event.pos())
@@ -1423,53 +1203,6 @@ class CardTableView(QTableView):
 
         modifiers = event.modifiers()
         key = event.key()
-        shift_held = bool(modifiers & Qt.ShiftModifier)
-        plain_ctrl = modifiers == Qt.ControlModifier
-        ctrl_shift = modifiers == (Qt.ControlModifier | Qt.ShiftModifier)
-        arrow_keys = (Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right)
-
-        if key in arrow_keys and not self.currentIndex().isValid():
-            # Nothing selected at all (fresh table, or a filter/sort reset
-            # cleared the selection) -- ANY arrow, whatever modifiers are
-            # held, should just plant a single-cell selection at the
-            # table's top-left selectable cell, rather than trying to
-            # extend-from or edge-jump-from an anchor that was never set.
-            target = self._top_left_selectable_index()
-            if target is not None:
-                self._move_current_clearing_selection(target)
-            return
-
-        if key in arrow_keys and modifiers == Qt.NoModifier:
-            current = self.currentIndex()
-            if self._at_edge_for_key(current, key):
-                # Already at the edge in this direction (e.g. current cell
-                # is column 0 and Left was pressed again) -- there's
-                # nowhere further to move. Rather than silently doing
-                # nothing and leaving a stale multi-cell selection (e.g.
-                # from an earlier Ctrl+Shift+Arrow) sitting on screen,
-                # collapse the selection down to just this one edge cell
-                # -- matching Excel's own "one more press at the edge
-                # clears the selection" behavior.
-                self._move_current_clearing_selection(current)
-                return
-
-        if key in (Qt.Key_Up, Qt.Key_Down) and modifiers == Qt.ShiftModifier:
-            # Plain Shift+Up/Down (extend by one row, same column) is
-            # handled explicitly rather than left to Qt's own native
-            # Shift+Arrow extend. Reason: a group-header row is given a
-            # full-width setSpan() (see _reapply_group_spans), and Qt's
-            # native keyboard-selection-extend doesn't cleanly skip over
-            # that span -- crossing one via native Shift+Down was
-            # selecting the ENTIRE spanned row on both sides of it (every
-            # column, not just the current one), not just the next real
-            # card row in the current column. Computing the "next real
-            # row" ourselves (skipping any header in between) and
-            # extending through the already-span-safe _extend_selection_to
-            # (see that method) sidesteps the quirk instead of fighting it.
-            target = self._adjacent_selectable_row_target(key)
-            if target is not None:
-                self._extend_selection_to(target)
-            return
 
         if key == Qt.Key_Space and modifiers == Qt.ShiftModifier:
             # Excel: Shift+Space selects the entire current row.
@@ -1478,431 +1211,64 @@ class CardTableView(QTableView):
                 self.selectRow(current.row())
             return
 
-        if key == Qt.Key_Space and plain_ctrl:
+        if key == Qt.Key_Space and modifiers == Qt.ControlModifier:
             # Excel: Ctrl+Space selects the entire current column.
             current = self.currentIndex()
             if current.isValid():
                 self.selectColumn(current.column())
             return
 
-        if plain_ctrl and key == Qt.Key_Home:
-            self._move_current_clearing_selection(self.card_model.index(0, 0))
+        if modifiers == Qt.ControlModifier and key == Qt.Key_Home:
+            self.setCurrentIndex(self.card_model.index(0, 0))
             return
 
-        if plain_ctrl and key == Qt.Key_End:
+        if modifiers == Qt.ControlModifier and key == Qt.Key_End:
             last_row = self.card_model.rowCount() - 1
             last_col = self.card_model.columnCount() - 1
             if last_row >= 0:
-                self._move_current_clearing_selection(self.card_model.index(last_row, last_col))
+                self.setCurrentIndex(self.card_model.index(last_row, last_col))
             return
 
-        if plain_ctrl and key in (Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right):
-            # Excel: Ctrl+Arrow (no Shift) MOVES the current cell to the
-            # edge in that direction, collapsing the selection down to
-            # just that one cell -- it does NOT extend anything. This is
-            # the plain-navigation sibling of Ctrl+Shift+Arrow below;
-            # both compute the same edge target (_edge_target_for_key),
-            # they just do different things with it once they have it.
-            target = self._edge_target_for_key(key)
-            if target is not None:
-                self._move_current_clearing_selection(target)
-            return
-
-        if plain_ctrl and key == Qt.Key_Tab:
-            # Real Excel has no behavior bound to Ctrl+Tab at all (it's an
-            # OS/application-switcher combo there) -- repurposed here
-            # specifically for jumping between group headers when the
-            # table is currently grouped, and a deliberate no-op
-            # otherwise (see _jump_to_adjacent_group), rather than falling
-            # through to Qt's own default Tab-moves-focus-to-next-widget
-            # behavior, which would be a confusing surprise mid-table.
-            # Wraps back to the first group once past the last one --
-            # unlike Page Down below, which clamps -- since Ctrl+Tab reads
-            # as "cycle through," the same expectation Ctrl+Tab carries in
-            # a browser's own tab strip.
-            self._jump_to_adjacent_group(1, wrap=True)
-            return
-
-        if modifiers == Qt.NoModifier and key in (Qt.Key_PageUp, Qt.Key_PageDown):
-            if self.card_model.group_by:
-                # Repurposed the same way Ctrl+Tab is, just clamped
-                # (wrap=False) instead of cycling -- Page Up/Down stopping
-                # at the first/last group mirrors how it already stops at
-                # the table's edge when nothing's grouped (handled by
-                # falling through to Qt's own native paging via super()
-                # below when this branch doesn't apply).
-                self._jump_to_adjacent_group(1 if key == Qt.Key_PageDown else -1, wrap=False)
-                return
-
-        if modifiers & Qt.ControlModifier and (
-            key == Qt.Key_Backtab or (key == Qt.Key_Tab and shift_held)
+        if modifiers == (Qt.ControlModifier | Qt.ShiftModifier) and key in (
+            Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right
         ):
-            # Ctrl+Shift+Tab, the reverse of the above -- checked both
-            # ways Qt can report it (a distinct Key_Backtab on most
-            # platforms, or Key_Tab with ShiftModifier set on others),
-            # same belt-and-suspenders reasoning _MenuSearchBox's own
-            # Shift+Tab handling already uses elsewhere in this file.
-            self._jump_to_adjacent_group(-1, wrap=True)
-            return
-
-        if ctrl_shift and key in (Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right):
-            target = self._edge_target_for_key(key)
-            if target is not None:
-                self._extend_selection_to(target)
-            return
-
-        if ctrl_shift and key == Qt.Key_Home:
-            self._extend_selection_to(self.card_model.index(0, 0))
-            return
-
-        if ctrl_shift and key == Qt.Key_End:
-            last_row = self.card_model.rowCount() - 1
-            last_col = self.card_model.columnCount() - 1
-            if last_row >= 0:
-                self._extend_selection_to(self.card_model.index(last_row, last_col))
+            self._extend_selection_to_edge(key)
             return
 
         super().keyPressEvent(event)
 
-        # ANCHOR TRACKING: any navigation Qt just handled NATIVELY (plain
-        # arrows, Home/End, Page Up/Down) without Shift held is where a
-        # FUTURE Ctrl+Shift+Arrow/Home/End chain should extend FROM.
-        # Deliberately skipped when Shift IS held -- Qt's own native
-        # Shift+Arrow extend-selection handling uses its own internal
-        # anchor concept, which (since it's never touched here except by
-        # a genuine non-shift move) stays implicitly in sync with this
-        # one: both always point at "wherever the cursor was the last time
-        # a plain, non-extending move happened." That's what lets a mixed
-        # chain -- e.g. plain Shift+Right (native Qt), then
-        # Ctrl+Shift+Down (ours) -- extend from the SAME original cell
-        # instead of the two mechanisms disagreeing about where "the
-        # selection started" was. Plain Tab/Backtab are handled ABOVE now
-        # (Ctrl+Tab has its own meaning; plain Tab still falls through to
-        # Qt's normal cell-to-cell move via super(), so it's still listed
-        # here too).
-        if not shift_held and key in (
-            Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right,
-            Qt.Key_Home, Qt.Key_End, Qt.Key_PageUp, Qt.Key_PageDown,
-            Qt.Key_Tab, Qt.Key_Backtab,
-        ):
-            self._selection_anchor = self.currentIndex()
-
-    def _move_current_clearing_selection(self, target):
+    def _extend_selection_to_edge(self, key):
         """
-        Ctrl+Home/Ctrl+End/plain Ctrl+Arrow: moves the current cell to
-        `target` and COLLAPSES the selection down to just that one cell,
-        matching Excel. Plain QAbstractItemView.setCurrentIndex() doesn't
-        reliably do this -- it can leave the PREVIOUS selection in place
-        and just add the new cell to it, which is what made Ctrl+End look
-        like it selected "both the current cell and the last cell." Going
-        through the selection model directly with an explicit
-        ClearAndSelect command is what actually REPLACES the selection
-        instead of appending to it.
-        """
-        self.selectionModel().setCurrentIndex(target, QItemSelectionModel.ClearAndSelect)
-        self._selection_anchor = target
-
-    def _extend_selection_to(self, target):
-        """
-        Shared authority behind every Shift/Ctrl+Shift+... extension:
-        selects the rectangle between the fixed ANCHOR cell (see
-        keyPressEvent's anchor-tracking comment) and `target`, then moves
-        the current/active cell to `target` without disturbing that
-        selection. Always a fresh ClearAndSelect over the WHOLE
-        anchor-to-target span (never an incremental add onto whatever was
-        already selected) -- that's what makes repeated presses always
-        show exactly one selection, never a leftover shape from an
-        earlier, different extension.
-
-        BUILT AS ONE QItemSelection PER CONTIGUOUS RUN OF REAL (non-header)
-        ROWS, not one flat QItemSelection(anchor, target) rectangle --
-        this matters whenever the anchor-to-target span crosses a
-        group-header row. Group headers get a full-width setSpan() (see
-        _reapply_group_spans), and a flat rectangle selection that merely
-        PASSES THROUGH a spanned row -- even though that row's own cells
-        aren't individually selectable (see CardTableModel.flags()) --
-        gets rendered by QTableView as the ENTIRE spanned row selected,
-        every column, not just the ones actually being selected. Splitting
-        the selection at each header row and skipping it entirely (rather
-        than trying to exclude just that one row from a single rectangle,
-        which QItemSelection can't express) sidesteps the span quirk
-        instead of fighting it. Degrades to exactly the old single-
-        rectangle behavior whenever no header row falls in the span (the
-        common case, and the only case when nothing's grouped).
+        Excel-familiar Ctrl+Shift+Arrow: extends the selection from the
+        current cell toward an edge. SIMPLIFIED compared to real Excel,
+        which jumps to the edge of the current contiguous block of
+        non-empty cells (requires scanning for the nearest "gap" in the
+        data, not implemented here) -- this always jumps straight to the
+        table's actual edge (first/last row or column), which is still a
+        genuinely useful "select to the end" action even if it doesn't
+        replicate Excel's contiguous-block-aware jump precisely.
         """
         current = self.currentIndex()
         if not current.isValid():
             return
-        if not self._selection_anchor.isValid():
-            self._selection_anchor = current
-        anchor = self._selection_anchor
-        top, bottom = sorted((anchor.row(), target.row()))
-        left, right = sorted((anchor.column(), target.column()))
-
-        selection = QItemSelection()
-        row = top
-        while row <= bottom:
-            if self.card_model.is_group_header(row):
-                row += 1
-                continue
-            run_start = row
-            while row <= bottom and not self.card_model.is_group_header(row):
-                row += 1
-            selection.select(
-                self.card_model.index(run_start, left), self.card_model.index(row - 1, right)
-            )
-        self.selectionModel().select(selection, QItemSelectionModel.ClearAndSelect)
-        # NOT self.setCurrentIndex(target) -- see _move_current_clearing_
-        # selection's docstring for why that's unreliable here. NoUpdate
-        # repositions the current-cell cursor without touching the
-        # selection just set above.
-        self.selectionModel().setCurrentIndex(target, QItemSelectionModel.NoUpdate)
-
-    def _group_bounds_for_row(self, row):
-        """
-        (first_row, last_row) of the group containing `row` -- the range
-        of real card rows between the group header immediately above it
-        (or the top of the table) and the next group header (or the
-        bottom of the table). Returns None if `row` is outside the
-        table's actual range (0 <= row < rowCount) -- this is what lets
-        _edge_target_for_key ask "is there a group PAST this edge at
-        all?" and get a clean, unambiguous "no" instead of a clamped
-        in-range guess. When nothing's grouped, every valid row's
-        "group" is just the whole table.
-        """
-        total = self.card_model.rowCount()
-        if row < 0 or row >= total:
-            return None
-        if not self.card_model.group_by:
-            return 0, total - 1
-        if self.card_model.is_group_header(row):
-            # Shouldn't normally happen for the CURRENT cell specifically
-            # (header rows are never selectable/current -- see
-            # CardTableModel.flags()), but this method is also used to
-            # probe rows that are deliberately expected to land ON a
-            # header (see _edge_target_for_key's group-hop) -- step past
-            # it into the group it introduces rather than assuming.
-            row = min(row + 1, total - 1)
-        start = row
-        while start > 0 and not self.card_model.is_group_header(start - 1):
-            start -= 1
-        end = row
-        while end < total - 1 and not self.card_model.is_group_header(end + 1):
-            end += 1
-        return start, end
-
-    def _current_group_bounds(self):
-        """(first_row, last_row) of the CURRENT cell's group -- see
-        _group_bounds_for_row. Falls back to the whole table's row range
-        if there's no current cell or the table is empty."""
-        current = self.currentIndex()
-        row = current.row() if current.isValid() else 0
-        bounds = self._group_bounds_for_row(row)
-        if bounds is not None:
-            return bounds
-        total = self.card_model.rowCount()
-        return 0, max(total - 1, 0)
-
-    def _adjacent_selectable_row_target(self, key):
-        """
-        The index one real row away from the current cell in the given
-        vertical direction, in the SAME column, skipping over any inert
-        group-header row in between (there's at most one between any two
-        groups, but this loops just in case more than one ever exists) --
-        what a plain Shift+Up/Down should land on (see keyPressEvent).
-        Returns None at the table's actual top/bottom edge, where there's
-        nothing further to extend to.
-        """
-        current = self.currentIndex()
-        if not current.isValid():
-            return None
         row, col = current.row(), current.column()
-        step = 1 if key == Qt.Key_Down else -1
-        total = self.card_model.rowCount()
-        next_row = row + step
-        while 0 <= next_row < total and self.card_model.is_group_header(next_row):
-            next_row += step
-        if not (0 <= next_row < total):
-            return None
-        return self.card_model.index(next_row, col)
-
-    def _first_selectable_row(self):
-        """
-        The first row that isn't a synthetic group-header row -- row 0
-        when the table isn't grouped (nothing to skip), or the first real
-        card row once grouping puts an inert header bar ahead of it. None
-        for a genuinely empty table.
-        """
-        for row in range(self.card_model.rowCount()):
-            if not self.card_model.is_group_header(row):
-                return row
-        return None
-
-    def _top_left_selectable_index(self):
-        """
-        Row 0/column 0 isn't always a valid target once grouping can place
-        an inert header row at the very top of the table -- this is what
-        "select the top-left cell" (see keyPressEvent) actually means: the
-        first genuinely selectable cell, reading top-to-bottom then
-        left-to-right.
-        """
-        row = self._first_selectable_row()
-        return None if row is None else self.card_model.index(row, 0)
-
-    def _at_edge_for_key(self, index, key):
-        """
-        Whether `index` already sits at the table's edge in the direction
-        `key` would move -- i.e. a plain, unmodified press of that arrow
-        genuinely has nowhere further to go. Used to collapse a leftover
-        multi-cell selection down to one cell instead of the press
-        silently doing nothing (see keyPressEvent). Deliberately keyed to
-        the whole TABLE's edge, not the current group's -- Ctrl+Up/Down
-        already has its own group-aware stopping point (see
-        _current_group_bounds); a plain arrow reaching the edge of a
-        group mid-table should just keep walking into the next group like
-        normal row-to-row navigation always has.
-        """
-        if not index.isValid():
-            return False
-        if key == Qt.Key_Left:
-            return index.column() <= 0
-        if key == Qt.Key_Right:
-            return index.column() >= self.card_model.columnCount() - 1
         if key == Qt.Key_Up:
-            first_row = self._first_selectable_row()
-            return first_row is None or index.row() <= first_row
-        if key == Qt.Key_Down:
-            return index.row() >= self.card_model.rowCount() - 1
-        return False
-
-    def _edge_target_for_key(self, key):
-        """
-        Shared by plain Ctrl+Arrow (moves) and Ctrl+Shift+Arrow (extends):
-        the cell reached by moving ONE axis of the CURRENT cell's position
-        all the way to an edge in the given direction, leaving the other
-        axis untouched. Returns None if there's no current cell to move
-        from.
-
-        Left/Right always go to the table's actual first/last column --
-        columns aren't grouped, so there's no narrower boundary to respect
-        there. Up/Down go through _current_group_bounds() instead of the
-        table's absolute first/last row: when the table is grouped, this
-        is what stops Ctrl+Up/Down at the edge of the CURRENT group
-        (landing on the first/last real CARD row of that group, never the
-        inert header row itself) rather than rolling all the way to a
-        completely different group. When nothing's grouped,
-        _current_group_bounds() just returns the whole table's row range,
-        so this is identical to the old always-jump-to-the-table's-edge
-        behavior.
-
-        ALREADY AT THAT EDGE -- e.g. Ctrl+Up pressed again while already
-        sitting on the current group's own top row: rather than staying
-        put (a no-op that made it impossible to reach an ADJACENT group
-        with Ctrl+Up/Down at all, short of the wrapping Ctrl+Tab), this
-        hops past the (always inert, always immediately-adjacent) header
-        row into the neighboring group and lands on ITS far edge -- the
-        previous group's bottom row for Ctrl+Up, the next group's top row
-        for Ctrl+Down. Repeated presses walk group edge to group edge:
-        current-top, previous-bottom, previous-top, before-that-bottom,
-        ... A header row always sits exactly one row outside its own
-        group's near edge (first_row - 1 for the top, last_row + 1 for
-        the bottom), so the ADJACENT group's far edge is exactly two rows
-        further out (first_row - 2 / last_row + 2) -- _group_bounds_for_row
-        resolves that row's own group boundaries, or returns None if it's
-        off the table entirely (already in the first/last group), in
-        which case this just clamps at the current edge as before.
-
-        SIMPLIFIED compared to real Excel, which jumps to the edge of the
-        current contiguous block of non-empty cells (requires scanning
-        for the nearest "gap" in the data -- not implemented here, see
-        NOTES.md) -- this jumps to the table's (or current/adjacent
-        group's) actual edge, which is still a genuinely useful "go to
-        the end" action even if it doesn't replicate Excel's contiguous-
-        block-aware jump precisely.
-        """
-        current = self.currentIndex()
-        if not current.isValid():
-            return None
-        row, col = current.row(), current.column()
-        if key in (Qt.Key_Up, Qt.Key_Down):
-            first_row, last_row = self._current_group_bounds()
-            if key == Qt.Key_Up:
-                if row > first_row:
-                    row = first_row
-                else:
-                    adjacent = self._group_bounds_for_row(first_row - 2)
-                    row = adjacent[1] if adjacent is not None else first_row
-            else:
-                if row < last_row:
-                    row = last_row
-                else:
-                    adjacent = self._group_bounds_for_row(last_row + 2)
-                    row = adjacent[0] if adjacent is not None else last_row
+            target = self.card_model.index(0, col)
+        elif key == Qt.Key_Down:
+            target = self.card_model.index(self.card_model.rowCount() - 1, col)
         elif key == Qt.Key_Left:
-            col = 0
+            target = self.card_model.index(row, 0)
         else:  # Key_Right
-            col = self.card_model.columnCount() - 1
-        return self.card_model.index(row, col)
-
-    def _group_start_rows(self):
-        """Row indices of the first real CARD row in every group -- i.e.
-        every row that immediately follows a group-header row. Empty when
-        the table isn't currently grouped (no header rows exist at all)."""
-        total = self.card_model.rowCount()
-        return [
-            r + 1 for r in range(total)
-            if self.card_model.is_group_header(r) and r + 1 < total
-            and not self.card_model.is_group_header(r + 1)
-        ]
-
-    def _jump_to_adjacent_group(self, direction, wrap=False):
-        """
-        Ctrl+Tab (direction=1) / Ctrl+Shift+Tab (direction=-1) / Page Down
-        (direction=1) / Page Up (direction=-1, both only when grouped):
-        moves the current cell to the first card row of the next/previous
-        group, keeping the same column, and collapses the selection down
-        to that one cell -- only meaningful when the table is currently
-        grouped (Group by Type/Color, set via a column's own right-click
-        menu -- see SplitDropdownHeader._build_context_menu). A deliberate
-        no-op when nothing's grouped, rather than falling back to Qt's
-        default Tab-moves-focus behavior -- see keyPressEvent's comment
-        for why Ctrl+Tab is intercepted unconditionally.
-
-        wrap=True (Ctrl+Tab/Ctrl+Shift+Tab) cycles back to the first/last
-        group once past the other end, the same "keep cycling" expectation
-        a browser's own Ctrl+Tab carries. wrap=False (Page Up/Down) clamps
-        at the ends instead -- a no-op past the first/last group, matching
-        how Page Up/Down already stops at the table's edge when nothing's
-        grouped rather than wrapping around.
-        """
-        if not self.card_model.group_by:
-            return
-        current = self.currentIndex()
-        if not current.isValid():
-            return
-        starts = self._group_start_rows()
-        if not starts:
-            return
-        row, col = current.row(), current.column()
-        if direction > 0:
-            candidates = [r for r in starts if r > row]
-            if candidates:
-                target_row = candidates[0]
-            elif wrap:
-                target_row = starts[0]
-            else:
-                target_row = None
-        else:
-            candidates = [r for r in starts if r < row]
-            if candidates:
-                target_row = candidates[-1]
-            elif wrap:
-                target_row = starts[-1]
-            else:
-                target_row = None
-        if target_row is None:
-            return
-        self._move_current_clearing_selection(self.card_model.index(target_row, col))
+            target = self.card_model.index(row, self.card_model.columnCount() - 1)
+        self.selectionModel().select(QItemSelection(current, target), QItemSelectionModel.Select)
+        # NOT self.setCurrentIndex(target) -- that routes through the
+        # view's own selectionCommand() logic, which for a plain
+        # setCurrentIndex() call effectively clears and replaces the
+        # selection with just the new cell, wiping out the range we just
+        # selected above. Moving the current-cell cursor via the selection
+        # model directly, with an explicit NoUpdate command, repositions it
+        # without touching the selection at all.
+        self.selectionModel().setCurrentIndex(target, QItemSelectionModel.NoUpdate)
 
     def _copy_selection_to_clipboard(self):
         indexes = self.selectionModel().selectedIndexes()
@@ -1921,6 +1287,13 @@ class CardTableView(QTableView):
             current_line.append("" if value is None else str(value))
         lines.append("\t".join(current_line))
         QApplication.clipboard().setText("\n".join(lines))
+
+    def _show_price_menu(self, global_pos):
+        menu = QMenu()
+        for source_key, label in PRICE_SOURCES:
+            action = menu.addAction(label)
+            action.triggered.connect(lambda checked=False, k=source_key: self.card_model.set_price_source(k))
+        menu.exec(global_pos)
 
     def mouseMoveEvent(self, event):
         index = self.indexAt(event.position().toPoint())

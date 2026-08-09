@@ -1,5 +1,29 @@
 # MTG Local Database — Prototype
 
+## Row context menu rework: selection-scoped actions, no more per-row "..." column (this round)
+
+- **Right-clicking a card row (or a multi-row selection) now opens a real
+  action menu** instead of jumping straight to the tag-apply dialog. Top
+  batch, all real: **Apply Tags... (Alt+A)**, **Add to Deck... (Alt+D)**,
+  **Add to Inventory (Alt+E)**, **Add to Wishlist (Alt+W)** -- every one
+  operates on the WHOLE current selection, computed fresh whether triggered
+  from the menu or the hotkey directly (`CardTableView._get_selected_cards`).
+  Add to Inventory/Wishlist bump that card's Have/Want qty by 1 (mutating
+  the same dict the table already displays, then one model refresh for the
+  whole batch); Add to Deck is an honest stub (`QMessageBox`, same pattern
+  File > Import/Export already use) since Deck Viewer has no real per-deck
+  card storage yet.
+- Below a separator: six **disabled** "Filter by Name/Edition/Rarity/Type/
+  Subtype/Color" placeholders -- reserving the spot for once the flexible
+  search engine (parked in NOTES.md) exists to actually back them.
+  Deliberately no default hotkey on these, unlike the four real actions
+  above.
+- **The old rightmost "..." actions column is gone** (`ActionButtonDelegate`
+  removed entirely). Every action it used to offer was already a
+  selection-scoped operation dressed up as a per-row button -- the new
+  right-click menu is the correct shape for that, not a second, narrower
+  "just this one row" pathway.
+
 ## Keyboard navigation polish: group-aware edges, focus return, edge-collapse (this round)
 
 Two follow-up fixes on top of the five below, both from real usage after

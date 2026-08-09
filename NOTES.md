@@ -251,6 +251,22 @@ here:
   single hardcoded constant, which is the main reason this is a real refactor
   and not a one-line change.
 
+## Row context-menu "Filter by ..." items (raised alongside the selection-menu rework)
+
+UPDATE: the row right-click menu is now a real selection-scoped action menu
+(`CardTableView._show_selection_menu`, card_table.py) with four working bulk
+actions (Apply Tags, Add to Deck [stub -- no deck contents yet], Add to
+Inventory, Add to Wishlist -- default hotkeys Alt+A/D/E/W) followed by six
+DISABLED placeholder items: "Filter by Name/Edition/Rarity/Type/Subtype/
+Color". These need the flexible search engine below before they can do
+anything -- there's no per-selection query concept yet to hand a "restrict
+the table to cards matching THIS card's X" request to. Left visible-but-
+disabled rather than omitted so this feature has an obvious landing spot
+already reserved. Deliberately given NO default hotkey (unlike the four
+real actions above them) -- a key bound to a no-op just invites confusion.
+Wire these up once the search engine below exists; also decide then whether
+each gets its own default hotkey or stays menu-only.
+
 ## Flexible search engine (raised as an explicit TODO)
 
 A proper search pane -- its own view, not just column filters -- covering

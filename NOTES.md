@@ -91,7 +91,9 @@ that way once real Scryfall data lands thousands of them -- see the
 "Edition mini-widget" TODO above, parked separately rather than solved as
 part of this round's filter work, since it's a genuinely different UI (a
 grouped folder browser, not a flat list) rather than a variant of either
-existing filter shape.
+existing filter shape. (Type's UI shape is unchanged too, but its
+underlying exclusion MECHANISM was redesigned a round later -- see the
+"Type's filter is now WORD-based" entry below.)
 
 **What DIDN'T change**: the Inventory/Wishlist toggle buttons
 (`card_database_view.py`) still work exactly as before -- they drive Have/
@@ -105,38 +107,76 @@ it -- confirmed via a headless test (toggling Inventory on, then typing
 `>=2` into Have's own filter box, correctly narrows to owned copies with
 at least 2 in hand).
 
-## Debugging note: menu search-box focus leak (this round, item raised as "cursor blinks when unfocused")
+## Debugging note: menu search-box focus leak + keyboard-nav gaps (two rounds, now resolved)
 
-Root cause, most likely: `CardTableHeader._build_context_menu` builds a
-BRAND NEW `_StayOpenMenu(self)` (and, for checklist columns, a brand new
-`_MenuSearchBox`) every single time a column's filter menu is opened --
-but that menu's Qt PARENT is `self`, i.e. THIS HEADER, which lives for
-the whole app session. Without an explicit teardown, every past menu
-(and its embedded search box) stuck around forever as a hidden child of
-the header, never actually deleted -- just increasingly numerous. A
-hidden QLineEdit that still technically exists is exactly the kind of
-thing that could plausibly explain a stray blinking caret showing up
-somewhere it shouldn't, especially across many filter-menu opens in one
-session.
-
-**Fix, two parts, applied everywhere a menu like this gets built**
+**Round 1 diagnosis** (menu accumulation): `CardTableHeader._build_context_menu`
+builds a brand new `_StayOpenMenu(self)` (and, for checklist columns, a
+brand new `_MenuSearchBox`) every single time a column's filter menu is
+opened -- but that menu's Qt PARENT is `self`, i.e. THIS HEADER, which
+lives for the whole app session. Without an explicit teardown, every past
+menu (and its embedded search box) stuck around forever as a hidden child
+of the header, never actually deleted -- just increasingly numerous.
+**Fix**: `menu.deleteLater()` right after `menu.exec()` returns
 (`CardTableHeader._run_context_menu`, and `CardDatabaseView.
 _show_columns_menu` for the standalone Columns button's menu, which has
-the identical "parented to a long-lived widget" shape): call
-`menu.deleteLater()` right after `menu.exec()` returns, so old menus
-actually get cleaned up instead of accumulating. Belt-and-suspenders on
-top of that: `_MenuSearchBox` and the new expression box both explicitly
-connect `menu.aboutToHide` to their own `clearFocus()`, rather than
-relying on Qt's implicit "showing a new menu steals focus" behavior to
-eventually get around to it -- this is what guarantees a box's own caret
-stops blinking the moment its menu is genuinely going away, independent
-of whatever the (now also fixed) accumulation was doing.
+the identical shape), plus an explicit `menu.aboutToHide.connect(self.
+clearFocus)` in `_MenuSearchBox` rather than relying on Qt's implicit
+focus handling. This was flagged as unverified against a real windowed
+run at the time -- confirmed correct as far as it went, but real usage
+surfaced a SECOND, unrelated problem in the same area (below).
 
-Not verified against a real windowed run (this is a headless-tooling
-session) -- if the cursor still blinks after this, the next thing to
-check is whether `QApplication.focusWidget()` still reports one of these
-boxes as focused after its menu closes, which would point at a DIFFERENT
-`setFocus()` call somewhere still holding onto it.
+**Round 2, the real remaining bug**: the EXPRESSION box (Have/Want/
+Power/Toughness/Price/Name's typed filter, added the same round as the
+fix above) was a bare `QLineEdit` with none of `_MenuSearchBox`'s
+keyboard-interception machinery. Pressing Down in it fell through to
+QMenu's own NATIVE arrow-key handling (since nothing had ever been "the
+active action," Qt would jump to the first navigable-looking thing it
+could find) -- which could land back on the QWidgetAction wrapping the
+box ITSELF, reported as "pressing Down focuses the textbox again,
+skipping Clear Filter." Meanwhile "Clear Filter" (a plain, non-checkable
+action) was invisible to `_MenuSearchBox`'s own arrow-key navigation
+too, since that only ever tracked `isCheckable()` actions.
+
+**The actual fix**: `_add_expression_filter_controls` now builds its box
+as a real `_MenuSearchBox` instead of a bare `QLineEdit` -- removing the
+"lands back on the textbox" failure mode by construction, the same way
+every checklist column's search box was already immune to it. Clear
+Filter is now a registered NAVIGABLE action on every filter menu (see
+`_MenuSearchBox.add_navigable_action`), positioned right after the
+search/expression box and reachable via Down -> Space to activate. Two
+smaller fixes landed alongside this: `focusInEvent` now selects all
+existing text so a single keystroke replaces it (was previously typed
+fresh into whatever the box already contained); and the checklist search
+boxes' typed narrowing text is now remembered per-column
+(`CardTableHeader._search_box_memory`) and restored on reopen, matching
+how the expression box already persisted its content via
+`get_column_expression()` -- previously only the expression box "kept"
+what was typed, which read as an inconsistency between menus rather than
+two different (and differently-behaving) kinds of box.
+
+## Redesign: Type's filter is now WORD-based, not single-category (this round)
+
+Reported bug: filtering Type to "Artifact" couldn't find "Artifact
+Creature," and "Legendary" couldn't find "Legendary Creature." Root
+cause: the Type filter reused `_type_category()` -- the function built for
+GROUPING, which deliberately collapses a type line to exactly ONE bucket
+(a Deckbox-style group needs one, and strips supertypes like "Legendary"
+entirely so they never become their own group). Reusing that same
+single-category value for FILTERING meant "Artifact Creature" could only
+ever match "Creature" (TYPE_ORDER checks Creature before Artifact), never
+"Artifact," and "Legendary" was never even an offered value at all, since
+grouping strips it.
+
+**Fix**: a new `_type_words()` treats every word before the em dash
+("Legendary Creature — Human Soldier" -> `{"Legendary", "Creature"}`) as
+independently filterable, and Type's filter now works via a dedicated
+`type_excluded_words` set-membership exclusion -- exactly the same shape
+`mana_excluded_colors` already used for the identical underlying problem
+(a multicolor card needs to match a filter on ANY of its colors, not one
+collapsed category). `_type_category()`/grouping are completely
+untouched -- this was purely a "filtering was reusing the wrong function"
+bug, not a grouping bug, so Group by Type's sub-headers still show one
+bucket per card exactly as before.
 
 ## Revisit: fixed-pixel UI assumptions vs. variable text scaling & DPI (raised explicitly this round, NOT addressed)
 

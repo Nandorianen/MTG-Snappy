@@ -1,4 +1,44 @@
-## Column split + filter overhaul, menu focus-leak fix (this round)
+## Filter menu keyboard-nav fixes, Type filter redesign (this round)
+
+Follow-up round fixing real, reported problems in last round's filter
+overhaul:
+
+- **The typed EXPRESSION box (Have/Want/Power/Toughness/Price/Name) now
+  shares the checklist columns' own keyboard-navigation class
+  (`_MenuSearchBox`)** instead of being a bare `QLineEdit`. It was missing
+  ALL of that class's arrow-key interception, so Down would fall through
+  to QMenu's own native handling and could land back on the box itself --
+  reported as "pressing Down goes back to the textbox, skipping Clear
+  Filter." Fixed by construction: every filter box in the app is now the
+  same class, so this failure mode can't recur elsewhere either.
+- **Every filterable column's menu now has a "Clear Filter" action, right
+  below its search/expression box** -- previously only the expression
+  columns had one. It's a proper keyboard-navigable stop (Down from the
+  box reaches it first; Space activates it), not just a mouse target.
+- **Pressing Up now correctly collapses the menu again**, on every column
+  -- this had quietly stopped working for the expression columns since
+  they never ran through the collapse-aware navigation code at all before
+  this round's `_MenuSearchBox` reuse.
+- **Focusing any filter/search box now selects its existing text**, so a
+  single keystroke replaces a previous search or expression outright
+  instead of needing a manual select-all first.
+- **Checklist columns' typed search-narrowing text is now remembered
+  across reopens** (`CardTableHeader._search_box_memory`), matching how
+  the expression box's typed filter already persisted via
+  `get_column_expression()` -- previously only expression columns "kept"
+  what was typed, which read as an arbitrary inconsistency between menus.
+- **Fixed a real bug in Type filtering**: it could never find "Artifact"
+  in "Artifact Creature" or "Legendary" in "Legendary Creature," because
+  it was reusing the single-category function built for GROUPING (which
+  deliberately collapses a type line to one bucket and strips supertypes
+  entirely). Type's filter is now WORD-based (`_type_words`,
+  `type_excluded_words`) -- the same set-membership-exclusion shape Mana
+  Cost's own color filter already used for the identical underlying
+  problem -- so a card matches a filter on ANY of its type/supertype
+  words independently. Group by Type's own grouping logic is completely
+  unaffected; only filtering was ever wrong.
+
+## Column split + filter overhaul, menu focus-leak fix (earlier round)
 
 - **Edition and Rarity are now two ordinary, independent columns**, not one
   custom-painted "Edition / Rarity" section drawn as two independently-
@@ -998,17 +1038,18 @@ python main.py
   duplicated into every column's own right-click menu; now lives here only).
 - **Click / Ctrl+click / Shift+click** cells — Excel-like multi-selection.
 - **Ctrl+C** — copy the selection as tab/newline-separated text.
-- **"Edition / Rarity" header** — click left half to sort by set, right half by
-  rarity.
-- **"Price" header** — click the ▾ to pick a price source; click elsewhere to
-  sort by price.
-- **Right-click any filterable column header** — a search-narrowable value
-  checklist; type to narrow, **Up/Down or Tab/Shift+Tab** to move the
-  highlighted value (clamped at both ends, skips anything hidden by the search
-  text), **Space** to toggle the highlighted value once you've navigated to one,
-  **Enter** to apply the typed text directly as a filter.
-- **⋯ button** — stub actions menu. **Hover a card's Name** — popover with
-  placeholder art + text.
+- **"Price" header** — pick a price source from its right-click menu's "Price
+  Source" submenu; click anywhere in the header to sort by it.
+- **Right-click any filterable column header** — Type/Mana Cost's
+  color/Edition/Rarity get a search-narrowable value checklist; Have/Want/
+  Power/Toughness/Price/Name get a typed expression box instead (`>10`,
+  `<=3.2`, `!=sliver`, or a bare partial name — see "Column split + filter
+  overhaul" below). Either way: type to narrow/filter, **Up/Down or
+  Tab/Shift+Tab** to move the highlight (now including **Clear Filter**,
+  reachable right after the box), **Space** to toggle/activate the
+  highlighted item, **Enter** to apply the typed text directly, **Up again
+  with nothing highlighted** collapses the menu.
+- **Hover a card's Name** — popover with placeholder art + text.
 - **Right-click a card row** (or a multi-selection of rows) — opens the
   tag-apply dialog: check/uncheck tags from the Tag Database, Apply to every
   selected card at once.

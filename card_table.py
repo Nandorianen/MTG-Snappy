@@ -247,6 +247,38 @@ def _type_rank(card):
     return TYPE_ORDER.index(category) if category in TYPE_ORDER else len(TYPE_ORDER)
 
 
+def _type_words(type_line):
+    """
+    Every SUPERTYPE/TYPE word in a type line -- i.e. every word before the
+    em dash that introduces subtypes (Scryfall's own convention: e.g.
+    "Legendary Creature — Human Soldier" -> {"Legendary", "Creature"}).
+    Used for FILTERING, deliberately kept separate from _type_category()
+    above, which is used for GROUPING and collapses a type line down to
+    ONE bucket (a group needs exactly one; "Artifact Creature" groups
+    under "Creature" alone, and a supertype like "Legendary" is stripped
+    out entirely so it never becomes its own group). Filtering has the
+    opposite need: a card can legitimately match SEVERAL independent type
+    words at once ("Legendary Artifact Creature" is truthfully all three),
+    and a user filtering by "Artifact" should find "Artifact Creature"
+    cards, not just cards whose SOLE category happens to be Artifact. This
+    is why COL_TYPE's filter is a set-membership/intersection check
+    (mirroring how Mana Cost's own color-exclusion filter already treats
+    a multicolor card as matching EVERY color it contains -- see
+    mana_excluded_colors) rather than routed through the single-value
+    exclusion mechanism every other checklist column uses.
+
+    Splitting on the em dash (rather than reusing TYPE_ORDER/
+    SUPERTYPES_TO_STRIP's known-word lists) is deliberate: it makes every
+    word Scryfall actually prints before the dash filterable, including
+    supertypes (Legendary, Snow, ...) and any type this app doesn't
+    already know the name of, rather than only the categories TYPE_ORDER
+    happens to enumerate -- consistent with the app's offline-first "pick
+    up whatever valid data it's given" priority.
+    """
+    main_part = type_line.split("\u2014")[0]  # "—", the em dash before subtypes
+    return set(main_part.split())
+
+
 def _color_category(colors):
     colors = _real_colors(colors)
     if not colors:
@@ -366,6 +398,15 @@ class CardTableModel(QAbstractTableModel):
         # _color_category() strings could never express that, since a U/B
         # card's category is "U/B", never "Black" or "Blue" individually.
         self.mana_excluded_colors = set()
+        # Per-TYPE-WORD exclusion (e.g. {"Artifact", "Legendary"}) -- the
+        # exact same "a multi-value field needs set-membership exclusion,
+        # not single-value exact-match" reasoning as mana_excluded_colors
+        # just above, applied to Type instead of color. See _type_words()
+        # for why this can't reuse the generic _column_filters mechanism:
+        # "Artifact Creature" needs to match a filter on EITHER "Artifact"
+        # OR "Creature" independently, not just whichever single category
+        # _type_category() would have collapsed it to for grouping.
+        self.type_excluded_words = set()
         self._display_rows = [{"type": "card", "card": c} for c in self._cards]
 
     # --- Required QAbstractTableModel overrides ---
@@ -552,25 +593,78 @@ class CardTableModel(QAbstractTableModel):
     def get_column_expression(self, column):
         return self._column_expressions.get(column, "")
 
+    def set_type_word_excluded(self, word, excluded):
+        """Type's own version of set_mana_color_excluded -- see
+        type_excluded_words' own comment in __init__ for why Type needs
+        set-membership exclusion instead of the generic single-value
+        mechanism."""
+        if excluded:
+            self.type_excluded_words.add(word)
+        else:
+            self.type_excluded_words.discard(word)
+        self._commit_reorder()
+
+    def distinct_type_words(self):
+        """Every type/supertype WORD (see _type_words) that occurs across
+        the whole card pool -- the checklist CardTableHeader offers for
+        Type's filter menu, e.g. "Artifact", "Creature", "Legendary",
+        "Instant", ... one entry per word, not per whole type line."""
+        words = set()
+        for card in self._source_cards:
+            words |= _type_words(card["type_line"])
+        return sorted(words)
+
+    def clear_column_filter(self, column):
+        """
+        Clears every filter currently active on `column` SPECIFICALLY --
+        whatever shape that filter happens to take (a checklist exclusion
+        set, a typed expression, or Type/Mana's own dedicated word/color
+        exclusion sets) -- leaving every OTHER column's filter state
+        untouched. This is the single-column counterpart to
+        clear_all_filters() below, and the one "Clear Filter" menu action
+        (CardTableHeader._build_context_menu) routes through for every
+        column uniformly, rather than each column's menu needing its own
+        bespoke clear logic.
+        """
+        changed = False
+        if column in self._column_filters:
+            del self._column_filters[column]
+            changed = True
+        if column in self._column_expressions:
+            del self._column_expressions[column]
+            changed = True
+        if column == COL_MANA and (self.mana_excluded_colors or self.mana_mono_only):
+            self.mana_excluded_colors = set()
+            self.mana_mono_only = False
+            changed = True
+        if column == COL_TYPE and self.type_excluded_words:
+            self.type_excluded_words = set()
+            changed = True
+        if changed:
+            self._commit_reorder()
+
     def clear_all_filters(self):
         """
         Resets every per-column value-exclusion filter, every typed filter
-        EXPRESSION, AND the Mana Cost row's separate mono-only/excluded-
-        color state back to "nothing filtered," in one action -- the
-        single underlying operation both CardDatabaseView's "Clear
-        Filters" button and CardTableView's Ctrl+Alt+F shortcut call, so
-        the two can never drift on what "clear filters" actually resets.
-        Sorting and grouping are left untouched -- this only clears
-        FILTERS, matching what a "clear filters" action should do rather
-        than also rearranging the table.
+        EXPRESSION, AND Mana Cost's and Type's own dedicated exclusion-set
+        state (mono-only/excluded-colors, excluded type words) back to
+        "nothing filtered," in one action -- the single underlying
+        operation both CardDatabaseView's "Clear Filters" button and
+        CardTableView's Ctrl+Alt+F shortcut call, so the two can never
+        drift on what "clear filters" actually resets. Sorting and
+        grouping are left untouched -- this only clears FILTERS, matching
+        what a "clear filters" action should do rather than also
+        rearranging the table.
         """
         if (not self._column_filters and not self._column_expressions
-                and not self.mana_mono_only and not self.mana_excluded_colors):
+                and not self.mana_mono_only and not self.mana_excluded_colors
+                and not self.type_excluded_words):
             return  # already clear -- skip a pointless model reset
         self._column_filters = {}
         self._column_expressions = {}
         self.mana_mono_only = False
         self.mana_excluded_colors = set()
+        self.type_excluded_words = set()
         self._commit_reorder()
 
     def distinct_values_for_column(self, column):
@@ -736,6 +830,13 @@ class CardTableModel(QAbstractTableModel):
         # longer colorless ones.
         if self.mana_mono_only and len(card_colors) not in (0, 1):
             return False
+        # Same set-membership exclusion as the mana-color check above,
+        # applied to Type instead: a card is excluded if ANY of its own
+        # type words (see _type_words) is in the excluded set -- so
+        # unchecking "Artifact" hides "Artifact Creature" too, not just
+        # cards whose sole category is Artifact.
+        if self.type_excluded_words and (_type_words(card["type_line"]) & self.type_excluded_words):
+            return False
         return True
 
     def set_mana_mono_only(self, value):
@@ -817,8 +918,20 @@ class _StayOpenMenu(QMenu):
 
 class _MenuSearchBox(QLineEdit):
     """
-    The Excel-style "narrow the checklist" search box embedded in a filter
-    menu. Four behaviors plain QLineEdit doesn't have:
+    The single text box embedded in every column's filter menu -- either
+    the Excel-style "narrow the checklist" search box (Type, Mana Cost,
+    Edition, Rarity), or the typed comparison/substring EXPRESSION box
+    (EXPRESSION_COLUMNS -- Have/Want/Power/Toughness/Price/Name). Both
+    shapes share the exact same keyboard-navigation problem (see point 1
+    below), so both are built from this one class rather than two nearly-
+    identical ones -- the only real difference between them is whether
+    `on_enter` narrows/excludes checklist values or sets a typed
+    expression, and whether there's a checklist to narrow at all (an
+    expression box has no checkable actions, so _navigable_actions()
+    naturally returns just whatever's in `extra_navigable_actions` --
+    currently always exactly one: "Clear Filter").
+
+    SIX behaviors plain QLineEdit doesn't have:
 
     1. Up/Down arrow keys move QMenu's visual "active action" highlight
        WITHOUT ever transferring real Qt keyboard focus away from this
@@ -829,65 +942,83 @@ class _MenuSearchBox(QLineEdit):
        a focused child widget's own keyPressEvent override ever sees the
        key (Qt delivers to installed event filters first, target's own
        event handling last). A keyPressEvent override here was therefore
-       never actually reached -- QMenu's own navigation ate the key first,
-       and its own idea of "next item" doesn't account for our
-       search-narrowed HIDDEN actions, which is why it looked like nothing
-       moved at all. Same root cause, same fix shape, as the Tab-key
-       interception documented in collapsible_pane.py's module docstring:
-       install the filter at the APPLICATION level so it runs ahead of
-       Qt's own internal handling, rather than trying to out-prioritize it
-       from inside the widget's own event methods.
-       setActiveAction() is a direct, supported API for "highlight exactly
-       this action" that doesn't depend on who technically has keyboard
-       focus, so keeping focus right here on the search box the entire
-       time and driving the highlight manually sidesteps that whole class
-       of bug. Only VISIBLE, checkable actions are ever targeted.
-       Up is clamped UNLESS `allow_collapse` (see point 4 below); Down past
-       the last item does nothing further.
-    2. Enter applies the typed text as a real filter (excluding every
-       offered value that doesn't contain it) and closes the menu --
-       a fast path for "I know what I'm looking for" that doesn't require
-       manually finding and clicking the matching checkbox.
+       never actually reached -- QMenu's own navigation ate the key first.
+       This is also what was BROKEN before this class covered the
+       expression box too: a plain QLineEdit with no such interception
+       left Down/Up to QMenu's own native handling, which (since nothing
+       had ever been "the active action") would jump to the first
+       navigable-looking thing it could find -- which could land back on
+       the QWidgetAction wrapping the text box ITSELF, reported as
+       "pressing Down goes back to the textbox." Routing every text box
+       through this one class removes that whole failure mode by
+       construction: setActiveAction() is a direct, supported API for
+       "highlight exactly this action" that never targets the box itself.
+       Install the filter at the APPLICATION level so it runs ahead of
+       Qt's own internal handling, same shape as the Tab-key interception
+       documented in collapsible_pane.py's module docstring. Only VISIBLE
+       actions returned by _navigable_actions() are ever targeted. Up is
+       clamped UNLESS `allow_collapse` (see point 4 below); Down past the
+       last item does nothing further.
+    2. Enter applies the typed text (`on_enter`, meaning differs by
+       caller -- see CardTableHeader._build_context_menu and
+       _add_expression_filter_controls) and closes the menu -- a fast
+       path that doesn't require manually finding and clicking/typing a
+       specific control first.
     3. Distinct focused/unfocused border colors and left-padded
-       placeholder text.
-    4. Pressing Up steps back through the checklist one row at a time, same
-       as always -- but once NOTHING is highlighted (either you started
-       there, or a previous Up already stepped back to "nothing
-       highlighted" from row 0), one MORE Up COLLAPSES the menu entirely
-       -- see _move_highlight's `allow_collapse` argument and its own
-       docstring for the two-step reasoning, passed True only for the
-       literal Key_Up handler below. This is what lets a keyboard-focused
-       column header (CardTableHeader.focus_column) collapse an open
-       menu back down to just itself, one Up press at a time from
-       wherever the highlight currently is -- see that class's docstring.
-       Shift+Tab/Backtab share the exact same clamping arithmetic (moving
-       "up" through the checklist) but do NOT get this treatment, since
-       collapsing the whole menu would be a surprising side effect of
-       what's otherwise just checklist navigation there.
-    5. Home/End jump straight to the first/last VISIBLE checkable action;
+       placeholder text (customizable per instance -- an expression box's
+       placeholder describes its syntax, a checklist box's just says
+       "Search values...").
+    4. Pressing Up steps back through the navigable actions one at a
+       time, same as always -- but once NOTHING is highlighted (either
+       you started there, or a previous Up already stepped back to
+       "nothing highlighted"), one MORE Up COLLAPSES the menu entirely --
+       see _move_highlight's `allow_collapse` argument. This is what lets
+       a keyboard-focused column header (CardTableHeader.focus_column)
+       collapse an open menu back down to just itself, one Up press at a
+       time from wherever the highlight currently is. Shift+Tab/Backtab
+       share the exact same clamping arithmetic but do NOT get this
+       treatment, since collapsing the whole menu would be a surprising
+       side effect of what's otherwise just navigation there.
+    5. Home/End jump straight to the first/last VISIBLE navigable action;
        PageUp/PageDown jump by PAGE_STEP rows at a time, clamped into
-       range -- see _jump_highlight/_page_highlight. Same underlying
-       reason these need explicit handling here as Up/Down do (point 1):
-       QMenu already supports Home/End/PageUp/PageDown natively, but its
-       native handling would hit the exact same "changes state that's
-       invisible because real focus never left this search box" problem
-       Up/Down had before this class existed, so these go through the
-       identical setActiveAction()-driven mechanism instead of trusting
-       QMenu's own key handling.
+       range -- same underlying reason as point 1: QMenu's own native
+       handling for these keys would hit the identical "changes state
+       that's invisible because real focus never left this search box"
+       problem.
+    6. Gaining real Qt focus selects all existing text (focusInEvent) --
+       so reopening a menu that already has a filter applied lets a
+       single keystroke replace it outright, rather than requiring a
+       manual select-all or backspacing through it first. Matches the
+       same "type immediately overrides" convenience tree_pane.py already
+       established for its own rename editor (_SelectAllEditDelegate).
+
+    NAVIGABLE ACTIONS are, by default, every VISIBLE CHECKABLE action in
+    the menu (the value checkboxes, plus "Group by Type"/"Monocolored
+    only"/etc. where present) -- PLUS anything explicitly registered via
+    add_navigable_action(), currently just "Clear Filter" (see
+    CardTableHeader._build_context_menu). Clear Filter isn't checkable
+    (it's a one-shot action, not a toggle), so it needed explicit
+    registration to be reachable at all; Space now triggers WHATEVER
+    action is currently highlighted regardless of checkable-ness (see the
+    Key_Space handler below), which is what actually activates it once
+    reached.
     """
 
     PAGE_STEP = 10  # rows moved per Page Up/Down press -- filter checklists have no fixed "visible row count" to derive this from, so this is a reasonable fixed jump rather than a computed one
 
-    def __init__(self, menu, on_enter=None):
+    def __init__(self, menu, on_enter=None, placeholder="Search values...", initial_text=""):
         super().__init__()
         self._menu = menu
         self._on_enter = on_enter
-        self.setPlaceholderText("Search values...")
+        self._extra_navigable_actions = []  # see add_navigable_action()
+        self.setPlaceholderText(placeholder)
         self.setStyleSheet(
             "QLineEdit { border: 1px solid #6b6f76; border-radius: 3px; "
             "padding: 3px 6px; background-color: #2b2d31; color: #e3e3e3; } "
             "QLineEdit:focus { border: 1px solid #4f8fc0; }"
         )
+        if initial_text:
+            self.setText(initial_text)  # no textChanged listeners yet at this point -- safe, doesn't trigger narrowing prematurely
         # Installed on the APPLICATION, not on self -- this is what makes
         # our handling run before QMenu's own internal arrow-key navigation
         # gets a chance to consume Up/Down first (see class docstring point
@@ -908,21 +1039,46 @@ class _MenuSearchBox(QLineEdit):
         # when Qt gets around to processing the deferred deletion.
         menu.aboutToHide.connect(self.clearFocus)
 
+    def add_navigable_action(self, action):
+        """Registers a non-checkable action (currently only ever "Clear
+        Filter") as a valid Up/Down/Home/End/PageUp/PageDown stop, in
+        addition to the menu's own checkable actions -- see class
+        docstring's "NAVIGABLE ACTIONS" paragraph. Called once, right
+        after the action is created, by whichever caller built it (order
+        matters: registering it immediately after creating it is what
+        puts it in the right position in _navigable_actions()'s menu-
+        order-preserving scan, so it's reached on the very first Down
+        press when placed right after the search box, per NOTES.md)."""
+        self._extra_navigable_actions.append(action)
+
+    def focusInEvent(self, event):
+        super().focusInEvent(event)
+        self.selectAll()
+
     def _remove_app_filter(self):
         QApplication.instance().removeEventFilter(self)
 
-    def _visible_checkable_actions(self):
-        return [a for a in self._menu.actions() if a.isVisible() and a.isCheckable()]
+    def _navigable_actions(self):
+        """Every visible action that arrow-key navigation should be able
+        to land on: the menu's own checkable actions (in their real menu
+        order), plus anything registered via add_navigable_action() --
+        both tested together, in one pass over menu.actions(), so the
+        combined list still reflects real menu order (Clear Filter sits
+        wherever it was actually placed, not appended at the end)."""
+        return [
+            a for a in self._menu.actions()
+            if a.isVisible() and (a.isCheckable() or a in self._extra_navigable_actions)
+        ]
 
     def _jump_highlight(self, index):
         """
         Highlights the action at `index` DIRECTLY (clamped into
         [0, len-1]) -- shared by Home/End/PageUp/PageDown below, which
         each pick a literal destination rather than stepping one row at a
-        time the way _move_highlight's Up/Down do. A no-op on an empty
-        checklist (nothing to jump to).
+        time the way _move_highlight's Up/Down do. A no-op with nothing
+        navigable (nothing to jump to).
         """
-        actions = self._visible_checkable_actions()
+        actions = self._navigable_actions()
         if not actions:
             return
         index = max(0, min(index, len(actions) - 1))
@@ -939,9 +1095,9 @@ class _MenuSearchBox(QLineEdit):
         scrolling control, not the specific "step back to the search box"
         affordance a single Up press is, so overshooting the top just
         lands on the first item, same as Home would, rather than exiting
-        the checklist toward the search box or the menu itself.
+        toward the search box or the menu itself.
         """
-        actions = self._visible_checkable_actions()
+        actions = self._navigable_actions()
         if not actions:
             return
         current = self._menu.activeAction()
@@ -977,9 +1133,12 @@ class _MenuSearchBox(QLineEdit):
         docstring point 1), so collapsing straight from row 0 skipped
         that intermediate, meaningful stop entirely. Was a real, reported
         bug: pressing Up with any row highlighted closed the whole menu
-        instead of stepping back up to "search box active" first.
+        instead of stepping back up to "search box active" first. Works
+        identically whether the "row" in question is a checklist value or
+        the registered Clear Filter action -- both are just entries in
+        _navigable_actions() to this method.
         """
-        actions = self._visible_checkable_actions()
+        actions = self._navigable_actions()
         if not actions:
             if allow_collapse and direction < 0:
                 self._menu.close()
@@ -1040,7 +1199,7 @@ class _MenuSearchBox(QLineEdit):
                 self._jump_highlight(0)
                 return True
             if event.key() == Qt.Key_End:
-                self._jump_highlight(len(self._visible_checkable_actions()) - 1)
+                self._jump_highlight(len(self._navigable_actions()) - 1)
                 return True
             if event.key() == Qt.Key_PageUp:
                 self._page_highlight(-1)
@@ -1063,31 +1222,35 @@ class _MenuSearchBox(QLineEdit):
                 # the Show Columns submenu trigger), neither of which
                 # should ever be a navigable stop. Routing through the
                 # same _move_highlight() Up/Down already use fixes this for
-                # free: it already filters to isCheckable() actions only
-                # (see _visible_checkable_actions()), and neither the
-                # disabled header label nor a submenu-opening action is
-                # checkable, so both are already excluded by the exact
-                # logic that's already proven correct for arrow-key nav.
+                # free: it already filters to _navigable_actions() (see
+                # that method), and neither the disabled header label nor
+                # a submenu-opening action is checkable or registered, so
+                # both are already excluded by the exact logic that's
+                # already proven correct for arrow-key nav.
                 self._move_highlight(1)
                 return True
             if event.key() == Qt.Key_Space:
-                # Real QMenu only toggles a checkable action on Space when
-                # the MENU ITSELF has actual keyboard focus -- which we
-                # deliberately never hand over (focus stays on this search
-                # box the whole time, so typing keeps narrowing the list).
-                # Without this, Space was always just a literal character
-                # typed into the field, never reaching any toggle logic at
-                # all -- not a regression, just never implemented.
-                # Only intercepted once an action is actually highlighted
+                # Real QMenu only toggles/activates an action on Space
+                # when the MENU ITSELF has actual keyboard focus -- which
+                # we deliberately never hand over (focus stays on this
+                # search box the whole time, so typing keeps narrowing the
+                # list). Without this, Space was always just a literal
+                # character typed into the field, never reaching any
+                # toggle/trigger logic at all. Triggers WHATEVER is
+                # currently highlighted -- a checkable value (toggles it,
+                # same as _StayOpenMenu's own click handling) or a
+                # registered one-shot action like Clear Filter (runs it) --
+                # rather than only checkable ones, so Clear Filter is
+                # actually reachable by keyboard once navigated to.
+                # Only intercepted once something is actually highlighted
                 # (i.e. Up/Down has been pressed at least once) -- before
                 # that, Space still types normally, so a multi-word search
                 # term like "Lightly Played" isn't broken by this.
                 active = self._menu.activeAction()
-                if active is not None and active.isCheckable():
-                    active.trigger()  # toggles without closing -- same as
-                                       # _StayOpenMenu's own click handling
+                if active is not None and (active.isCheckable() or active in self._extra_navigable_actions):
+                    active.trigger()
                     return True
-                # No action highlighted yet -- fall through to normal typing.
+                # Nothing highlighted yet -- fall through to normal typing.
             if event.key() in (Qt.Key_Return, Qt.Key_Enter):
                 if self._on_enter is not None:
                     self._on_enter(self.text())
@@ -1211,6 +1374,16 @@ class CardTableHeader(QHeaderView):
         self._focused_column = None        # int column index, or None -- see focus_column()
         self._keyboard_menu_column = None  # set while a KEYBOARD-opened menu is showing -- see _run_context_menu
         self._suppress_focus_clear = False  # True while a menu we opened is showing -- see focusOutEvent
+        # {column: last-typed text} -- a fresh _MenuSearchBox is built
+        # from scratch every time a menu opens (see _build_context_menu),
+        # so without this its typed text would reset to blank on every
+        # reopen. This is UI-only convenience state (what was typed into
+        # the NARROW-the-checklist box, which doesn't map onto any real
+        # filter value directly for checklist columns) -- EXPRESSION_
+        # COLUMNS don't need an entry here at all, since their box is
+        # always prefilled straight from the model's own
+        # get_column_expression(), which already persists correctly.
+        self._search_box_memory = {}
 
         # Tab/Backtab are caught via an APPLICATION-level event filter
         # (see eventFilter below), NOT keyPressEvent -- this matters, and
@@ -1295,6 +1468,8 @@ class CardTableHeader(QHeaderView):
             return False
         if column == COL_MANA:
             return bool(model.mana_excluded_colors) or model.mana_mono_only
+        if column == COL_TYPE:
+            return bool(model.type_excluded_words)
         if column in EXPRESSION_COLUMNS:
             return bool(model.get_column_expression(column)) or bool(model._column_filters.get(column))
         return bool(model._column_filters.get(column))
@@ -1540,8 +1715,16 @@ class CardTableHeader(QHeaderView):
         # (model.mana_mono_only) -- checking it additionally excludes
         # colorless AND multicolor outright; the checkboxes below still
         # narrow WHICH mono colors show, whether or not the toggle is on.
+        # Type is ALSO special-cased now, for the analogous reason -- see
+        # _type_words()/type_excluded_words: it offers every distinct
+        # type/supertype WORD across the card pool (Artifact, Creature,
+        # Legendary, ...), not one mutually-exclusive category per card,
+        # so a card containing SEVERAL of those words can be excluded by
+        # any one of them independently.
         if column == COL_MANA:
             offered_values = [COLOR_NAMES[c] for c in COLOR_ORDER]  # White, Blue, Black, Red, Green -- WUBRG order
+        elif column == COL_TYPE:
+            offered_values = self.model().distinct_type_words()
         else:
             offered_values = self.model().distinct_values_for_column(column)
 
@@ -1549,9 +1732,15 @@ class CardTableHeader(QHeaderView):
         # as you type (case-insensitive substring match), and Enter
         # applies the typed text as a real filter (see
         # _apply_enter_filter) and closes the menu -- a fast path when
-        # you already know what you're looking for.
+        # you already know what you're looking for. Prefilled with
+        # whatever was last typed here (see self._search_box_memory --
+        # this box is rebuilt from scratch every time the menu opens, so
+        # without remembering it the narrowing text would reset to blank
+        # on every reopen, unlike the expression box below, which is
+        # already prefilled straight from real filter state).
         search_box = _MenuSearchBox(
-            menu, on_enter=lambda text: self._apply_enter_filter(column, offered_values, text)
+            menu, on_enter=lambda text: self._apply_enter_filter(column, offered_values, text),
+            initial_text=self._search_box_memory.get(column, ""),
         )
         search_action = QWidgetAction(menu)
         search_action.setDefaultWidget(search_box)
@@ -1562,6 +1751,19 @@ class CardTableHeader(QHeaderView):
         # on the dropdown menu and arrow controls" for the KEYBOARD
         # entry path (activate_column), since it's the same menu.
         menu.aboutToShow.connect(search_box.setFocus)
+
+        # "Clear Filter" -- right below the search box for every checklist
+        # column, same position and same one-shot "reset and close" shape
+        # the expression box's own Clear Filter already has (see
+        # _add_expression_filter_controls). Registered as a navigable
+        # action (see _MenuSearchBox.add_navigable_action) so it's the
+        # very first thing a Down press from the search box reaches.
+        clear_action = menu.addAction("Clear Filter")
+        clear_action.triggered.connect(
+            lambda: (self.model().clear_column_filter(column), menu.close())
+        )
+        search_box.add_navigable_action(clear_action)
+        menu.addSeparator()
 
         # "Group by Type"/"Group by Color" -- moved here from a separate
         # dropdown-arrow zone that used to live in the header itself (see
@@ -1590,6 +1792,7 @@ class CardTableHeader(QHeaderView):
 
         excluded = self.model()._column_filters.get(column, set())
         excluded_colors = self.model().mana_excluded_colors if column == COL_MANA else None
+        excluded_type_words = self.model().type_excluded_words if column == COL_TYPE else None
 
         value_actions = []
         for value in offered_values:
@@ -1601,6 +1804,11 @@ class CardTableHeader(QHeaderView):
                 action.toggled.connect(
                     lambda checked, l=letter: self.model().set_mana_color_excluded(l, not checked)
                 )
+            elif column == COL_TYPE:
+                action.setChecked(value not in excluded_type_words)
+                action.toggled.connect(
+                    lambda checked, w=value: self.model().set_type_word_excluded(w, not checked)
+                )
             else:
                 action.setChecked(value not in excluded)
                 action.toggled.connect(
@@ -1609,57 +1817,58 @@ class CardTableHeader(QHeaderView):
             value_actions.append((value, action))
 
         def _narrow_checklist(text):
+            self._search_box_memory[column] = text  # remembered for the next time this menu opens
             needle = text.strip().lower()
             for value, action in value_actions:
                 action.setVisible(needle in value.lower())
         search_box.textChanged.connect(_narrow_checklist)
+        if search_box.text():
+            _narrow_checklist(search_box.text())  # apply the restored text's narrowing immediately, not just on the next keystroke
 
         return menu
 
     def _add_expression_filter_controls(self, menu, column):
         """
-        Expression-based filter entry for EXPRESSION_COLUMNS -- one plain
-        QLineEdit, no checklist and no arrow-key list-navigation machinery
-        needed (there's no list to navigate). Prefilled with whatever
-        expression is already active on this column, so reopening the menu
-        shows what's currently applied rather than a blank box. Enter
-        applies the typed text (CardTableModel.set_column_expression parses
-        it -- see that method and _matches_expression for the actual
-        >, >=, <, <=, != / substring syntax); "Clear Filter" empties it in
-        one click without needing to select-all-and-delete first.
+        Expression-based filter entry for EXPRESSION_COLUMNS -- built on
+        the same _MenuSearchBox every checklist column's search box uses,
+        even though there's no checklist here to narrow. This matters, not
+        just for consistency: without it, Up/Down/Space had no interception
+        at all, so they fell through to QMenu's own native handling, which
+        (since nothing had ever been "the active action") could jump
+        straight back to the QWidgetAction wrapping this very box --
+        visible as "pressing Down focuses the textbox again." Reusing
+        _MenuSearchBox removes that failure mode by construction (see its
+        class docstring, point 1) and gives this box the same select-all-
+        on-focus and Up-collapses-the-menu behavior every other filter box
+        already has, for free.
+
+        Prefilled with whatever expression is already active on this
+        column (`initial_text` -- unlike the checklist boxes' own
+        narrowing text, this already comes straight from real, persisted
+        filter state via get_column_expression(), so it was never lost on
+        reopen even before this round's fixes). Enter applies the typed
+        text (CardTableModel.set_column_expression parses it -- see that
+        method and _matches_expression for the actual >, >=, <, <=, != /
+        substring syntax) and closes the menu. "Clear Filter" -- right
+        below the box, registered as a navigable action the same way the
+        checklist columns' own Clear Filter is -- empties it in one step.
         """
-        expr_box = QLineEdit(self.model().get_column_expression(column))
-        expr_box.setPlaceholderText("e.g. >10, <=3.2, !=sliver, partial name")
-        expr_box.setStyleSheet(
-            "QLineEdit { border: 1px solid #6b6f76; border-radius: 3px; "
-            "padding: 3px 6px; background-color: #2b2d31; color: #e3e3e3; } "
-            "QLineEdit:focus { border: 1px solid #4f8fc0; }"
+        expr_box = _MenuSearchBox(
+            menu,
+            on_enter=lambda text: self.model().set_column_expression(column, text),
+            placeholder="e.g. >10, <=3.2, !=sliver, partial name",
+            initial_text=self.model().get_column_expression(column),
         )
-
-        def apply_and_close():
-            self.model().set_column_expression(column, expr_box.text())
-            menu.close()
-        expr_box.returnPressed.connect(apply_and_close)
-
         action = QWidgetAction(menu)
         action.setDefaultWidget(expr_box)
         menu.addAction(action)
-        # Auto-focus on open, same convenience the checklist columns' own
-        # search box gets via aboutToShow -- and explicitly release focus
-        # again once the menu closes (aboutToHide), rather than relying on
-        # Qt to notice on its own, so the caret reliably stops blinking
-        # the instant the box is no longer actually usable. See NOTES.md's
-        # "menu search box focus leak" entry for the related fix to
-        # _MenuSearchBox and _run_context_menu -- this box doesn't share
-        # that class's app-level event filter (nothing here needs
-        # arrow-key routing), so it only needed this half of the fix.
         menu.aboutToShow.connect(expr_box.setFocus)
-        menu.aboutToHide.connect(expr_box.clearFocus)
 
         clear_action = menu.addAction("Clear Filter")
         clear_action.triggered.connect(
-            lambda: (self.model().set_column_expression(column, ""), menu.close())
+            lambda: (self.model().clear_column_filter(column), menu.close())
         )
+        expr_box.add_navigable_action(clear_action)
 
     def build_show_columns_menu(self):
         """
@@ -1709,6 +1918,10 @@ class CardTableHeader(QHeaderView):
                 letter = NAME_TO_COLOR_LETTER[value]
                 exclude_this = bool(text) and text not in value.lower()
                 self.model().set_mana_color_excluded(letter, exclude_this)
+        elif column == COL_TYPE:
+            for value in offered_values:
+                exclude_this = bool(text) and text not in value.lower()
+                self.model().set_type_word_excluded(value, exclude_this)
         else:
             if not text:
                 self.model().set_column_filter(column, set())

@@ -94,7 +94,7 @@ from PySide6.QtCore import (
     Qt, QAbstractTableModel, QModelIndex, Signal, QTimer, QRect, QEvent,
     QItemSelection, QItemSelectionModel,
 )
-from PySide6.QtGui import QKeySequence, QPainter, QColor, QBrush, QShortcut
+from PySide6.QtGui import QKeySequence, QPainter, QColor, QBrush, QShortcut, QActionGroup
 
 from mock_data import RARITY_ORDER, PRICE_SOURCES
 from card_popover import CardPopover
@@ -701,13 +701,19 @@ class CardTableModel(QAbstractTableModel):
         if column == COL_RARITY:
             return card["rarity"].capitalize()
         if column == COL_TYPE:
-            # Broad category, same as grouping uses -- NOT the literal full
-            # type line. A checklist of every distinct full type_line string
-            # ("Legendary Creature — Human Soldier", "Creature — Angel", ...)
-            # would be nearly as long as the card list itself and useless as
-            # a filter; "Creature" / "Instant" / etc. is what's actually
-            # useful to filter by.
-            return _type_category(card["type_line"])
+            # The FULL raw type line (not a collapsed category) -- this is
+            # what a typed Enter-filter (see CardTableHeader's Type search
+            # box, and _matches_expression's text-mode fallback) searches
+            # against, so a typed substring can match ANYTHING in the type
+            # line, including subtypes past the em dash ("Human Soldier",
+            # "Bird", ...) that the WORD-based checklist (type_excluded_
+            # words, _type_words()) never offers as a checkbox at all.
+            # The checklist itself does NOT read this value -- it works
+            # off distinct_type_words()/type_excluded_words instead (see
+            # NOTES.md's "Type's filter is now WORD-based" entry) -- so
+            # this return value is only ever consulted by the free-text
+            # expression path, not by anything checkbox-driven.
+            return card["type_line"]
         if column == COL_MANA:
             # Filters by COLOR CATEGORY (same buckets Group-by-Color uses:
             # Colorless / White / Blue / .../ multicolor combos like "U/B"),
@@ -1469,7 +1475,7 @@ class CardTableHeader(QHeaderView):
         if column == COL_MANA:
             return bool(model.mana_excluded_colors) or model.mana_mono_only
         if column == COL_TYPE:
-            return bool(model.type_excluded_words)
+            return bool(model.type_excluded_words) or bool(model.get_column_expression(column))
         if column in EXPRESSION_COLUMNS:
             return bool(model.get_column_expression(column)) or bool(model._column_filters.get(column))
         return bool(model._column_filters.get(column))
@@ -1680,17 +1686,32 @@ class CardTableHeader(QHeaderView):
         # column gets below it -- it's a display/grouping choice ("which
         # price column am I even looking at"), not a filter itself, so it
         # applies whether Price ends up with a checklist or an expression
-        # box. A plain (non-stay-open) submenu -- picking a source is a
-        # one-shot "choose exactly one" action, so closing on selection is
-        # correct here, unlike the stay-open filter controls below it.
+        # box. FLAT checkable actions in a QActionGroup (exclusive=True
+        # gives "picking one unchecks the others" for free), NOT a
+        # QMenu.addMenu() submenu -- a submenu's own trigger action isn't
+        # checkable and was never included in _MenuSearchBox's arrow-key
+        # navigation (see _navigable_actions()), so it was a real, reported
+        # keyboard dead end: nothing about setActiveAction() alone opens a
+        # submenu the way real mouse hover or QMenu's own internal focus
+        # does. Flat checkable actions sidestep the problem entirely --
+        # they're ordinary navigable actions like any checklist value.
         if column == COL_PRICE:
-            price_menu = menu.addMenu("Price Source")
+            price_label = menu.addAction("Price Source")
+            price_label.setEnabled(False)
+            price_group = QActionGroup(menu)
+            price_group.setExclusive(True)
             for source_key, source_label in PRICE_SOURCES:
-                price_action = price_menu.addAction(source_label)
+                price_action = menu.addAction(source_label)
                 price_action.setCheckable(True)
                 price_action.setChecked(self.model().price_source == source_key)
-                price_action.triggered.connect(
-                    lambda checked=False, k=source_key: self.model().set_price_source(k)
+                price_action.setActionGroup(price_group)
+                # Only react to a source becoming CHECKED -- QActionGroup's
+                # own exclusivity fires `toggled(False)` on whichever
+                # action it just unchecked too, and re-applying the OLD
+                # source on that event would just undo the switch a
+                # moment after QActionGroup finishes flipping the checks.
+                price_action.toggled.connect(
+                    lambda checked, k=source_key: self.model().set_price_source(k) if checked else None
                 )
             menu.addSeparator()
 
@@ -1729,17 +1750,38 @@ class CardTableHeader(QHeaderView):
             offered_values = self.model().distinct_values_for_column(column)
 
         # Excel-style search box: narrows which checkboxes are VISIBLE
-        # as you type (case-insensitive substring match), and Enter
-        # applies the typed text as a real filter (see
-        # _apply_enter_filter) and closes the menu -- a fast path when
-        # you already know what you're looking for. Prefilled with
-        # whatever was last typed here (see self._search_box_memory --
-        # this box is rebuilt from scratch every time the menu opens, so
-        # without remembering it the narrowing text would reset to blank
-        # on every reopen, unlike the expression box below, which is
-        # already prefilled straight from real filter state).
+        # as you type (case-insensitive substring match against the
+        # checkbox labels themselves -- narrowing is purely a "help me
+        # find one to click" convenience, separate from what Enter does
+        # below). Prefilled with whatever was last typed here (see
+        # self._search_box_memory -- this box is rebuilt from scratch
+        # every time the menu opens, so without remembering it the
+        # narrowing text would reset to blank on every reopen, unlike the
+        # expression box below, which is already prefilled straight from
+        # real filter state).
+        #
+        # Enter's MEANING differs for Type specifically: every other
+        # checklist column applies typed text as a same-value-checklist
+        # exclusion (_apply_enter_filter, matching against the offered
+        # checkbox labels only). Type instead applies it as a real typed
+        # EXPRESSION against the card's FULL raw type line (the same
+        # _matches_expression machinery EXPRESSION_COLUMNS use, via
+        # set_column_expression) -- see _raw_filter_value's COL_TYPE case
+        # for why that's possible: it returns the full type line, not the
+        # collapsed category, specifically so this text-mode substring
+        # search can find "Artifact" in "Artifact Creature" AND "Bird" in
+        # a subtype past the em dash, neither of which the WORD checklist
+        # below can ever offer as a checkbox on its own. This is layered
+        # ON TOP OF the checklist's own word-based exclusion -- both must
+        # pass (see CardTableModel._passes_filters) -- the same "checklist
+        # exclusion plus an independent typed expression" combination
+        # Have/Want's Inventory/Wishlist toggle already established.
+        if column == COL_TYPE:
+            on_enter = lambda text: self.model().set_column_expression(column, text)
+        else:
+            on_enter = lambda text: self._apply_enter_filter(column, offered_values, text)
         search_box = _MenuSearchBox(
-            menu, on_enter=lambda text: self._apply_enter_filter(column, offered_values, text),
+            menu, on_enter=on_enter,
             initial_text=self._search_box_memory.get(column, ""),
         )
         search_action = QWidgetAction(menu)
@@ -1757,10 +1799,16 @@ class CardTableHeader(QHeaderView):
         # the expression box's own Clear Filter already has (see
         # _add_expression_filter_controls). Registered as a navigable
         # action (see _MenuSearchBox.add_navigable_action) so it's the
-        # very first thing a Down press from the search box reaches.
+        # very first thing a Down press from the search box reaches. Also
+        # clears this column's own remembered NARROWING text
+        # (self._search_box_memory) -- without that, "Clear Filter" would
+        # reset the real filter but the search box would still come back
+        # prefilled with old narrowing text on the very next open, which
+        # reads as the button not having fully done its job.
         clear_action = menu.addAction("Clear Filter")
         clear_action.triggered.connect(
-            lambda: (self.model().clear_column_filter(column), menu.close())
+            lambda: (self.model().clear_column_filter(column),
+                      self._search_box_memory.pop(column, None), menu.close())
         )
         search_box.add_navigable_action(clear_action)
         menu.addSeparator()
@@ -1910,7 +1958,13 @@ class CardTableHeader(QHeaderView):
         Pressing Enter in a filter menu's search box applies the typed text
         directly as a filter -- every offered value that DOESN'T contain it
         gets excluded -- rather than requiring the user to find and click
-        the matching checkbox by hand. Empty text clears the filter entirely.
+        the matching checkbox by hand. Empty text clears the filter
+        entirely. NOT called for Type -- that column's Enter goes through
+        a typed EXPRESSION against the full type line instead (see the
+        comment right before this method's `search_box` is constructed in
+        _build_context_menu), since a same-value exclusion over Type's own
+        checklist WORDS can't express "find this substring anywhere in the
+        type line," which is what Type's Enter needs to do.
         """
         text = text.strip().lower()
         if column == COL_MANA:
@@ -1918,16 +1972,28 @@ class CardTableHeader(QHeaderView):
                 letter = NAME_TO_COLOR_LETTER[value]
                 exclude_this = bool(text) and text not in value.lower()
                 self.model().set_mana_color_excluded(letter, exclude_this)
-        elif column == COL_TYPE:
-            for value in offered_values:
-                exclude_this = bool(text) and text not in value.lower()
-                self.model().set_type_word_excluded(value, exclude_this)
         else:
             if not text:
                 self.model().set_column_filter(column, set())
             else:
                 non_matching = {v for v in offered_values if text not in v.lower()}
                 self.model().set_column_filter(column, non_matching)
+
+    def clear_all_search_memory(self):
+        """
+        Resets every column's remembered search-narrowing text (see
+        self._search_box_memory) in one shot. This is UI-only state the
+        MODEL has no way to reach on its own -- CardTableModel.
+        clear_all_filters() resets real filter state (checklist
+        exclusions, expressions, Mana/Type's own sets), but doesn't know
+        this header remembers what was last typed into each column's
+        search box. Called by CardTableView.clear_all_filters() alongside
+        the model's own reset, so a full "Clear All Filters" (the
+        CardDatabaseView button, or Ctrl+Alt+F) actually leaves every
+        filter menu looking freshly-blank on next open, not just filtered
+        state reset while old search text lingers.
+        """
+        self._search_box_memory = {}
 
     # --- Keyboard column focus ------------------------------------------
     def focus_column(self, column):
@@ -2179,7 +2245,7 @@ class CardTableView(QTableView):
 
         clear_filters_shortcut = QShortcut(QKeySequence("Ctrl+Alt+F"), self)
         clear_filters_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
-        clear_filters_shortcut.activated.connect(self.card_model.clear_all_filters)
+        clear_filters_shortcut.activated.connect(self.clear_all_filters)
         self._clear_filters_shortcut = clear_filters_shortcut  # keep alive
 
         # Default hotkeys for the four real bulk actions in the row
@@ -2209,6 +2275,22 @@ class CardTableView(QTableView):
         # table first appears, not only after the first sort/filter/group
         # change.
         self._select_default_cell_if_unselected()
+
+    def clear_all_filters(self):
+        """
+        The real "Clear All Filters" action -- resets the MODEL's filter
+        state (CardTableModel.clear_all_filters: every checklist
+        exclusion, every typed expression, Mana/Type's own exclusion
+        sets) AND the HEADER's own remembered search-box text
+        (CardTableHeader.clear_all_search_memory) in one call, so neither
+        the CardDatabaseView button nor the Ctrl+Alt+F shortcut has to
+        remember to call both separately (and can't drift to calling only
+        one of them). This is the method both of those now bind to,
+        instead of either binding straight to card_model.clear_all_filters
+        the way earlier rounds did.
+        """
+        self.card_model.clear_all_filters()
+        self.header.clear_all_search_memory()
 
     def _select_default_cell_if_unselected(self):
         """

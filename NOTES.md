@@ -178,6 +178,79 @@ untouched -- this was purely a "filtering was reusing the wrong function"
 bug, not a grouping bug, so Group by Type's sub-headers still show one
 bucket per card exactly as before.
 
+**UPDATE (follow-up round): the checklist above was correct and stayed --
+what still needed fixing was the SEARCH BOX.** The word checklist only
+ever offers pre-dash words (Artifact, Creature, Legendary, ...), so it
+still couldn't find a typed SUBTYPE ("Bird", "Human Soldier") or an
+arbitrary substring that doesn't line up with a whole word -- confirmed
+by the user's own retest after the fix above shipped. Type's search box
+now has a genuinely different job on Enter than every other checklist
+column's: instead of excluding checklist WORDS that don't contain the
+typed text (`CardTableHeader._apply_enter_filter`, still what Mana/
+Edition/Rarity's Enter does), Type's Enter calls
+`CardTableModel.set_column_expression(COL_TYPE, text)` -- the SAME typed-
+expression machinery `EXPRESSION_COLUMNS` use, reusing
+`_matches_expression`'s text-mode substring/contains matching against
+`_raw_filter_value(card, COL_TYPE)`, which now returns the card's FULL
+raw type line (not the collapsed category) specifically so this works.
+The word checklist's own exclusion (`type_excluded_words`) and this typed
+expression apply TOGETHER (`_passes_filters` checks both) -- the same
+"checklist exclusion plus an independent typed expression, both must
+pass" shape Have/Want's Inventory/Wishlist toggle already established
+for a different reason. The checklist's own as-you-type NARROWING
+(hiding non-matching checkboxes while typing, before Enter is pressed)
+is unchanged -- it still narrows against the checkbox labels, which is
+just "help me find one to click," a separate concern from what Enter
+commits as a real filter.
+
+## Debugging note: Price Source wasn't keyboard-reachable (follow-up round)
+
+Reported bug: arrow-key navigation in Price's filter menu couldn't reach
+"Price Source" at all. Root cause: it used to be a real `QMenu.addMenu()`
+submenu -- and a submenu's own trigger action isn't `isCheckable()`, so
+`_MenuSearchBox._navigable_actions()` (which only ever targeted checkable
+actions, plus whatever's explicitly registered via
+`add_navigable_action()`) skipped straight past it. Even if it HAD been
+registered as navigable, `setActiveAction()` alone doesn't open a
+submenu the way real mouse hover or QMenu's own internal focus-driven
+popup timer does, since real Qt focus never actually leaves the search
+box in this design (see `_MenuSearchBox`'s own docstring) -- Space/Enter
+on a highlighted submenu action wouldn't have popped it open either.
+
+**Fix**: replaced the submenu with three flat, ordinary checkable
+actions in a `QActionGroup(exclusive=True)` -- Qt handles "picking one
+unchecks the others" natively, so no custom radio-button bookkeeping was
+needed. Being checkable, they're automatically included in
+`_navigable_actions()` with zero special-casing, exactly like any
+checklist value or "Group by Type" toggle -- Down from the box now walks
+TCGplayer -> Card Kingdom -> Cardmarket -> Clear Filter in menu order,
+confirmed headlessly. No other column ever used a real submenu, so this
+was the only place this class of bug could hide.
+
+## Fix: "Clear Filter" and "Clear All Filters" now also forget remembered search text (follow-up round)
+
+Reported gap: clearing a column's filter (or all of them) reset the real
+filter state correctly, but a checklist column's own remembered
+NARROWING text (`CardTableHeader._search_box_memory` -- see the "menu
+search-box focus leak" entry above for why this exists at all) stuck
+around and came back prefilled the next time that menu opened, even
+though the filter it used to represent was gone. Two call sites needed
+fixing, since the memory is UI-only state the MODEL has no way to reach:
+
+- **Per-column "Clear Filter"** now also does
+  `self._search_box_memory.pop(column, None)` alongside
+  `model.clear_column_filter(column)`.
+- **"Clear All Filters"** (the `CardDatabaseView` button and the
+  Ctrl+Alt+F shortcut) used to bind straight to
+  `CardTableModel.clear_all_filters` -- neither call site had any way to
+  also reach the header's memory. Both now bind to a new
+  `CardTableView.clear_all_filters()`, which calls the model's own
+  `clear_all_filters()` AND the header's new
+  `clear_all_search_memory()` together, so there's exactly one place
+  that defines what a full "clear everything" actually resets, instead
+  of two call sites that each had to remember to do both things
+  correctly on their own.
+
 ## Revisit: fixed-pixel UI assumptions vs. variable text scaling & DPI (raised explicitly this round, NOT addressed)
 
 Flagged by the user as an important future direction after the card detail

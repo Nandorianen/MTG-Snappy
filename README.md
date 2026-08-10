@@ -1,4 +1,34 @@
-## Filter menu keyboard-nav fixes, Type filter redesign (this round)
+## Filter menu follow-ups: Type's search box, Price Source keyboard access, Clear Filter cleanup (this round)
+
+Three more real, reported problems on top of last round's filter work:
+
+- **Type's search box now actually searches the full type line.** Last
+  round's word-based checklist (Artifact/Creature/Legendary/... checkable
+  independently) was correct and unchanged -- what still didn't work was
+  typing free text and pressing Enter: it could only match the checklist's
+  own short words, never a subtype ("Bird," "Human Soldier") or an
+  arbitrary substring. Type's Enter now applies a typed EXPRESSION against
+  the card's full raw type line (the same machinery `EXPRESSION_COLUMNS`
+  use), layered on top of the checklist's own word exclusion -- both must
+  pass. Confirmed: `type~artifact` finds "Baleful Strix" (Artifact
+  Creature), `type~legendary` finds "Thalia," `type~bird` finds a subtype
+  past the em dash.
+- **"Price Source" is now keyboard-reachable.** It used to be a real QMenu
+  submenu, and a submenu's own trigger action was never a checkable (or
+  registered-navigable) action, so arrow-key navigation skipped straight
+  over it. Replaced with three flat checkable actions in an exclusive
+  `QActionGroup` -- ordinary navigable actions now, reached via Down like
+  any checklist value, with Qt handling the "picking one unchecks the
+  others" behavior natively.
+- **"Clear Filter" and "Clear All Filters" now also forget each column's
+  remembered search-narrowing text**, not just the real filter state --
+  previously a cleared column's search box could still come back prefilled
+  with old text on next open. New `CardTableHeader.
+  clear_all_search_memory()` and `CardTableView.clear_all_filters()` (the
+  latter now what both the CardDatabaseView button and Ctrl+Alt+F bind to,
+  instead of the model method directly) are the two places this is fixed.
+
+## Filter menu keyboard-nav fixes, Type filter redesign (earlier round)
 
 Follow-up round fixing real, reported problems in last round's filter
 overhaul:

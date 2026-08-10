@@ -134,15 +134,20 @@ held up well; no reason to revisit it.
 - Full spreadsheet UI (one merged "Card Database" tab, replacing the old
   separate All Card Database + Inventory tabs — see the architectural
   pivot section above) — sorting, grouping with Deckbox-style sub-headers,
-  per-column filtering with an Excel-style search-narrow box (keyboard nav
-  now fully working: Up/Down/Tab/Shift+Tab move the highlight, Space
-  toggles, Enter applies typed text — see NOTES.md's debugging-journey
-  entry if this regresses again), column visibility via a standalone
-  Columns dropdown button, Inventory/Wishlist filter-preset toggle buttons
-  (two-way synced with the header's own right-click filter state), cell-
-  range selection + Ctrl+C copy, Excel-familiar keyboard shortcuts (F2
-  edit, Shift+Space/Ctrl+Space row/column select, Ctrl+Home/End,
-  Ctrl+Shift+Arrow).
+  Edition and Rarity as independent sortable/filterable columns (no
+  longer one custom-painted split column — see NOTES.md's "Edition/Rarity
+  column split" entry), two per-column filter shapes depending on the
+  column (a bounded checklist with an Excel-style search-narrow box for
+  Type/Mana color/Edition/Rarity; a typed comparison-or-substring
+  EXPRESSION box — `>10`, `<=3.2`, `!=sliver`, a bare partial name — for
+  Have/Want/Power/Toughness/Price/Name, where a value checklist doesn't
+  scale — see NOTES.md's "filter overhaul" entry), column visibility via
+  a standalone Columns dropdown button, Inventory/Wishlist filter-preset
+  toggle buttons (two-way synced with the header's own right-click filter
+  state, and layered independently on top of any typed Have/Want
+  expression), cell-range selection + Ctrl+C copy, Excel-familiar
+  keyboard shortcuts (F2 edit, Shift+Space/Ctrl+Space row/column select,
+  Ctrl+Home/End, Ctrl+Shift+Arrow).
 - Card detail popup — frameless (no window title text; the card's own
   NAME is styled as the Card pane's header instead), a `QGridLayout`-based
   stat area (Type/Mana Cost, Edition/Rarity/Price, Language/Condition/Foil
@@ -201,16 +206,21 @@ instead of Qt/OS-derived" pattern), undo/redo, internationalization.
   it. This is what replaced the separate Inventory tab — main.py now
   builds ONE of these instead of two `CardTableView`s.
 - `card_table.py` — the spreadsheet: `CardTableModel` (data + sort/group/
-  filter logic, plus `is_value_excluded()`/`set_value_excluded()` — the
-  shared single-value-exclusion toggle both the header checklist and
-  `CardDatabaseView`'s buttons route through), `SplitDropdownHeader`
-  (custom header painting/menus, plus `build_show_columns_menu()` — the
-  column-visibility menu, now built here but SHOWN from
-  `CardDatabaseView`'s Columns button rather than duplicated per-column),
-  `CardTableView` (selection, copy, hotkeys, right-click tag menu),
-  `_MenuSearchBox` (the filter-menu search box — Up/Down/Tab/Shift+Tab/
-  Space/Enter keyboard handling; see NOTES.md if this ever regresses,
-  the debugging journey there is worth reading before re-diagnosing from
+  filter logic — checklist-based exclusion via `is_value_excluded()`/
+  `set_value_excluded()`, the shared mechanism the header checklist AND
+  `CardDatabaseView`'s Inventory/Wishlist buttons both route through,
+  PLUS a separate typed-expression mechanism via `set_column_expression()`/
+  `get_column_expression()` for `EXPRESSION_COLUMNS` — see NOTES.md's
+  "filter overhaul" entry; both can apply to the same column at once, e.g.
+  Have/Want), `CardTableHeader` (custom header painting/menus, plus
+  `build_show_columns_menu()` — the column-visibility menu, now built
+  here but SHOWN from `CardDatabaseView`'s Columns button rather than
+  duplicated per-column; Edition and Rarity are now ordinary columns like
+  any other, not a custom-painted split section), `CardTableView`
+  (selection, copy, hotkeys, right-click tag menu), `_MenuSearchBox` (the
+  checklist-column filter-menu search box — Up/Down/Tab/Shift+Tab/Space/
+  Enter keyboard handling; see NOTES.md if this ever regresses, the
+  debugging journey there is worth reading before re-diagnosing from
   scratch). Biggest, most iterated-on file — read its module docstring.
 - `card_detail_popup.py` — `CardDetailDialog`, `StatField` (the
   labeled-stat widget used throughout; clickable dropdown variants hug

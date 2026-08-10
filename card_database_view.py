@@ -49,7 +49,7 @@ actually applied, which is worse than not having the buttons show state
 at all.
 
 KEYBOARD ACCESS TO TABLE HEADERS (this round): headers are now themselves
-keyboard-focusable (see card_table.py's SplitDropdownHeader). This row's
+keyboard-focusable (see card_table.py's CardTableHeader). This row's
 own Ctrl+Tab (below) reflects that: it now jumps straight to the table's
 HEADER (leftmost visible column) rather than a cell, since a header is a
 meaningfully different, closer destination now that it's operable on its
@@ -108,7 +108,7 @@ class CardDatabaseView(QWidget):
         # Not checkable -- this is a plain dropdown-opening button, not a
         # persistent on/off state like the two toggles either side of it.
         # Reuses the SAME menu-building code that used to be duplicated
-        # into every column's own right-click menu (SplitDropdownHeader.
+        # into every column's own right-click menu (CardTableHeader.
         # build_show_columns_menu) -- one shared instance now, rebuilt
         # fresh on each click (same pattern card_table.py's own price-
         # source dropdown already uses) so it can never show a stale
@@ -177,8 +177,15 @@ class CardDatabaseView(QWidget):
     def _show_columns_menu(self):
         menu = self.table.header.build_show_columns_menu()
         menu.exec(self.columns_button.mapToGlobal(self.columns_button.rect().bottomLeft()))
+        # This menu is parented to the header (see build_show_columns_menu
+        # -> _StayOpenMenu(self)), which outlives every menu built from
+        # it -- without an explicit teardown, every click here would leave
+        # one more hidden, never-deleted menu behind. Same fix, same
+        # reasoning, as card_table.py's own CardTableHeader._run_context_menu
+        # -- see NOTES.md's "menu search box focus leak" entry.
+        menu.deleteLater()
         # Focus goes back to the BUTTON that opened this, not the table.
-        # Unlike SplitDropdownHeader's own filter/group-by menus (which
+        # Unlike CardTableHeader's own filter/group-by menus (which
         # open FROM the table's header and hand focus back to the table
         # when they close), this menu opens from a button that lives
         # outside the table entirely -- closing it (via a selection, or
@@ -306,7 +313,7 @@ class CardDatabaseView(QWidget):
                 # straight to the table's HEADER row (its leftmost visible
                 # column) instead of a card row. Split out from plain Tab
                 # below now that headers are keyboard-focusable in their
-                # own right (see card_table.py's SplitDropdownHeader) --
+                # own right (see card_table.py's CardTableHeader) --
                 # Ctrl+Tab is the fast, direct path to column sorting/
                 # filtering without detouring through the grid first.
                 # Focus-only (see CardTableView.focus_leftmost_header) --

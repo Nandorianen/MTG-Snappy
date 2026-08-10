@@ -2,6 +2,142 @@
 
 Things we've deliberately deferred, with enough context to pick back up later.
 
+## TODO: Edition mini-widget (folders by name/code/year), shared by the table filter and Data Management's image download picker
+
+Raised explicitly this round, NOT built yet. The Card Database table's
+Edition column (see the "Edition/Rarity column split" entry below) still
+filters via the same flat checklist-with-search-box every other bounded
+category (Type, Mana color, Rarity) uses -- fine for today's 9-card mock
+set, but flagged as not scaling once a real Scryfall-backed edition list
+(thousands of sets) replaces it. Idea, as described: a dedicated widget
+where editions are grouped into COLLAPSED FOLDERS (block/era, or however
+they're naturally categorized) with each edition inside listed by full
+name, set code, and release year -- an edition OR an entire folder
+selectable via mouse or keyboard to apply as a filter. Two known call
+sites for the same widget once it exists:
+
+- **The Card Database table's Edition column filter** (replacing today's
+  flat checklist there).
+- **`data_management_dialog.py`'s Card Images tab edition picker**
+  (`_build_edition_button`, `EDITION_OPTIONS`) -- currently a flat
+  placeholder checklist ("All Editions" + a disabled-while-that's-checked
+  list of set codes) standing in for "which editions to download images
+  for." Same underlying need (pick one/many/all editions from a large
+  set), same widget should serve both rather than building two.
+
+Open questions for when this gets designed for real: where the
+grouping-into-folders data comes from (Scryfall's `set_type`/block info,
+once real set data exists -- `mock_data.py`/`EDITION_OPTIONS` don't model
+this yet), whether folder selection means "every edition inside" or "an
+additional filter tier," and whether this becomes a reusable component
+(its own file) given it's needed in at least two places from day one.
+
+## Edition/Rarity column split + filter overhaul (this round)
+
+**The Card Database table's "Edition / Rarity" custom-painted split
+column is gone.** It used to be one header section drawn as two
+independently-sortable halves ("Ed" / "Rar", `CardTableHeader.
+_paint_split_section`, since removed) -- now `Edition` and `Rarity` are
+two ordinary columns, sorted/filtered/resized exactly like any other. This
+was never a load-bearing design goal, just an earlier space-saving choice
+-- removing it is a straightforward simplification, not a data-model
+change. **One thing worth remembering when touching either column**:
+rarity is a property of a specific PRINTING, not of a card in the
+abstract -- the same card name can be common in one edition and rare in a
+reprint. Any code that reads or writes rarity should always be doing so
+alongside a specific edition/print, never rarity in isolation.
+`card_detail_popup.py`'s edition switcher already gets this right by
+construction (`CARD_PRINTS`/`get_card_prints` -- picking a print updates
+edition and rarity together, from the same print record, since they're
+fields on the same dict); this is the pattern to preserve if that area
+changes.
+
+**Filters are now two different shapes, depending on the column.** The
+old design offered a checklist of every distinct value that occurs in the
+column -- fine for Type (a handful of categories) and Mana Cost's color
+(five, hardcoded), but flagged this round as a real scaling problem for
+Have/Want (an arbitrary integer, no natural upper bound), Price
+(continuous), Name (thousands of cards once real data replaces the mock
+set), and Power/Toughness (a checklist of literal numbers -- plus "*" for
+variable P/T -- was never a useful thing to pick from a list; nobody
+filters "toughness" by browsing every value that currently occurs). These
+five (`EXPRESSION_COLUMNS` in `card_table.py`) now get a single typed
+EXPRESSION box instead:
+
+- A leading `>`, `>=`, `<`, `<=`, or `!=` is recognized as a comparison
+  operator; anything else (or nothing) is a bare substring search.
+- **Numeric vs. text is auto-detected per comparison, not chosen by the
+  user or declared per-column**: if the typed OPERAND parses as a plain
+  number, the comparison runs numerically against the column's own
+  numeric reading of the card (`CardTableModel._numeric_value_for_column`
+  -- a card that isn't numeric for that column, e.g. Power's "*", simply
+  never matches, rather than crashing or coercing to 0). Otherwise it
+  falls back to a case-insensitive substring/contains match -- which is
+  already "wildcards at both ends" by construction, no explicit `*foo*`
+  syntax needed, and no quoting needed to force text mode either, since
+  which mode applies is decided purely by whether the operand itself
+  looks like a number.
+- `!=` in text mode means "does not contain," not "isn't exactly equal
+  to" -- exact-match exclusion isn't a useful reading of `!=sliver`
+  against a card name.
+- Blank box = no filter, same as an all-checked checklist used to mean.
+
+Every OTHER filterable column (Type, Mana Cost's color, Edition, Rarity)
+is still a genuinely small, bounded set and keeps the checklist-with-
+search-box UI unchanged -- this wasn't "replace all filters," just the
+ones where a checklist was structurally the wrong tool. Edition is the
+one to watch: it's bounded TODAY (a handful of mock sets) but won't stay
+that way once real Scryfall data lands thousands of them -- see the
+"Edition mini-widget" TODO above, parked separately rather than solved as
+part of this round's filter work, since it's a genuinely different UI (a
+grouped folder browser, not a flat list) rather than a variant of either
+existing filter shape.
+
+**What DIDN'T change**: the Inventory/Wishlist toggle buttons
+(`card_database_view.py`) still work exactly as before -- they drive Have/
+Want's "0" exclusion through the same `set_value_excluded`/
+`is_value_excluded` checklist-style mechanism as always, entirely
+independent of whether that column's own right-click menu now shows a
+checklist or an expression box. An expression typed into Have/Want's menu
+applies ADDITIONALLY on top of whatever the toggle buttons already
+excluded (`CardTableModel._passes_filters` checks both), not instead of
+it -- confirmed via a headless test (toggling Inventory on, then typing
+`>=2` into Have's own filter box, correctly narrows to owned copies with
+at least 2 in hand).
+
+## Debugging note: menu search-box focus leak (this round, item raised as "cursor blinks when unfocused")
+
+Root cause, most likely: `CardTableHeader._build_context_menu` builds a
+BRAND NEW `_StayOpenMenu(self)` (and, for checklist columns, a brand new
+`_MenuSearchBox`) every single time a column's filter menu is opened --
+but that menu's Qt PARENT is `self`, i.e. THIS HEADER, which lives for
+the whole app session. Without an explicit teardown, every past menu
+(and its embedded search box) stuck around forever as a hidden child of
+the header, never actually deleted -- just increasingly numerous. A
+hidden QLineEdit that still technically exists is exactly the kind of
+thing that could plausibly explain a stray blinking caret showing up
+somewhere it shouldn't, especially across many filter-menu opens in one
+session.
+
+**Fix, two parts, applied everywhere a menu like this gets built**
+(`CardTableHeader._run_context_menu`, and `CardDatabaseView.
+_show_columns_menu` for the standalone Columns button's menu, which has
+the identical "parented to a long-lived widget" shape): call
+`menu.deleteLater()` right after `menu.exec()` returns, so old menus
+actually get cleaned up instead of accumulating. Belt-and-suspenders on
+top of that: `_MenuSearchBox` and the new expression box both explicitly
+connect `menu.aboutToHide` to their own `clearFocus()`, rather than
+relying on Qt's implicit "showing a new menu steals focus" behavior to
+eventually get around to it -- this is what guarantees a box's own caret
+stops blinking the moment its menu is genuinely going away, independent
+of whatever the (now also fixed) accumulation was doing.
+
+Not verified against a real windowed run (this is a headless-tooling
+session) -- if the cursor still blinks after this, the next thing to
+check is whether `QApplication.focusWidget()` still reports one of these
+boxes as focused after its menu closes, which would point at a DIFFERENT
+`setFocus()` call somewhere still holding onto it.
+
 ## Revisit: fixed-pixel UI assumptions vs. variable text scaling & DPI (raised explicitly this round, NOT addressed)
 
 Flagged by the user as an important future direction after the card detail

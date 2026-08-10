@@ -1,3 +1,53 @@
+## Column split + filter overhaul, menu focus-leak fix (this round)
+
+- **Edition and Rarity are now two ordinary, independent columns**, not one
+  custom-painted "Edition / Rarity" section drawn as two independently-
+  sortable halves. Each sorts, filters, and resizes exactly like any other
+  column now — the old "Ed"/"Rar" split-section painting
+  (`_paint_split_section`) and its special-cased click/keyboard handling are
+  gone. `SplitDropdownHeader` is renamed `CardTableHeader` to match (its
+  namesake behavior no longer exists). This was a space-saving choice, not a
+  load-bearing design decision, so removing it didn't touch any data model —
+  see NOTES.md for the one thing worth remembering when touching either
+  column going forward: rarity belongs to a specific PRINTING, never the
+  card in the abstract, so code that reads/changes it should always do so
+  alongside a specific edition (the card detail popup's edition switcher
+  already gets this right).
+- **Value-checklist filters are gone for the columns where they didn't
+  scale**: Have, Want, Power, Toughness, Price, and Name now use a typed
+  EXPRESSION box instead of a list of every distinct value currently in the
+  table (an unbounded quantity, a continuous price, and thousands of card
+  names were never going to work as a browsable checklist). Supports `>`,
+  `>=`, `<`, `<=`, `!=` against a number, or a bare case-insensitive
+  substring match (wildcards at both ends, automatically) against text —
+  which mode applies is auto-detected per typed expression by whether the
+  operand parses as a number, so there's no separate "numeric mode" toggle
+  and no quoting needed to force text matching. A card that isn't numeric
+  for a given column (Power's "*") simply never matches a numeric
+  comparison. Type, Mana Cost's color, Edition, and Rarity keep the
+  original checklist-with-search-box UI — they're genuinely small, bounded
+  category sets, which is exactly the case a checklist is the right tool
+  for. The Inventory/Wishlist toggle buttons are unaffected: they still
+  drive Have/Want's own "0" exclusion the same way as before, and a typed
+  expression on top of that narrows further rather than replacing it.
+- **Fixed a real, reported bug**: a filter menu's search/expression box
+  could keep showing a blinking text cursor after the menu had closed.
+  Root cause: every filter menu is a fresh `QMenu` parented to the header
+  (which lives for the whole session), and nothing ever explicitly deleted
+  a closed one — they just piled up, hidden, forever. Fixed with
+  `menu.deleteLater()` right after `menu.exec()` returns (both in the
+  header's own context-menu path and `CardDatabaseView`'s standalone
+  Columns-button menu, which has the identical shape), plus an explicit
+  `clearFocus()` wired to each search/expression box's `aboutToHide` rather
+  than relying on Qt's implicit focus handling to get to it eventually.
+- Parked as an explicit TODO (see NOTES.md), not built this round: a
+  folder-grouped edition-picker widget (editions listed by name/code/year,
+  collapsible by block/era) to eventually replace today's flat Edition
+  checklist here AND `data_management_dialog.py`'s equally-flat Card Images
+  edition picker — both have the same "a real Scryfall edition list is
+  thousands of entries, not nine mock set codes" scaling problem, and both
+  should share one widget rather than growing two separately.
+
 ## Keyboard access for table headers (this round)
 
 Headers were completely mouse-only until now -- no way to sort, filter, or
@@ -898,10 +948,12 @@ Three fix attempts, in order, each ruled something out:
   "U/B"). Click again to un-group.
 - Group-header rows are inert — not selectable, not checkable, don't open the
   detail popup or hover popover.
-- Known simplification: the Edition/Rarity column's filter checklist works off
-  the Set only (not Rarity); Price isn't filterable this way since it's
-  continuous data — real range filtering is planned as part of the upcoming
-  Search feature.
+- ~~Known simplification: the Edition/Rarity column's filter checklist works
+  off the Set only (not Rarity); Price isn't filterable this way since it's
+  continuous data~~ — **superseded**: Edition and Rarity are now separate,
+  independently filterable columns, and Price now has real range filtering
+  (`>`, `>=`, `<`, `<=`, `!=`) via a typed expression box instead of a
+  checklist. See "Column split + filter overhaul" below.
 
 ## Card detail popup
 
@@ -981,12 +1033,14 @@ python main.py
 
 ## What's deliberately NOT here yet
 
-- Real card images.
-- Any real database — the tree/table data all comes from hardcoded seed data
-  (`mock_data.py`, `deck_viewer.py`, `tag_tree.py`); each has one clearly marked
-  function/constant that gets swapped for a real query later.
-- Tag-based card filtering, deck contents view, column right-click filtering and
-  grouping, card detail popup, and the tag-apply widget — all upcoming.
-- Drag-to-resize specifically on the Edition/Rarity and Price header cells
-  (documented limitation in `card_table.py`).
+Stale as of early rounds — tag-based filtering, deck contents view, column
+filtering/grouping, the card detail popup, and the tag-apply widget are all
+built now (see the sections above and PROJECT_CONTEXT.md's "Current status").
+What's still genuinely missing:
+
+- Real card images, and the real Scryfall/SQLite data layer generally — see
+  PROJECT_CONTEXT.md's "Current status" for the full up-to-date list (real
+  data layer, deck contents, the flexible search engine, an edition
+  mini-widget for large edition lists, theming, DPI/scaling awareness,
+  undo/redo, internationalization).
 - Delete confirmation dialogs (documented limitation in `tree_pane.py`).

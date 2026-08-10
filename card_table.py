@@ -4,21 +4,47 @@ card_table.py
 The central spreadsheet: a QAbstractTableModel (data) + QTableView (display)
 pair, plus custom machinery layered on top:
 
-1. SplitDropdownHeader (QHeaderView subclass) -- draws the "Edition / Rarity"
-   column as two independently-sortable halves; draws a small direction-
-   aware sort arrow and filter-active dot on every column via paintSection;
-   and handles RIGHT-click for a per-column value filter, PLUS (for Type/
-   Mana Cost/Price specifically) the "Group by Type," "Group by Color," and
-   "Price Source" controls that used to live behind a separate dropdown-
-   arrow zone in the header itself. Consolidating those into the same
-   right-click menu the value checklist already lives in removed a second,
-   visually near-identical arrow glyph that used to sit right next to the
-   new sort arrow (see the "Type/Mana/Price header cleanup" note below) --
-   one right-click menu per column is simpler to explain than "click here
-   to sort, click 4px to the right of that to open a totally different
-   menu." Also builds the "Show Columns" visibility-picker menu
-   (build_show_columns_menu below), though that's no longer shown FROM the
-   header itself -- see CardDatabaseView's standalone Columns button.
+1. CardTableHeader (QHeaderView subclass) -- draws a small direction-aware
+   sort arrow and filter-active dot on every column via paintSection; and
+   handles RIGHT-click for a per-column filter, PLUS (for Type/Mana Cost/
+   Price specifically) the "Group by Type," "Group by Color," and "Price
+   Source" controls that used to live behind a separate dropdown-arrow zone
+   in the header itself. Consolidating those into the same right-click menu
+   the filter already lives in removed a second, visually near-identical
+   arrow glyph that used to sit right next to the sort arrow (see the
+   "Type/Mana/Price header cleanup" note below) -- one right-click menu per
+   column is simpler to explain than "click here to sort, click 4px to the
+   right of that to open a totally different menu." Also builds the "Show
+   Columns" visibility-picker menu (build_show_columns_menu below), though
+   that's no longer shown FROM the header itself -- see CardDatabaseView's
+   standalone Columns button.
+
+   EDITION AND RARITY ARE NOW TWO ORDINARY, INDEPENDENT COLUMNS, not a
+   single custom-painted "Edition / Rarity" split column with two
+   independently-sortable halves (that design is gone -- see NOTES.md for
+   why and for the one thing worth remembering when touching either
+   column: a print's rarity is a property OF a specific edition/printing,
+   not of the card in the abstract, so any code that reads or changes
+   rarity should always be doing so alongside -- and scoped to -- a
+   specific edition, never rarity in isolation. card_detail_popup.py's
+   edition switcher already gets this right by construction, since
+   picking a print there updates edition and rarity together from the
+   same print record).
+
+   FILTERS ARE NOW TWO DIFFERENT SHAPES, DEPENDING ON THE COLUMN (see
+   NOTES.md's "Filter overhaul" entry for the full reasoning): Type,
+   Mana Cost (color), Edition, and Rarity are genuinely bounded, small
+   categorical sets, so they keep the checklist-with-search-box UI.
+   Have/Want, Power/Toughness, Price, and Name are NOT bounded (an
+   unbounded quantity, continuous price, or a free-text name) -- listing
+   "every distinct value that currently occurs" doesn't scale and isn't
+   useful, so those four instead get a single typed EXPRESSION (see
+   EXPRESSION_COLUMNS, CardTableModel._matches_expression): comparison
+   operators (>, >=, <, <=, !=) against a number when the typed operand
+   parses as one, otherwise a case-insensitive substring/contains match
+   (wildcards at both ends, without the user typing them) -- the same
+   typed box auto-detects which mode applies per keystroke, rather than
+   asking the user to pick a mode or quote text specially.
 
 2. Grouping with sub-headers: when "Group by Type" or "Group by Color" is
    active, the model inserts synthetic full-width HEADER ROWS between
@@ -29,7 +55,7 @@ pair, plus custom machinery layered on top:
 
 3. HEADERS ARE NOW FULLY KEYBOARD-FOCUSABLE (this round). A column can hold
    KEYBOARD focus independently of Qt's own real focus -- see
-   SplitDropdownHeader._focused_column, focus_column(), activate_column().
+   CardTableHeader._focused_column, focus_column(), activate_column().
    Reachable via Alt+Shift+Up/Down from the table (CardTableView.
    keyPressEvent, jumping from the current cell's column) or Ctrl+Tab from
    CardDatabaseView's meta-button row (landing on the leftmost column).
@@ -79,15 +105,22 @@ from tag_apply_dialog import TagApplyDialog
 # --- Column definitions -----------------------------------------------------
 # Each entry: (key, header_label, kind)
 #   kind "checkbox" -> column 0, native Qt checkbox via CheckStateRole.
-#   kind "split"     -> the Edition/Rarity column, drawn/sorted specially by the header.
 #   kind "price"     -> drawn normally in cells, but its HEADER has a dropdown menu.
 #   kind "text"      -> plain text, default rendering, default single-column sort.
+# Edition and Rarity used to be one custom-painted "split" column (two
+# independently-sortable halves in one header section) -- now two ordinary
+# columns, each sorted/filtered/resized exactly like any other ("text").
+# See NOTES.md for why that design was dropped, and the one thing to
+# remember when touching either: rarity is a property of a specific
+# PRINTING, not the card in the abstract -- see this module's own
+# docstring, "EDITION AND RARITY ARE NOW TWO ORDINARY COLUMNS."
 COLUMNS = [
     ("selected", "", "checkbox"),
     ("qty", "Qty", "text"),
     ("cross_qty", "", "text"),  # label is set per-instance -- see CardTableModel.headerData
     ("name", "Name", "text"),
-    ("edition_rarity", "Edition / Rarity", "split"),
+    ("edition", "Edition", "text"),
+    ("rarity", "Rarity", "text"),
     ("type_line", "Type", "text"),
     ("mana_cost", "Mana Cost", "text"),
     ("power", "Power", "text"),
@@ -98,30 +131,13 @@ COL_SELECTED = 0
 COL_QTY = 1
 COL_CROSS_QTY = 2
 COL_NAME = 3
-COL_EDITION_RARITY = 4
-COL_TYPE = 5
-COL_MANA = 6
-COL_POWER = 7
-COL_TOUGHNESS = 8
-COL_PRICE = 9
-
-# Custom-painted header sections (just the split Edition/Rarity column now
-# -- see the "Type/Mana/Price header cleanup" note below) can't rely on
-# self.palette().button().color() for their background -- that reads the
-# widget's base QPalette, which the app's QSS stylesheet (main.py's
-# STYLE_SHEET, `QHeaderView::section { background-color: ... }`) does NOT
-# update; QSS and QPalette are separate systems in Qt, and only Qt's OWN
-# default section painting (used by every other column) actually goes
-# through the style sheet. Without this shared constant, custom-painted
-# headers visibly mismatched the plain ones.
-#
-# Color choice: deliberately darker than the row background (#2b2d31) --
-# this used to happen by accident (palette().button() rendering near-black)
-# and reads better than matching the rows exactly, since a header that's
-# visually distinct from its own rows is easier to spot at a glance. Keep
-# this in sync with QHeaderView::section's background-color in main.py's
-# STYLE_SHEET.
-HEADER_BG = "#141517"
+COL_EDITION = 4
+COL_RARITY = 5
+COL_TYPE = 6
+COL_MANA = 7
+COL_POWER = 8
+COL_TOUGHNESS = 9
+COL_PRICE = 10
 
 # Small header overlays -- a sort arrow (direction-aware) and a "this
 # column has an active filter" dot, added so the header alone tells you
@@ -138,18 +154,31 @@ FILTER_DOT_SIZE = 6
 SORT_ARROW_ZONE_WIDTH = 14
 
 # Ring drawn around whichever column currently holds KEYBOARD focus (see
-# SplitDropdownHeader.focus_column/_paint_focus_ring) -- the same accent
+# CardTableHeader.focus_column/_paint_focus_ring) -- the same accent
 # blue used for table-cell selection and every "primary action" button
 # elsewhere in the app (CardDatabaseView's toggles, Apply buttons), so
 # "this is the keyboard-active thing" reads as one consistent color
 # language across the whole app rather than inventing a new hue here.
 HEADER_FOCUS_RING_COLOR = "#4f8fc0"
 
-# Columns offered in the right-click "Filter by..." value checklist. Skipped
-# for the checkbox/actions utility columns (nothing meaningful to filter by)
-# and for Price (continuous numeric data -- range filtering is a job for the
-# future Search feature, not a same-value checklist).
-FILTERABLE_COLUMNS = {COL_QTY, COL_CROSS_QTY, COL_NAME, COL_EDITION_RARITY, COL_TYPE, COL_MANA, COL_POWER, COL_TOUGHNESS, COL_PRICE}
+# Every column that has SOME kind of filter control in its right-click
+# menu -- both the checklist-style ones (see EXPRESSION_COLUMNS below for
+# the other kind) and the expression-box ones. Skipped for the checkbox
+# utility column (nothing meaningful to filter by).
+FILTERABLE_COLUMNS = {COL_QTY, COL_CROSS_QTY, COL_NAME, COL_EDITION, COL_RARITY, COL_TYPE, COL_MANA, COL_POWER, COL_TOUGHNESS, COL_PRICE}
+
+# Columns whose filter is a typed EXPRESSION (comparison operators against
+# a number, or a substring/contains match against text) rather than a
+# checklist of every distinct value that currently occurs. These are all
+# columns where "every distinct value" is either unbounded (an arbitrary
+# Have/Want count, a continuous Price) or just not a useful UI (thousands
+# of card Names; Power/Toughness where a checklist of literal numbers
+# -- plus "*" for variable P/T -- isn't something a user filters by
+# picking from a list). See CardTableModel._matches_expression and
+# NOTES.md's "Filter overhaul" entry for the full reasoning. Every OTHER
+# filterable column (Type, Mana Cost's color, Edition, Rarity) is a
+# genuinely small, bounded category set and keeps the checklist UI.
+EXPRESSION_COLUMNS = {COL_QTY, COL_CROSS_QTY, COL_NAME, COL_POWER, COL_TOUGHNESS, COL_PRICE}
 
 # How a missing Power/Toughness (non-creatures have none) is represented in
 # the filter checklist. Without this, distinct_values_for_column would just
@@ -246,6 +275,44 @@ def _color_rank(card):
     return (10 + len(colors), ordered)
 
 
+_COMPARISON_OPERATORS = (">=", "<=", "!=", ">", "<", "=")  # checked longest-first below
+
+
+def _try_float(value):
+    """
+    Best-effort numeric parse -- returns None (never 0) for anything that
+    isn't a real number, so a non-numeric field (Power/Toughness's "*", a
+    blank/missing value) reads as "doesn't participate in a numeric
+    comparison" rather than silently coercing to zero and matching things
+    it shouldn't.
+    """
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_filter_expression(text):
+    """
+    Splits a typed filter-box expression into (operator, operand). A
+    leading >=, <=, !=, >, <, or = is recognized (checked longest-first so
+    ">=" is never mis-split as ">" + "="); anything else is a bare
+    substring/contains search with operator None. The operand's text is
+    returned exactly as typed -- numeric-vs-text interpretation happens
+    later (see CardTableModel._matches_expression), once the column (and
+    therefore what KIND of value it holds) is known.
+    """
+    text = text.strip()
+    if not text:
+        return None, ""
+    for op in _COMPARISON_OPERATORS:
+        if text.startswith(op):
+            return op, text[len(op):].strip()
+    return None, text
+
+
 def _numeric_sort_value(value):
     """
     Power/toughness sort key helper. Real MTG data isn't always a plain
@@ -281,7 +348,8 @@ class CardTableModel(QAbstractTableModel):
         self._sort_key = None
         self._sort_reverse = False
         self.group_by = None              # None | "type" | "color"
-        self._column_filters = {}         # {column: set(excluded_value_strings)}
+        self._column_filters = {}         # {column: set(excluded_value_strings)} -- checklist columns
+        self._column_expressions = {}     # {column: typed expression string} -- see EXPRESSION_COLUMNS
         # A SEPARATE boolean flag, not expressed via the checklist exclusion
         # mechanism: "only cards with exactly one color" (excludes both
         # colorless AND multicolor). Kept independent of the per-color
@@ -345,7 +413,7 @@ class CardTableModel(QAbstractTableModel):
         if role == Qt.CheckStateRole and col == COL_SELECTED:
             return Qt.Checked if card.get("selected") else Qt.Unchecked
 
-        if role == Qt.TextAlignmentRole and col in (COL_QTY, COL_CROSS_QTY, COL_MANA, COL_POWER, COL_TOUGHNESS, COL_PRICE):
+        if role == Qt.TextAlignmentRole and col in (COL_QTY, COL_CROSS_QTY, COL_EDITION, COL_RARITY, COL_MANA, COL_POWER, COL_TOUGHNESS, COL_PRICE):
             return Qt.AlignCenter
 
         if role == Qt.DisplayRole:
@@ -355,8 +423,10 @@ class CardTableModel(QAbstractTableModel):
                 return str(card.get("cross_qty", ""))
             if col == COL_NAME:
                 return card["name"]
-            if col == COL_EDITION_RARITY:
-                return f'{card["set"].upper()}  /  {card["rarity"][0].upper()}'
+            if col == COL_EDITION:
+                return card["set"].upper()
+            if col == COL_RARITY:
+                return card["rarity"].capitalize()
             if col == COL_TYPE:
                 return card["type_line"]
             if col == COL_MANA:
@@ -458,20 +528,47 @@ class CardTableModel(QAbstractTableModel):
             current.discard(value)
         self.set_column_filter(column, current)  # already calls _commit_reorder()
 
+    def set_column_expression(self, column, text):
+        """
+        Sets (or, given blank/whitespace-only text, clears) the typed
+        filter expression for an EXPRESSION_COLUMNS column -- see
+        CardTableModel._matches_expression for how it's evaluated. This is
+        a SEPARATE mechanism from the checklist-based set_column_filter/
+        set_value_excluded above: a column can only ever be one or the
+        other in the UI (see CardTableHeader._build_context_menu), but
+        Qty/Cross Qty are a partial exception in the DATA model -- the
+        Inventory/Wishlist toggle buttons still drive their own qty=="0"
+        exclusion via set_value_excluded regardless, and an expression
+        typed here applies ADDITIONALLY on top of that (see
+        _passes_filters), not instead of it.
+        """
+        text = text.strip()
+        if text:
+            self._column_expressions[column] = text
+        else:
+            self._column_expressions.pop(column, None)
+        self._commit_reorder()
+
+    def get_column_expression(self, column):
+        return self._column_expressions.get(column, "")
+
     def clear_all_filters(self):
         """
-        Resets every per-column value-exclusion filter AND the Mana Cost
-        row's separate mono-only/excluded-color state back to "nothing
-        filtered," in one action -- the single underlying operation both
-        CardDatabaseView's "Clear Filters" button and CardTableView's
-        Ctrl+Alt+F shortcut call, so the two can never drift on what
-        "clear filters" actually resets. Sorting and grouping are left
-        untouched -- this only clears FILTERS, matching what a "clear
-        filters" action should do rather than also rearranging the table.
+        Resets every per-column value-exclusion filter, every typed filter
+        EXPRESSION, AND the Mana Cost row's separate mono-only/excluded-
+        color state back to "nothing filtered," in one action -- the
+        single underlying operation both CardDatabaseView's "Clear
+        Filters" button and CardTableView's Ctrl+Alt+F shortcut call, so
+        the two can never drift on what "clear filters" actually resets.
+        Sorting and grouping are left untouched -- this only clears
+        FILTERS, matching what a "clear filters" action should do rather
+        than also rearranging the table.
         """
-        if not self._column_filters and not self.mana_mono_only and not self.mana_excluded_colors:
+        if (not self._column_filters and not self._column_expressions
+                and not self.mana_mono_only and not self.mana_excluded_colors):
             return  # already clear -- skip a pointless model reset
         self._column_filters = {}
+        self._column_expressions = {}
         self.mana_mono_only = False
         self.mana_excluded_colors = set()
         self._commit_reorder()
@@ -505,8 +602,10 @@ class CardTableModel(QAbstractTableModel):
             return str(card.get("cross_qty", ""))
         if column == COL_NAME:
             return card["name"]
-        if column == COL_EDITION_RARITY:
-            return card["set"].upper()  # filters by SET only -- see class docstring / README gap note
+        if column == COL_EDITION:
+            return card["set"].upper()
+        if column == COL_RARITY:
+            return card["rarity"].capitalize()
         if column == COL_TYPE:
             # Broad category, same as grouping uses -- NOT the literal full
             # type line. A checklist of every distinct full type_line string
@@ -535,11 +634,85 @@ class CardTableModel(QAbstractTableModel):
             return f"${card.get(self.price_source, 0):.2f}"
         return None
 
+    def _numeric_value_for_column(self, card, column):
+        """
+        This card's value for `column` as a float, or None if the column
+        isn't numeric for this card -- Power/Toughness's "*" (variable
+        P/T), or a column that was never numeric to begin with. See
+        _matches_expression, which treats None as "never matches a
+        numeric comparison" rather than coercing to 0.
+        """
+        if column == COL_QTY:
+            return _try_float(card.get("qty", 0))
+        if column == COL_CROSS_QTY:
+            return _try_float(card.get("cross_qty", 0))
+        if column == COL_POWER:
+            return _try_float(card.get("power"))
+        if column == COL_TOUGHNESS:
+            return _try_float(card.get("toughness"))
+        if column == COL_PRICE:
+            return _try_float(card.get(self.price_source, 0))
+        return None
+
+    def _matches_expression(self, card, column, expr_text):
+        """
+        Evaluates one typed EXPRESSION_COLUMNS filter box against a single
+        card. Numeric vs. text is decided per-COMPARISON, not per-column:
+        if the typed operand parses as a plain number, this compares
+        against the column's own NUMERIC reading of the card (see
+        _numeric_value_for_column) -- a card that isn't numeric for this
+        column (Power's "*") never matches a numeric comparison, rather
+        than crashing or silently coercing. Otherwise it falls back to a
+        case-insensitive substring match against the column's normal
+        filter text (via _raw_filter_value) -- "wildcards at both ends"
+        by construction, since a substring check already ignores anything
+        before/after the typed text; no quoting needed either way, since
+        which mode applies is decided purely by whether the OPERAND
+        parses as a number, not by any syntax the user has to remember.
+        `!=` in text mode means "does not contain," not "isn't exactly
+        equal to" -- exact-match exclusion isn't useful against free text
+        like a card name.
+        """
+        op, operand = _parse_filter_expression(expr_text)
+        if op is None and not operand:
+            return True  # blank box -- no filter
+
+        numeric_operand = _try_float(operand)
+        if numeric_operand is not None:
+            value = self._numeric_value_for_column(card, column)
+            if value is None:
+                return False
+            if op in (None, "="):
+                return value == numeric_operand
+            if op == ">":
+                return value > numeric_operand
+            if op == ">=":
+                return value >= numeric_operand
+            if op == "<":
+                return value < numeric_operand
+            if op == "<=":
+                return value <= numeric_operand
+            if op == "!=":
+                return value != numeric_operand
+
+        # Text mode -- including a comparison operator (">foo") typed
+        # against a non-numeric operand, which falls back to a contains
+        # check rather than erroring, since there's no other sensible
+        # reading of ">foo" against a name.
+        text_value = (self._raw_filter_value(card, column) or "").lower()
+        needle = operand.lower()
+        if op == "!=":
+            return needle not in text_value
+        return needle in text_value
+
     def _passes_filters(self, card):
         for column, excluded in self._column_filters.items():
             if not excluded:
                 continue
             if self._raw_filter_value(card, column) in excluded:
+                return False
+        for column, expr_text in self._column_expressions.items():
+            if not self._matches_expression(card, column, expr_text):
                 return False
         # _real_colors() strips anything that isn't a genuine WUBRG letter
         # (e.g. a stray "X" from generic/variable mana) before either check
@@ -684,7 +857,7 @@ class _MenuSearchBox(QLineEdit):
        -- see _move_highlight's `allow_collapse` argument and its own
        docstring for the two-step reasoning, passed True only for the
        literal Key_Up handler below. This is what lets a keyboard-focused
-       column header (SplitDropdownHeader.focus_column) collapse an open
+       column header (CardTableHeader.focus_column) collapse an open
        menu back down to just itself, one Up press at a time from
        wherever the highlight currently is -- see that class's docstring.
        Shift+Tab/Backtab share the exact same clamping arithmetic (moving
@@ -719,12 +892,21 @@ class _MenuSearchBox(QLineEdit):
         # our handling run before QMenu's own internal arrow-key navigation
         # gets a chance to consume Up/Down first (see class docstring point
         # 1). A fresh _MenuSearchBox is created every time a filter menu is
-        # right-clicked into existence (see SplitDropdownHeader._build_
+        # right-clicked into existence (see CardTableHeader._build_
         # context_menu), so the filter is torn down via aboutToHide below --
         # without that, every right-click would leak one more permanent
         # global filter that outlives the menu it was built for.
         QApplication.instance().installEventFilter(self)
         menu.aboutToHide.connect(self._remove_app_filter)
+        # Explicit, not left to Qt's own implicit focus-loss handling --
+        # see NOTES.md's "menu search box focus leak" entry. Belt-and-
+        # suspenders alongside _run_context_menu's new menu.deleteLater():
+        # that fixes the underlying leak (old, hidden menus/search boxes
+        # piling up forever, parented to the long-lived header); this
+        # makes sure THIS box's own blinking caret stops the moment its
+        # menu is actually going away, rather than depending on exactly
+        # when Qt gets around to processing the deferred deletion.
+        menu.aboutToHide.connect(self.clearFocus)
 
     def _remove_app_filter(self):
         QApplication.instance().removeEventFilter(self)
@@ -915,7 +1097,7 @@ class _MenuSearchBox(QLineEdit):
 
 
 
-class SplitDropdownHeader(QHeaderView):
+class CardTableHeader(QHeaderView):
     """
     Custom header handling:
       - Edition/Rarity: painted as two halves, each independently sortable.
@@ -1076,24 +1258,20 @@ class SplitDropdownHeader(QHeaderView):
         return super().eventFilter(watched, event)
 
     def paintSection(self, painter: QPainter, rect: QRect, logical_index: int):
-        # Sort arrows are painted INSIDE _paint_split_section (it needs to
-        # dodge the split divider and pick a half); every other column
-        # gets its sort arrow painted here, right after Qt's own default
-        # section painting. The filter dot and keyboard-focus ring are
-        # both uniform across every column shape, so they're always
-        # painted last, from this one place.
-        if logical_index == COL_EDITION_RARITY:
-            self._paint_split_section(painter, rect)
-        else:
-            super().paintSection(painter, rect, logical_index)
-            # `is not None` matters here, not just style: _column_keys has
-            # no entry at all for the checkbox/actions columns, so
-            # dict.get() returns None for them -- comparing that directly
-            # against a genuinely-unset _active_sort_key (also None) used
-            # to be True, painting a stray sort arrow on BOTH of those
-            # columns at startup before anything had ever been sorted.
-            if self._active_sort_key is not None and self._column_keys.get(logical_index) == self._active_sort_key:
-                self._paint_sort_arrow(painter, rect)
+        # Every column now gets plain Qt default section painting (colors
+        # via main.py's QSS) plus this class's own overlays -- a sort
+        # arrow, a filter-active dot, a keyboard-focus ring. Edition and
+        # Rarity used to be one custom-painted "split" section here; now
+        # they're ordinary columns like any other, so there's nothing left
+        # to special-case in this method.
+        super().paintSection(painter, rect, logical_index)
+        # `is not None` matters here, not just style: _column_keys has
+        # no entry at all for the checkbox column, so dict.get() returns
+        # None for it -- comparing that directly against a genuinely-unset
+        # _active_sort_key (also None) used to be True, painting a stray
+        # sort arrow on it at startup before anything had ever been sorted.
+        if self._active_sort_key is not None and self._column_keys.get(logical_index) == self._active_sort_key:
+            self._paint_sort_arrow(painter, rect)
         if self._column_has_active_filter(logical_index):
             self._paint_filter_dot(painter, rect)
         if logical_index == self._focused_column:
@@ -1117,6 +1295,8 @@ class SplitDropdownHeader(QHeaderView):
             return False
         if column == COL_MANA:
             return bool(model.mana_excluded_colors) or model.mana_mono_only
+        if column in EXPRESSION_COLUMNS:
+            return bool(model.get_column_expression(column)) or bool(model._column_filters.get(column))
         return bool(model._column_filters.get(column))
 
     def _paint_filter_dot(self, painter, rect):
@@ -1139,32 +1319,6 @@ class SplitDropdownHeader(QHeaderView):
         painter.setPen(pen)
         painter.setBrush(Qt.NoBrush)
         painter.drawRect(rect.adjusted(1, 1, -2, -2))
-        painter.restore()
-
-    def _paint_split_section(self, painter, rect):
-        painter.save()
-        painter.fillRect(rect, QColor(HEADER_BG))
-        mid_x = rect.left() + rect.width() // 2
-
-        left_rect = QRect(rect.left(), rect.top(), rect.width() // 2, rect.height())
-        right_rect = QRect(mid_x, rect.top(), rect.width() - rect.width() // 2, rect.height())
-
-        # "Ed"/"Rar" are drawn as FIXED strings, always centered in their
-        # half regardless of sort state -- appending "▲" directly into the
-        # label (the previous approach) changed the string's rendered
-        # width, which shifted the CENTERED text sideways every time sort
-        # state changed. The arrow is now a separate glyph pinned to a
-        # fixed position within each half, so "Ed"/"Rar" never move.
-        painter.drawText(left_rect, Qt.AlignCenter, "Ed")
-        painter.drawText(right_rect, Qt.AlignCenter, "Rar")
-        if self._active_sort_key in ("set", "rarity"):
-            target_rect = left_rect if self._active_sort_key == "set" else right_rect
-            painter.setPen(QColor(SORT_ARROW_COLOR))
-            painter.drawText(target_rect.adjusted(0, 0, -4, 0), Qt.AlignRight | Qt.AlignVCenter,
-                              self._sort_arrow_glyph())
-
-        painter.setPen(self.palette().mid().color())
-        painter.drawLine(mid_x, rect.top() + 4, mid_x, rect.bottom() - 4)
         painter.restore()
 
     # --- Manual resize: press near a border, drag, release -------------------
@@ -1212,21 +1366,13 @@ class SplitDropdownHeader(QHeaderView):
             event.accept()
             return
 
-        if logical_index == COL_EDITION_RARITY:
-            section_x = self.sectionViewportPosition(logical_index)
-            section_width = self.sectionSize(logical_index)
-            rel_x = pos.x() - section_x
-            sort_key = "set" if rel_x < section_width / 2 else "rarity"
-            self._apply_sort(sort_key)
-            self.focus_requested.emit()
-            event.accept()
-            return
-
-        # Every other column: clicking anywhere in it sorts, full stop.
+        # Clicking anywhere in a column's header sorts by it, full stop --
         # Type/Mana Cost/Price used to reserve a right-edge zone here that
-        # opened a totally different menu instead -- see the class
-        # docstring's "Type/Mana/Price header cleanup" note for why that's
-        # gone (those controls live in the right-click menu now).
+        # opened a totally different menu instead (see the class
+        # docstring's "Type/Mana/Price header cleanup" note), and Edition/
+        # Rarity used to be one section split into two independently-
+        # clickable halves -- both gone now; every column behaves
+        # identically.
         key = self._column_keys.get(logical_index)
         if key:
             self._apply_sort(key)
@@ -1318,6 +1464,19 @@ class SplitDropdownHeader(QHeaderView):
         self._suppress_focus_clear = True
         menu.exec(global_pos)
         self._suppress_focus_clear = False
+        # `menu` is a local variable, but its Qt PARENT is `self` (this
+        # header -- see _StayOpenMenu(self) in _build_context_menu), which
+        # outlives every menu built from it. Without an explicit teardown,
+        # every right-click/keyboard-open left one more hidden, never-
+        # deleted QMenu (and its embedded search/expression box) parented
+        # to the header -- harmless functionally, but see NOTES.md's "menu
+        # search box focus leak" entry for why this was also the likely
+        # cause of a real, reported visual bug (a stray blinking cursor in
+        # an old, hidden search box). deleteLater() is safe here even
+        # though `column`'s own bookkeeping below still reads state off
+        # `menu` first -- deletion is deferred to the next event-loop
+        # pass, not immediate.
+        menu.deleteLater()
         # The menu (filter checklist, group-by, price source, ...) just
         # closed, whether via a selection, Enter, Escape/click-away, or
         # the keyboard's own Up-collapse.
@@ -1330,118 +1489,177 @@ class SplitDropdownHeader(QHeaderView):
     def _build_context_menu(self, column):
         menu = _StayOpenMenu(self)
 
-        if column in FILTERABLE_COLUMNS:
-            if column == COL_QTY:
-                label = self.model().qty_label
-            elif column == COL_CROSS_QTY:
-                label = self.model().cross_qty_label
-            else:
-                label = COLUMNS[column][1] or "this column"
-            header_action = menu.addAction(f"Filter by {label}")
-            header_action.setEnabled(False)  # acts as a section label, not clickable
+        if column not in FILTERABLE_COLUMNS:
+            return menu
 
-            # Mana Cost is special-cased: its checklist ONLY offers the 5
-            # mono colors, never "Colorless" or a multicolor combo like
-            # "U/B". Colorless and multicolor cards are simply never
-            # excludable via these checkboxes at all -- colorless in
-            # particular isn't "filtered one way or another," by
-            # construction. "Monocolored only" is a SEPARATE, persistent,
-            # real toggle (model.mana_mono_only) -- checking it additionally
-            # excludes colorless AND multicolor outright; the checkboxes
-            # below still narrow WHICH mono colors show, whether or not the
-            # toggle is on.
+        if column == COL_QTY:
+            label = self.model().qty_label
+        elif column == COL_CROSS_QTY:
+            label = self.model().cross_qty_label
+        else:
+            label = COLUMNS[column][1] or "this column"
+        header_action = menu.addAction(f"Filter by {label}")
+        header_action.setEnabled(False)  # acts as a section label, not clickable
+
+        # Price Source lives here regardless of which filter UI this
+        # column gets below it -- it's a display/grouping choice ("which
+        # price column am I even looking at"), not a filter itself, so it
+        # applies whether Price ends up with a checklist or an expression
+        # box. A plain (non-stay-open) submenu -- picking a source is a
+        # one-shot "choose exactly one" action, so closing on selection is
+        # correct here, unlike the stay-open filter controls below it.
+        if column == COL_PRICE:
+            price_menu = menu.addMenu("Price Source")
+            for source_key, source_label in PRICE_SOURCES:
+                price_action = price_menu.addAction(source_label)
+                price_action.setCheckable(True)
+                price_action.setChecked(self.model().price_source == source_key)
+                price_action.triggered.connect(
+                    lambda checked=False, k=source_key: self.model().set_price_source(k)
+                )
+            menu.addSeparator()
+
+        # EXPRESSION_COLUMNS (Have/Want/Power/Toughness/Price/Name) get a
+        # single typed expression box instead of a value checklist -- see
+        # this class's own docstring and NOTES.md's "Filter overhaul"
+        # entry for why a checklist doesn't scale for these.
+        if column in EXPRESSION_COLUMNS:
+            self._add_expression_filter_controls(menu, column)
+            return menu
+
+        # Everything below is the checklist UI, still used for the
+        # genuinely bounded categorical columns: Type, Mana Cost's color,
+        # Edition, Rarity.
+
+        # Mana Cost is special-cased: its checklist ONLY offers the 5 mono
+        # colors, never "Colorless" or a multicolor combo like "U/B".
+        # Colorless and multicolor cards are simply never excludable via
+        # these checkboxes at all -- colorless in particular isn't
+        # "filtered one way or another," by construction. "Monocolored
+        # only" is a SEPARATE, persistent, real toggle
+        # (model.mana_mono_only) -- checking it additionally excludes
+        # colorless AND multicolor outright; the checkboxes below still
+        # narrow WHICH mono colors show, whether or not the toggle is on.
+        if column == COL_MANA:
+            offered_values = [COLOR_NAMES[c] for c in COLOR_ORDER]  # White, Blue, Black, Red, Green -- WUBRG order
+        else:
+            offered_values = self.model().distinct_values_for_column(column)
+
+        # Excel-style search box: narrows which checkboxes are VISIBLE
+        # as you type (case-insensitive substring match), and Enter
+        # applies the typed text as a real filter (see
+        # _apply_enter_filter) and closes the menu -- a fast path when
+        # you already know what you're looking for.
+        search_box = _MenuSearchBox(
+            menu, on_enter=lambda text: self._apply_enter_filter(column, offered_values, text)
+        )
+        search_action = QWidgetAction(menu)
+        search_action.setDefaultWidget(search_box)
+        menu.addAction(search_action)
+        # Auto-focus the search box the instant the menu appears, so
+        # you can start typing immediately on right-click without an
+        # extra click into the box first -- also what satisfies "focus
+        # on the dropdown menu and arrow controls" for the KEYBOARD
+        # entry path (activate_column), since it's the same menu.
+        menu.aboutToShow.connect(search_box.setFocus)
+
+        # "Group by Type"/"Group by Color" -- moved here from a separate
+        # dropdown-arrow zone that used to live in the header itself (see
+        # the class docstring's "Type/Mana/Price header cleanup" note).
+        # Checkable + toggled (not triggered) so it behaves like every
+        # other control in this STAY-OPEN menu: click it, see the effect,
+        # keep going, rather than the menu snapping shut.
+        if column == COL_TYPE:
+            group_action = menu.addAction("Group by Type")
+            group_action.setCheckable(True)
+            group_action.setChecked(self.model().group_by == "type")
+            group_action.toggled.connect(lambda checked, m="type": self.model().set_group_by(m))
+            menu.addSeparator()
+
+        mono_action = None
+        if column == COL_MANA:
+            mono_action = menu.addAction("Monocolored only")
+            mono_action.setCheckable(True)
+            mono_action.setChecked(self.model().mana_mono_only)
+            mono_action.toggled.connect(self.model().set_mana_mono_only)
+            group_color_action = menu.addAction("Group by Color")
+            group_color_action.setCheckable(True)
+            group_color_action.setChecked(self.model().group_by == "color")
+            group_color_action.toggled.connect(lambda checked, m="color": self.model().set_group_by(m))
+            menu.addSeparator()
+
+        excluded = self.model()._column_filters.get(column, set())
+        excluded_colors = self.model().mana_excluded_colors if column == COL_MANA else None
+
+        value_actions = []
+        for value in offered_values:
+            action = menu.addAction(value)
+            action.setCheckable(True)
             if column == COL_MANA:
-                offered_values = [COLOR_NAMES[c] for c in COLOR_ORDER]  # White, Blue, Black, Red, Green -- WUBRG order
+                letter = NAME_TO_COLOR_LETTER[value]
+                action.setChecked(letter not in excluded_colors)
+                action.toggled.connect(
+                    lambda checked, l=letter: self.model().set_mana_color_excluded(l, not checked)
+                )
             else:
-                offered_values = self.model().distinct_values_for_column(column)
+                action.setChecked(value not in excluded)
+                action.toggled.connect(
+                    lambda checked, v=value, col=column: self._on_filter_toggled(col, v, checked)
+                )
+            value_actions.append((value, action))
 
-            # Excel-style search box: narrows which checkboxes are VISIBLE
-            # as you type (case-insensitive substring match), and Enter
-            # applies the typed text as a real filter (see
-            # _apply_enter_filter) and closes the menu -- a fast path when
-            # you already know what you're looking for.
-            search_box = _MenuSearchBox(
-                menu, on_enter=lambda text: self._apply_enter_filter(column, offered_values, text)
-            )
-            search_action = QWidgetAction(menu)
-            search_action.setDefaultWidget(search_box)
-            menu.addAction(search_action)
-            # Auto-focus the search box the instant the menu appears, so
-            # you can start typing immediately on right-click without an
-            # extra click into the box first -- also what satisfies "focus
-            # on the dropdown menu and arrow controls" for the KEYBOARD
-            # entry path (activate_column), since it's the same menu.
-            menu.aboutToShow.connect(search_box.setFocus)
-
-            # "Group by Type" / "Price Source" -- moved here from a
-            # separate dropdown-arrow zone that used to live in the header
-            # itself (see the class docstring's "Type/Mana/Price header
-            # cleanup" note). Checkable + toggled (not triggered) so it
-            # behaves like every other control in this STAY-OPEN menu:
-            # click it, see the effect, keep going, rather than the menu
-            # snapping shut the way the old separate dropdown did.
-            if column == COL_TYPE:
-                group_action = menu.addAction("Group by Type")
-                group_action.setCheckable(True)
-                group_action.setChecked(self.model().group_by == "type")
-                group_action.toggled.connect(lambda checked, m="type": self.model().set_group_by(m))
-                menu.addSeparator()
-
-            if column == COL_PRICE:
-                # A plain (non-stay-open) submenu -- picking a price source
-                # is a one-shot "choose exactly one" action, same as the
-                # old standalone price-source dropdown was, so closing on
-                # selection is the expected behavior here, unlike the
-                # stay-open checklist below it.
-                price_menu = menu.addMenu("Price Source")
-                for source_key, source_label in PRICE_SOURCES:
-                    price_action = price_menu.addAction(source_label)
-                    price_action.setCheckable(True)
-                    price_action.setChecked(self.model().price_source == source_key)
-                    price_action.triggered.connect(
-                        lambda checked=False, k=source_key: self.model().set_price_source(k)
-                    )
-                menu.addSeparator()
-
-            mono_action = None
-            if column == COL_MANA:
-                mono_action = menu.addAction("Monocolored only")
-                mono_action.setCheckable(True)
-                mono_action.setChecked(self.model().mana_mono_only)
-                mono_action.toggled.connect(self.model().set_mana_mono_only)
-                group_color_action = menu.addAction("Group by Color")
-                group_color_action.setCheckable(True)
-                group_color_action.setChecked(self.model().group_by == "color")
-                group_color_action.toggled.connect(lambda checked, m="color": self.model().set_group_by(m))
-                menu.addSeparator()
-
-            excluded = self.model()._column_filters.get(column, set())
-            excluded_colors = self.model().mana_excluded_colors if column == COL_MANA else None
-
-            value_actions = []
-            for value in offered_values:
-                action = menu.addAction(value)
-                action.setCheckable(True)
-                if column == COL_MANA:
-                    letter = NAME_TO_COLOR_LETTER[value]
-                    action.setChecked(letter not in excluded_colors)
-                    action.toggled.connect(
-                        lambda checked, l=letter: self.model().set_mana_color_excluded(l, not checked)
-                    )
-                else:
-                    action.setChecked(value not in excluded)
-                    action.toggled.connect(
-                        lambda checked, v=value, col=column: self._on_filter_toggled(col, v, checked)
-                    )
-                value_actions.append((value, action))
-
-            def _narrow_checklist(text):
-                needle = text.strip().lower()
-                for value, action in value_actions:
-                    action.setVisible(needle in value.lower())
-            search_box.textChanged.connect(_narrow_checklist)
+        def _narrow_checklist(text):
+            needle = text.strip().lower()
+            for value, action in value_actions:
+                action.setVisible(needle in value.lower())
+        search_box.textChanged.connect(_narrow_checklist)
 
         return menu
+
+    def _add_expression_filter_controls(self, menu, column):
+        """
+        Expression-based filter entry for EXPRESSION_COLUMNS -- one plain
+        QLineEdit, no checklist and no arrow-key list-navigation machinery
+        needed (there's no list to navigate). Prefilled with whatever
+        expression is already active on this column, so reopening the menu
+        shows what's currently applied rather than a blank box. Enter
+        applies the typed text (CardTableModel.set_column_expression parses
+        it -- see that method and _matches_expression for the actual
+        >, >=, <, <=, != / substring syntax); "Clear Filter" empties it in
+        one click without needing to select-all-and-delete first.
+        """
+        expr_box = QLineEdit(self.model().get_column_expression(column))
+        expr_box.setPlaceholderText("e.g. >10, <=3.2, !=sliver, partial name")
+        expr_box.setStyleSheet(
+            "QLineEdit { border: 1px solid #6b6f76; border-radius: 3px; "
+            "padding: 3px 6px; background-color: #2b2d31; color: #e3e3e3; } "
+            "QLineEdit:focus { border: 1px solid #4f8fc0; }"
+        )
+
+        def apply_and_close():
+            self.model().set_column_expression(column, expr_box.text())
+            menu.close()
+        expr_box.returnPressed.connect(apply_and_close)
+
+        action = QWidgetAction(menu)
+        action.setDefaultWidget(expr_box)
+        menu.addAction(action)
+        # Auto-focus on open, same convenience the checklist columns' own
+        # search box gets via aboutToShow -- and explicitly release focus
+        # again once the menu closes (aboutToHide), rather than relying on
+        # Qt to notice on its own, so the caret reliably stops blinking
+        # the instant the box is no longer actually usable. See NOTES.md's
+        # "menu search box focus leak" entry for the related fix to
+        # _MenuSearchBox and _run_context_menu -- this box doesn't share
+        # that class's app-level event filter (nothing here needs
+        # arrow-key routing), so it only needed this half of the fix.
+        menu.aboutToShow.connect(expr_box.setFocus)
+        menu.aboutToHide.connect(expr_box.clearFocus)
+
+        clear_action = menu.addAction("Clear Filter")
+        clear_action.triggered.connect(
+            lambda: (self.model().set_column_expression(column, ""), menu.close())
+        )
 
     def build_show_columns_menu(self):
         """
@@ -1556,22 +1774,13 @@ class SplitDropdownHeader(QHeaderView):
         """
         Enter/Return/Space on a keyboard-focused header -- the keyboard
         equivalent of a left-click, so a header is fully operable without
-        a mouse, not just filterable. The Edition/Rarity split column has
-        no keyboard equivalent of "which half did you click" (that's
-        mouse-x-position-only information) -- Enter defaults to its SET
-        half; Rarity is still reachable by sorting once, then pressing
-        Enter again to flip direction, same as clicking the same half
-        twice would via _apply_sort's existing toggle-on-repeat behavior
-        (see CardTableModel.sort_by_key). Deliberately does NOT emit
+        a mouse, not just filterable. Deliberately does NOT emit
         focus_requested -- unlike a mouse click, this keeps keyboard focus
         right here on the header column, so the next keypress (Left/
         Right, Down, Tab...) still has something to act on.
         """
         column = self._focused_column
         if column is None:
-            return
-        if column == COL_EDITION_RARITY:
-            self._apply_sort("set")
             return
         key = self._column_keys.get(column)
         if key:
@@ -1678,13 +1887,14 @@ class CardTableView(QTableView):
         self.setEditTriggers(QAbstractItemView.EditKeyPressed)
 
         column_keys = {COL_QTY: "qty", COL_CROSS_QTY: "cross_qty", COL_NAME: "name",
+                       COL_EDITION: "set", COL_RARITY: "rarity",
                        COL_TYPE: "type_line", COL_MANA: "mana_cost",
                        COL_POWER: "power", COL_TOUGHNESS: "toughness",
                        COL_PRICE: "price"}
-        self.header = SplitDropdownHeader(column_keys)
+        self.header = CardTableHeader(column_keys)
         self.setHorizontalHeader(self.header)
         self.header.sort_requested.connect(self.card_model.sort_by_key)
-        # See SplitDropdownHeader.focus_requested's own comment -- returns
+        # See CardTableHeader.focus_requested's own comment -- returns
         # keyboard focus to the table after a MOUSE-driven sort-click or
         # right-click menu (filter checklist, group-by, price source)
         # closes.
@@ -1692,12 +1902,12 @@ class CardTableView(QTableView):
         # A header column that itself holds KEYBOARD focus hands off to
         # the table the same group-aware way CardDatabaseView's own
         # meta-button row already does (Tab/Ctrl+Tab forward, Shift+Tab
-        # backward) -- see SplitDropdownHeader.keyPressEvent and this
+        # backward) -- see CardTableHeader.keyPressEvent and this
         # method's own docstring below. One shared "how Tab arrives at
         # the table from above it" convention for both entry points.
         self.header.table_focus_requested.connect(self.focus_table_for_metabutton_tab)
         # Price-source selection now lives inside the header's own
-        # right-click filter menu (SplitDropdownHeader._build_context_menu)
+        # right-click filter menu (CardTableHeader._build_context_menu)
         # rather than a separate dropdown -- no signal to wire up here
         # anymore, see that method's "Price Source" submenu.
         # The header is a separate sibling widget from the viewport, not a
@@ -1899,7 +2109,7 @@ class CardTableView(QTableView):
             action.setEnabled(False)
 
         menu.exec(global_pos)
-        # Same reasoning as SplitDropdownHeader.focus_requested elsewhere in
+        # Same reasoning as CardTableHeader.focus_requested elsewhere in
         # this file: a closed popup shouldn't strand keyboard focus on
         # itself -- hand it back to the table so arrow keys work again
         # immediately, without requiring an extra click first.
@@ -2086,7 +2296,7 @@ class CardTableView(QTableView):
         if key in (Qt.Key_Up, Qt.Key_Down) and modifiers == (Qt.AltModifier | Qt.ShiftModifier):
             # Jump from the current cell's COLUMN into that column's own
             # header and activate it (open its filter menu, if it has
-            # one) -- see SplitDropdownHeader.activate_column. Either
+            # one) -- see CardTableHeader.activate_column. Either
             # arrow reaches the SAME header: it sits directly above the
             # table with nothing "further" in either vertical direction
             # from here, so Up and Down are just two equally-sensible ways
@@ -2433,7 +2643,7 @@ class CardTableView(QTableView):
         meta-buttons above this table (Inventory/Wishlist/Columns/Clear
         Filters -- see that class's eventFilter), AND by this table's own
         header when Tab/Ctrl+Tab/Shift+Tab is pressed while a column has
-        keyboard focus (see SplitDropdownHeader.table_focus_requested) --
+        keyboard focus (see CardTableHeader.table_focus_requested) --
         one shared "how Tab arrives at the table from somewhere above it"
         convention for both entry points, not two. Rather than leaving
         whatever cell was selected before untouched, this places the
@@ -2468,7 +2678,7 @@ class CardTableView(QTableView):
         cell. Called by CardDatabaseView's meta-button row specifically on
         Ctrl+Tab (see that class's eventFilter); plain Tab there still
         lands on a cell via focus_table_for_metabutton_tab, unchanged.
-        Focus-ONLY, like SplitDropdownHeader.focus_column -- deliberately
+        Focus-ONLY, like CardTableHeader.focus_column -- deliberately
         doesn't open that column's filter menu, since arriving via a
         plain focus hop shouldn't also trigger an action (the same reason
         Tab-ing onto a button focuses it without clicking it).
@@ -2594,7 +2804,7 @@ class CardTableView(QTableView):
         of the next/previous group, and collapses the selection down to
         that one cell -- only meaningful when the table is currently
         grouped (Group by Type/Color, set via a column's own right-click
-        menu -- see SplitDropdownHeader._build_context_menu). A deliberate
+        menu -- see CardTableHeader._build_context_menu). A deliberate
         no-op when nothing's grouped, rather than falling back to Qt's
         default Tab-moves-focus behavior -- see keyPressEvent's comment
         for why Ctrl+Tab is intercepted unconditionally.

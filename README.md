@@ -31,23 +31,35 @@ opened via the new keyboard paths keep focus on the header column
 afterward (`SplitDropdownHeader._run_context_menu`'s `keyboard` flag) --
 deliberate, so this doesn't disturb the already-documented mouse workflow.
 
-**Two follow-up fixes, same round:**
-- **Tab/Shift+Tab from a focused header now actually releases focus.**
-  The cell selection was already moving correctly, but the header itself
-  kept real Qt focus (and its ring) afterward -- same general "Qt's
-  internal Tab handling doesn't reliably defer to widget-level key logic"
-  issue this app has hit before (collapsible_pane.py,
-  card_database_view.py's meta-button event filter). Fixed by having the
-  header explicitly clear its own focus state and call `clearFocus()`
-  itself, before handing off, rather than trusting an eventual
-  `focusOutEvent` to notice -- see `SplitDropdownHeader._release_focus_to_table`.
-- **Up in an open filter menu is now two steps, not one.** Pressing Up
-  while any row is highlighted (including the first one) now lands on
-  "nothing highlighted" -- the same state the search box itself
-  represents -- rather than collapsing the menu immediately. A SECOND Up
-  press, from that already-nothing-highlighted state, is what actually
-  collapses. Previously a single Up from row 0 skipped straight past that
-  intermediate stop. See `_MenuSearchBox._move_highlight`'s docstring.
+**Two follow-up fixes, plus one small addition, same round:**
+- **Tab/Shift+Tab from a focused header now actually releases focus --
+  root cause found this time.** The cell selection was already moving
+  correctly, but the header itself kept real Qt focus (and its ring)
+  afterward. Turned out `keyPressEvent` was never the right place to
+  catch a plain Tab/Shift+Tab at all: `QHeaderView` is a
+  `QAbstractItemView`, and Qt's own `QWidget::event()` runs its internal
+  `focusNextPrevChild()` handling for an unmodified Tab/Shift+Tab
+  *before* a widget's `keyPressEvent()` ever runs -- but that internal
+  handling explicitly skips Ctrl/Alt-modified keys, which is exactly why
+  Ctrl+Tab already worked correctly while plain Tab didn't (a very
+  useful clue). Fixed by moving Tab/Backtab handling to an
+  APPLICATION-level event filter (`SplitDropdownHeader.eventFilter`),
+  installed ahead of Qt's own routing -- the identical fix shape already
+  used for this exact class of bug in `collapsible_pane.py` and
+  `card_database_view.py`'s meta-button row. `_release_focus_to_table`
+  still explicitly clears the header's own state before handing off,
+  rather than trusting a `focusOutEvent` alone.
+- **Up in an open filter menu is now two steps, not one** (unchanged from
+  the previous round's fix, still holding).
+- **Page Up / Page Down / Home / End now work inside an open filter
+  menu's checklist**, alongside the existing Up/Down/Tab/Shift+Tab/Space/
+  Enter -- Home/End jump straight to the first/last visible value; Page
+  Up/Down jump `PAGE_STEP` (10) rows at a time, clamped at both ends.
+  Routed through the same `_MenuSearchBox` app-level filter and
+  `setActiveAction()` mechanism Up/Down already use, for the same reason:
+  QMenu's own native handling for these keys would hit the identical
+  "state changes, but invisibly, since real focus never left the search
+  box" problem Up/Down already had before this class existed.
 
 # MTG Local Database — Prototype
 

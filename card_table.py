@@ -691,7 +691,19 @@ class _MenuSearchBox(QLineEdit):
        "up" through the checklist) but do NOT get this treatment, since
        collapsing the whole menu would be a surprising side effect of
        what's otherwise just checklist navigation there.
+    5. Home/End jump straight to the first/last VISIBLE checkable action;
+       PageUp/PageDown jump by PAGE_STEP rows at a time, clamped into
+       range -- see _jump_highlight/_page_highlight. Same underlying
+       reason these need explicit handling here as Up/Down do (point 1):
+       QMenu already supports Home/End/PageUp/PageDown natively, but its
+       native handling would hit the exact same "changes state that's
+       invisible because real focus never left this search box" problem
+       Up/Down had before this class existed, so these go through the
+       identical setActiveAction()-driven mechanism instead of trusting
+       QMenu's own key handling.
     """
+
+    PAGE_STEP = 10  # rows moved per Page Up/Down press -- filter checklists have no fixed "visible row count" to derive this from, so this is a reasonable fixed jump rather than a computed one
 
     def __init__(self, menu, on_enter=None):
         super().__init__()
@@ -719,6 +731,50 @@ class _MenuSearchBox(QLineEdit):
 
     def _visible_checkable_actions(self):
         return [a for a in self._menu.actions() if a.isVisible() and a.isCheckable()]
+
+    def _jump_highlight(self, index):
+        """
+        Highlights the action at `index` DIRECTLY (clamped into
+        [0, len-1]) -- shared by Home/End/PageUp/PageDown below, which
+        each pick a literal destination rather than stepping one row at a
+        time the way _move_highlight's Up/Down do. A no-op on an empty
+        checklist (nothing to jump to).
+        """
+        actions = self._visible_checkable_actions()
+        if not actions:
+            return
+        index = max(0, min(index, len(actions) - 1))
+        self._menu.setActiveAction(actions[index])
+        self._menu.update()
+
+    def _page_highlight(self, direction):
+        """
+        PageUp (direction=-1) / PageDown (direction=1): jumps PAGE_STEP
+        rows at once from wherever the highlight currently is, clamped at
+        both ends by _jump_highlight. Deliberately does NOT share Up's
+        two-step "land on nothing-highlighted, then collapse on a second
+        press" behavior (_move_highlight) -- Page Up/Down are a bulk-
+        scrolling control, not the specific "step back to the search box"
+        affordance a single Up press is, so overshooting the top just
+        lands on the first item, same as Home would, rather than exiting
+        the checklist toward the search box or the menu itself.
+        """
+        actions = self._visible_checkable_actions()
+        if not actions:
+            return
+        current = self._menu.activeAction()
+        if current in actions:
+            start = actions.index(current)
+        elif direction > 0:
+            # Nothing highlighted yet (fresh menu, or stepped back up to
+            # the search box via a plain Up) -- Page Down starts counting
+            # from "one above the first item," same convention plain Down
+            # uses in _move_highlight, so a single Page Down still lands
+            # PAGE_STEP-1 rows in, not PAGE_STEP+1.
+            start = -1
+        else:
+            return  # Page Up with nothing highlighted: already at the top, nothing to do
+        self._jump_highlight(start + direction * self.PAGE_STEP)
 
     def _move_highlight(self, direction, allow_collapse=False):
         """
@@ -797,6 +853,18 @@ class _MenuSearchBox(QLineEdit):
                 return True   # consumed: stop it reaching QMenu's own handling
             if event.key() == Qt.Key_Down:
                 self._move_highlight(1)
+                return True
+            if event.key() == Qt.Key_Home:
+                self._jump_highlight(0)
+                return True
+            if event.key() == Qt.Key_End:
+                self._jump_highlight(len(self._visible_checkable_actions()) - 1)
+                return True
+            if event.key() == Qt.Key_PageUp:
+                self._page_highlight(-1)
+                return True
+            if event.key() == Qt.Key_PageDown:
+                self._page_highlight(1)
                 return True
             if event.key() == Qt.Key_Backtab or (
                 event.key() == Qt.Key_Tab and event.modifiers() & Qt.ShiftModifier
@@ -956,14 +1024,56 @@ class SplitDropdownHeader(QHeaderView):
         # header by accident -- the only entry points are the explicit
         # focus_column()/activate_column() calls below, reached from
         # CardTableView (Alt+Shift+Up/Down) or CardDatabaseView (Ctrl+Tab
-        # from the meta-button row). Once focused, keyPressEvent always
-        # intercepts Tab/Backtab itself (emitting table_focus_requested)
-        # rather than letting it fall through to Qt's generic focus chain,
-        # so there's no path where a stray Tab press strands focus here.
+        # from the meta-button row).
         self.setFocusPolicy(Qt.StrongFocus)
         self._focused_column = None        # int column index, or None -- see focus_column()
         self._keyboard_menu_column = None  # set while a KEYBOARD-opened menu is showing -- see _run_context_menu
         self._suppress_focus_clear = False  # True while a menu we opened is showing -- see focusOutEvent
+
+        # Tab/Backtab are caught via an APPLICATION-level event filter
+        # (see eventFilter below), NOT keyPressEvent -- this matters, and
+        # was a real, reported bug before the switch. QHeaderView is a
+        # QAbstractItemView subclass, and Qt's own QWidget::event() tries
+        # its OWN internal focusNextPrevChild() handling for a plain,
+        # unmodified Tab/Shift+Tab BEFORE this widget's keyPressEvent()
+        # ever runs -- but that internal handling is explicitly SKIPPED
+        # for Ctrl/Alt-modified keys, which is exactly why Ctrl+Tab always
+        # worked correctly here while plain Tab/Shift+Tab left the header
+        # in an inconsistent focus state (the cell selection moved, but
+        # real Qt focus and the header's own ring stayed put). Same
+        # general class of "Qt's internal Tab handling doesn't reliably
+        # defer to widget-level key logic" issue already documented (and
+        # fixed the identical way -- an app-level filter installed ahead
+        # of Qt's own routing) in collapsible_pane.py's module docstring
+        # and card_database_view.py's meta-button event filter. Installed
+        # once here, for this header's whole lifetime (same as those two
+        # examples), rather than scoped to a single transient popup the
+        # way _MenuSearchBox's own filter is.
+        QApplication.instance().installEventFilter(self)
+
+    def eventFilter(self, watched, event):
+        """
+        Catches Tab/Backtab (any modifier combination) aimed at THIS
+        header, while it holds keyboard focus, before Qt's own internal
+        per-widget Tab handling gets a chance to act on it -- see the
+        app-level installEventFilter call in __init__ for why this has to
+        happen at the filter stage rather than inside keyPressEvent.
+        Every other key (Left/Right/Down/Enter/Space) is still handled
+        entirely inside keyPressEvent below, since none of those are
+        subject to Qt's own special-cased Tab/Backtab interception --
+        only Tab/Backtab needed to move here.
+        """
+        if (self._focused_column is not None and watched is self
+                and event.type() == QEvent.KeyPress):
+            key = event.key()
+            mods = event.modifiers()
+            if key == Qt.Key_Backtab or (key == Qt.Key_Tab and mods & Qt.ShiftModifier):
+                self._release_focus_to_table(backward=True)
+                return True
+            if key == Qt.Key_Tab:
+                self._release_focus_to_table(backward=False)
+                return True
+        return super().eventFilter(watched, event)
 
     def paintSection(self, painter: QPainter, rect: QRect, logical_index: int):
         # Sort arrows are painted INSIDE _paint_split_section (it needs to
@@ -1491,13 +1601,16 @@ class SplitDropdownHeader(QHeaderView):
         meta-button row). A header that's never been given keyboard focus
         falls straight through to Qt's default QHeaderView handling,
         exactly as before headers were keyboard-focusable at all.
+
+        Tab/Backtab are NOT handled here -- see eventFilter above for why
+        they have to be caught a step earlier, before this method ever
+        runs for those keys.
         """
         if self._focused_column is None:
             super().keyPressEvent(event)
             return
 
         key = event.key()
-        mods = event.modifiers()
 
         if key in (Qt.Key_Left, Qt.Key_Right):
             self._move_focused_column(-1 if key == Qt.Key_Left else 1)
@@ -1507,20 +1620,6 @@ class SplitDropdownHeader(QHeaderView):
             return
         if key in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space):
             self._trigger_sort_for_focused_column()
-            return
-        # Shift+Tab: Qt reports this as a distinct Key_Backtab on most
-        # platforms rather than Key_Tab with ShiftModifier set, so both
-        # forms are checked -- same belt-and-suspenders check used for
-        # this exact ambiguity elsewhere in the app (_MenuSearchBox,
-        # CardTableView.keyPressEvent). Ctrl+Tab/Ctrl+Shift+Tab fall
-        # through to the plain Tab/Backtab branches below too -- the
-        # Control modifier doesn't change which direction this goes,
-        # only Shift does.
-        if key == Qt.Key_Backtab or (key == Qt.Key_Tab and mods & Qt.ShiftModifier):
-            self._release_focus_to_table(backward=True)
-            return
-        if key == Qt.Key_Tab:
-            self._release_focus_to_table(backward=False)
             return
         super().keyPressEvent(event)
 
@@ -1533,21 +1632,20 @@ class SplitDropdownHeader(QHeaderView):
         left, the way the rest of this class's focus-loss handling
         normally works.
 
-        WHY THIS EXTRA STEP WAS NEEDED (a real, reported bug): QHeaderView
-        is a QAbstractItemView subclass, and Qt's own internal item-view
-        key handling can interact with a plain Tab/Backtab press in ways
-        that don't reliably leave this header in a clean "I no longer
-        have focus" state after CardTableView.focus_table_for_metabutton_
-        tab calls setFocus() on the table -- the cell selection moved
-        (proving table_focus_requested's connected slot DID run), but the
-        header's own focus ring and real Qt focus were observed staying
-        put regardless. Same general class of "Qt's internal Tab handling
-        doesn't reliably defer to widget-level key logic" issue already
-        documented (and worked around the same way -- act BEFORE relying
-        on Qt's own routing) in collapsible_pane.py's module docstring and
-        card_database_view.py's meta-button event filter. Clearing state
-        HERE, directly and unconditionally, removes any dependency on
-        exactly how/when Qt's own internal handling processes the same
+        WHY THIS EXTRA STEP WAS STILL NEEDED, EVEN AFTER MOVING TAB
+        HANDLING TO THE APP-LEVEL FILTER (see eventFilter above, and that
+        __init__ comment for the confirmed root cause -- Qt's own
+        QWidget::event() runs focusNextPrevChild() for a plain Tab/
+        Shift+Tab BEFORE keyPressEvent, but explicitly skips that for
+        Ctrl/Alt-modified keys, which is why Ctrl+Tab always worked and
+        plain Tab didn't): catching the key earlier stops Qt's internal
+        handling from running AT ALL, but doesn't by itself guarantee
+        THIS widget hands off its own focus state cleanly -- doing that
+        explicitly here, before the connected slot's own setFocus() call
+        on the table, removes any remaining ambiguity about which side
+        "wins" the real Qt focus. Clearing state HERE, directly and
+        unconditionally, removes any dependency on exactly how/when Qt's
+        own internal handling processes the same
         keypress -- the header relinquishes itself deterministically
         before the table ever tries to claim focus, rather than the two
         racing.

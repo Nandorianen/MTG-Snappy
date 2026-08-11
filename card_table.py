@@ -1022,6 +1022,7 @@ class _MenuSearchBox(QLineEdit):
         self._menu = menu
         self._on_enter = on_enter
         self._extra_navigable_actions = []  # see add_navigable_action()
+        self._open_submenu = None  # the currently ENGAGED submenu (Price Source), or None -- see _open_submenu_for_action
         self.setPlaceholderText(placeholder)
         self.setStyleSheet(
             "QLineEdit { border: 1px solid #6b6f76; border-radius: 3px; "
@@ -1049,6 +1050,12 @@ class _MenuSearchBox(QLineEdit):
         # menu is actually going away, rather than depending on exactly
         # when Qt gets around to processing the deferred deletion.
         menu.aboutToHide.connect(self.clearFocus)
+        # Safety net: if the parent menu closes via some path that never
+        # went through _handle_submenu_key's own Left/Escape/Enter/Space
+        # handling (e.g. a click landing outside the whole application),
+        # make sure an ENGAGED submenu doesn't outlive it as a stray
+        # floating popup.
+        menu.aboutToHide.connect(self._close_open_submenu)
 
     def add_navigable_action(self, action):
         """Registers a non-checkable action (currently only ever "Clear
@@ -1187,47 +1194,105 @@ class _MenuSearchBox(QLineEdit):
 
     def _open_submenu_for_action(self, action):
         """
-        Opens a highlighted action's own SUBMENU (currently only ever
-        Price's "Price Source") with genuine, native Qt keyboard
-        interaction -- Up/Down/Enter/Escape all handled by Qt itself,
-        zero custom interception needed, the same "a plain checklist menu
-        with no embedded widget already gets correct navigation for free"
-        situation data_management_dialog.py's own edition-picker menu
-        already relies on.
+        ENGAGES a highlighted action's own SUBMENU (currently only ever
+        Price's "Price Source") -- after this call, this box drives ALL
+        of the submenu's keyboard interaction itself (see
+        _handle_submenu_key), rather than trusting Qt's native nested-
+        popup keyboard routing to reach it.
 
-        Positioned like a real submenu (to the right of the highlighted
-        action's own rect in the parent menu) and shown via `.exec()`,
-        which blocks until the submenu closes -- by a real selection, or
-        by Escape/click-away (returns None either way it doesn't select).
+        WHY NOT A SECOND submenu.exec()/.popup() CALL, THE FIRST DESIGN
+        TRIED: `QMenu.setActiveAction()` on an action that has a submenu
+        turns out to open that submenu IMMEDIATELY as a documented-ish Qt
+        side effect -- meaning by the time Down navigation lands on Price
+        Source (see _move_highlight), Qt has ALREADY shown it, on its own,
+        before this method is ever called. Calling `.exec(pos)` again on
+        top of that -- the first design -- re-popped an already-visible
+        QMenu, which (confirmed by testing) both shifted its on-screen
+        position by a few pixels versus where Qt had already placed it,
+        and left its internal state inconsistent enough that Left-arrow-
+        to-close and Enter/Space-to-select stopped working reliably after
+        the first use. See NOTES.md for the fuller diagnosis.
 
-        WHY THIS TEMPORARILY REMOVES OUR OWN APPLICATION-LEVEL FILTER:
-        this class exists specifically to intercept arrow keys/Space/
-        Enter application-wide, ahead of Qt's own native QMenu handling,
-        for OUR OWN menu (see the class docstring's point 1). That's
-        exactly the WRONG thing to do to a different, ordinary popup --
-        left installed, it would swallow the submenu's own Up/Down/Enter
-        before native QMenu handling ever saw them. Removed here, then
-        reinstalled once the submenu closes (unless the whole parent menu
-        is about to close anyway -- see below), so this box's own
-        navigation resumes normally afterward if the parent is still open.
+        THIS VERSION never calls exec()/popup() a second time on an
+        already-visible menu: if Qt's own auto-open already showed it
+        (the common case), this just ADOPTS it as-is, at its own current
+        position -- no repositioning, no jitter. `.popup()` is only
+        called as a fallback for the (should-be-rare) case where auto-
+        open somehow didn't already happen. Either way, the first real
+        item is explicitly highlighted immediately -- addressing "opens
+        but nothing's focused" -- and `self._open_submenu` being set is
+        what redirects this box's own eventFilter into
+        _handle_submenu_key for as long as the submenu stays engaged.
         """
         submenu = action.menu()
         if submenu is None:
             return
-        rect = self._menu.actionGeometry(action)
-        pos = self._menu.mapToGlobal(rect.topRight())
-        self._remove_app_filter()
-        chosen = submenu.exec(pos)
-        QApplication.instance().installEventFilter(self)
-        if chosen is not None:
-            # A real selection was made. This submenu is a plain QMenu
-            # (not a stay-open one -- see _add_expression_filter_
-            # controls), so a MOUSE click on one of its items already
-            # closes the entire menu chain, parent included -- native,
-            # unmodified Qt nested-popup behavior. A keyboard selection
-            # should do the exact same thing, not leave the parent
+        if not submenu.isVisible():
+            rect = self._menu.actionGeometry(action)
+            pos = self._menu.mapToGlobal(rect.topRight())
+            submenu.popup(pos)
+        self._open_submenu = submenu
+        visible_actions = [a for a in submenu.actions() if a.isVisible() and a.isEnabled()]
+        if visible_actions:
+            submenu.setActiveAction(visible_actions[0])
+
+    def _close_open_submenu(self):
+        """Disengages the currently-open submenu (Left/Escape -- see
+        _handle_submenu_key) without closing the PARENT menu -- control
+        returns to this box's own normal navigation, with the submenu's
+        own opening action still the parent's active/highlighted one
+        (untouched throughout), so Up/Down from there continues exactly
+        where the user left off."""
+        if self._open_submenu is not None:
+            self._open_submenu.hide()
+            self._open_submenu = None
+
+    def _handle_submenu_key(self, event):
+        """
+        ALL keyboard interaction for an ENGAGED submenu (self._open_
+        submenu is not None) -- Up/Down move ITS OWN highlight, Left/
+        Escape disengage back to the parent, Enter/Space activate
+        whatever's highlighted (both, per design -- see class docstring),
+        Right is a no-op (already the innermost level, nothing further to
+        descend into). Every other key is swallowed too (this method
+        always returns True) -- real Qt focus never actually left this
+        box the whole time (see class docstring point 1), so without
+        this, typing while the submenu is visually open would land as
+        ordinary text in the box underneath it, which would be a
+        confusing thing to have happen while a nested picker is up.
+        """
+        submenu = self._open_submenu
+        visible_actions = [a for a in submenu.actions() if a.isVisible() and a.isEnabled()]
+        key = event.key()
+
+        if key == Qt.Key_Down:
+            current = submenu.activeAction()
+            index = visible_actions.index(current) + 1 if current in visible_actions else 0
+            if visible_actions:
+                submenu.setActiveAction(visible_actions[min(index, len(visible_actions) - 1)])
+            return True
+        if key == Qt.Key_Up:
+            current = submenu.activeAction()
+            index = visible_actions.index(current) - 1 if current in visible_actions else 0
+            if visible_actions:
+                submenu.setActiveAction(visible_actions[max(index, 0)])
+            return True
+        if key in (Qt.Key_Left, Qt.Key_Escape):
+            self._close_open_submenu()
+            return True
+        if key in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space):
+            current = submenu.activeAction()
+            if current is not None:
+                current.trigger()
+            self._close_open_submenu()
+            # Matches native "selecting a leaf deep in a submenu closes
+            # the WHOLE menu chain" behavior -- a mouse click already does
+            # this here (Price Source is a plain QMenu, not a stay-open
+            # one), so a keyboard selection shouldn't leave the parent
             # dangling open in a state no mouse user could ever reach.
             self._menu.close()
+            return True
+        return True  # swallow everything else -- see docstring
 
     def eventFilter(self, watched, event):
         # Deliberately NOT checking `watched is self` here. That condition
@@ -1244,6 +1309,14 @@ class _MenuSearchBox(QLineEdit):
         # input while a popup has the grab, it's safe to react to the KEY
         # CODE alone rather than insisting on a specific receiver identity.
         if event.type() == QEvent.KeyPress:
+            if self._open_submenu is not None:
+                # A submenu is currently ENGAGED (see _open_submenu_for_
+                # action) -- every key belongs to IT until it's
+                # disengaged (Left/Escape) or a selection is made
+                # (Enter/Space), checked first and unconditionally so
+                # none of this box's own menu-navigation logic below can
+                # run against the wrong menu while a submenu is active.
+                return self._handle_submenu_key(event)
             if event.key() == Qt.Key_Up:
                 self._move_highlight(-1, allow_collapse=True)
                 return True   # consumed: stop it reaching QMenu's own handling

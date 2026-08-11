@@ -16,14 +16,20 @@ Three more real, reported problems on top of last round's filter work:
 - **"Price Source" is a real drop-to-the-side submenu again, now properly
   keyboard-operable.** A first attempt replaced it with flat checkable
   actions to fix navigability, but that traded away the submenu affordance
-  entirely -- reverted in favor of keeping the real submenu and fixing the
-  actual gap: its own opening action is now a registered navigable stop
-  (reached via Down, right after Clear Filter, same position "Group by
-  Type" occupies on checklist columns), and **Right arrow or Space, once
-  it's highlighted, opens it for real** -- positioned like a native
-  submenu, with Qt's own unmodified Up/Down/Enter/Escape handling inside
-  it (see NOTES.md for how the box's own app-level key interception gets
-  out of the way for the duration, and back afterward).
+  entirely -- reverted. A second attempt kept the real submenu and tried
+  to let Qt's own native nested-popup keyboard handling take over once
+  opened via `.exec()`, but that raced against an undocumented Qt side
+  effect (highlighting an action with a submenu opens it immediately, on
+  its own) -- causing a visible position jitter and Left/Enter/Space
+  becoming unreliable after the first use. **Fixed properly** by no longer
+  trusting native routing at all: this box now drives the submenu's own
+  Up/Down/Left/Enter/Space itself, the same way it already drives the
+  parent menu's, adopting whatever Qt already auto-opened rather than
+  re-showing it. Reachable via Down (right after Clear Filter, same
+  position "Group by Type" occupies on checklist columns), opened via
+  Right arrow or Space with its first item highlighted immediately, Left
+  or Escape backs out cleanly and repeatedly, Enter or Space both select.
+  See NOTES.md for the full diagnosis.
 - **"Clear Filter" and "Clear All Filters" now also forget each column's
   remembered search-narrowing text**, not just the real filter state --
   previously a cleared column's search box could still come back prefilled

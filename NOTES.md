@@ -203,7 +203,7 @@ is unchanged -- it still narrows against the checkbox labels, which is
 just "help me find one to click," a separate concern from what Enter
 commits as a real filter.
 
-## Debugging note: Price Source wasn't keyboard-reachable (two attempts, real submenu kept in the end)
+## Debugging note: Price Source wasn't keyboard-reachable (three attempts, real submenu kept in the end)
 
 Reported bug: arrow-key navigation in Price's filter menu couldn't reach
 "Price Source" at all. Root cause: it was a real `QMenu.addMenu()`
@@ -214,46 +214,76 @@ actions, plus whatever's explicitly registered via
 
 **First attempt**: replaced the submenu with three flat, ordinary
 checkable actions in a `QActionGroup(exclusive=True)`. Fixed the
-navigability problem (checkable actions need zero special-casing), but
-was explicitly rejected on review in favor of keeping the real drop-to-
-the-side submenu -- the flat layout doesn't scale as cleanly if a future
-column ever wants a genuine picker with more than 2-3 options, and the
-nested-menu affordance (a clear visual "this opens something else," Right
-arrow to descend into it) is worth keeping as a real, reusable pattern
-for that future case, not just for Price.
+navigability problem, but was explicitly rejected on review in favor of
+keeping the real drop-to-the-side submenu -- the flat layout doesn't
+scale as cleanly if a future column ever wants a genuine picker with more
+than 2-3 options, and the nested-menu affordance is worth keeping as a
+reusable pattern.
 
-**Final fix**: kept the real submenu, positioned in the same spot a
-checklist column's "Group by Type"/"Monocolored only" occupy (right below
-the search/expression box and Clear Filter -- see
-`_add_expression_filter_controls`), and made it keyboard-operable
-properly:
+**Second attempt**: kept the real submenu, registered its opening action
+as navigable, and had Right arrow/Space call `submenu.exec(pos)` --
+positioned to the right of the action, with Qt's own native `QMenu`
+keyboard handling expected to take over once shown (the same "a plain
+checklist menu with no embedded widget already gets correct navigation
+from Qt with zero extra code" situation `data_management_dialog.py`'s own
+edition-picker menu relies on). **Broke on real re-test**: the submenu's
+position visibly shifted a few pixels the moment Right was pressed, it
+came up with nothing highlighted, and Left-to-collapse worked once and
+then got stuck. Root cause, confirmed headlessly by explicitly `.show()`-
+ing the parent menu first (a plain `_build_context_menu()` call without
+that doesn't reproduce it): `QMenu.setActiveAction()` on an action that
+has a submenu **opens that submenu immediately**, as an undocumented-but-
+real Qt side effect -- so by the time Down navigation lands on "Price
+Source" (`_move_highlight`), Qt has ALREADY shown it, before Right is
+ever pressed. Calling `.exec(pos)` on top of that re-popped an already-
+visible `QMenu`, which both repositioned it (Qt's fresh popup placement
+landed a few pixels from where the auto-open had already put it) and
+left its internal state inconsistent enough that native Left/Enter/Space
+handling stopped working reliably after the first open/close cycle.
 
-- The submenu-opening action is now registered via
-  `add_navigable_action()`, same as Clear Filter, so Down actually reaches
-  it (`_MenuSearchBox._navigable_actions()`, generalized to accept any
-  registered action alongside checkable ones -- see its own docstring).
-- **Right arrow OR Space, while it's highlighted, opens the submenu for
-  real** (`_MenuSearchBox._open_submenu_for_action`) -- positioned like a
-  native submenu (to the right of the action's own rect) and shown via
-  `.exec()`, which blocks until it closes. Once open, Up/Down/Enter/
-  Escape inside it are handled entirely by Qt's own native `QMenu`
-  logic -- no custom interception needed, the same "a plain checklist
-  menu with no embedded widget already gets correct navigation from Qt
-  with zero extra code" situation `data_management_dialog.py`'s own
-  edition-picker menu already relies on.
-- **The trick**: `_MenuSearchBox`'s own application-level event filter
-  (the thing that makes Up/Down/Space work for ITS OWN menu in the first
-  place -- see the class docstring's point 1) would otherwise swallow the
-  submenu's OWN arrow keys before native `QMenu` handling ever saw them.
-  `_open_submenu_for_action` temporarily removes it before calling
-  `.exec()` on the submenu, and reinstalls it afterward -- unless a real
-  selection was made, in which case the whole parent menu closes too
-  (matching native "picking a leaf item deep in a submenu closes the
-  whole chain" behavior a mouse click already has here, since this
-  submenu is a plain `QMenu`, not a stay-open one).
-- Confirmed headlessly both ways: selecting a source closes the parent
-  menu and updates the model; cancelling (Escape/click-away) leaves the
-  parent open with navigation still fully working afterward.
+**Final fix**: stop relying on native nested-popup keyboard routing at
+all -- this box now drives the submenu's keyboard interaction itself
+(`_handle_submenu_key`), the identical way it already drives the PARENT
+menu's, rather than trusting an assumption about native routing that
+turned out not to hold (real Qt keyboard focus never actually leaves
+this search box the whole time any of these menus are open -- see the
+class docstring's point 1 -- so there was never a path for the submenu
+to receive real native key events on its own to begin with, auto-opened
+or not).
+
+- `_open_submenu_for_action` (Right arrow or Space) now ADOPTS an
+  already-auto-opened submenu as-is -- checking `submenu.isVisible()`
+  first, and only calling `.popup(pos)` as a fallback if auto-open
+  somehow didn't already happen -- so there's never a second, repositioning
+  show call on top of Qt's own. The first real item is explicitly
+  highlighted (`setActiveAction`) the instant it's engaged, fixing "opens
+  with nothing focused."
+- `self._open_submenu` tracks which submenu (if any) is currently
+  engaged; `eventFilter` checks it FIRST, before any of this box's own
+  menu-navigation logic, and routes every key to `_handle_submenu_key`
+  instead while it's set -- Down/Up move the submenu's own highlight,
+  Left/Escape disengage back to the parent (`_close_open_submenu`, which
+  just hides it -- the parent's own active action, still "Price Source,"
+  is never touched, so resuming Up/Down from there afterward picks up
+  exactly where the user left off), Enter/Space both activate whatever's
+  highlighted and close the whole chain (matching what a mouse click
+  already does here, since this is a plain `QMenu`, not a stay-open one).
+- No more remove/reinstall dance with the application-level event filter
+  at all -- since this box handles the submenu's keys itself rather than
+  handing off to Qt's native routing, there's no competing handler to
+  step around, which is what made the second attempt's teardown ordering
+  fragile in the first place.
+- `menu.aboutToHide` also now closes any still-engaged submenu as a
+  safety net, in case the parent ever closes through a path that didn't
+  go through `_handle_submenu_key`'s own Left/Enter/Space handling.
+- Confirmed headlessly with the parent menu genuinely shown (`.show()` +
+  `processEvents()`, since the auto-open side effect above only manifests
+  once the parent is a real popup): engaging leaves the submenu's position
+  untouched and its first item highlighted immediately; Down/Up move
+  within it; Left disengages cleanly and leaves the parent fully
+  navigable; re-engaging a SECOND time (the exact scenario that was
+  "stuck" before) works identically to the first; both Enter and Space
+  select and close the whole chain.
 
 ## Fix: "Clear Filter" and "Clear All Filters" now also forget remembered search text (follow-up round)
 

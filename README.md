@@ -13,13 +13,17 @@ Three more real, reported problems on top of last round's filter work:
   pass. Confirmed: `type~artifact` finds "Baleful Strix" (Artifact
   Creature), `type~legendary` finds "Thalia," `type~bird` finds a subtype
   past the em dash.
-- **"Price Source" is now keyboard-reachable.** It used to be a real QMenu
-  submenu, and a submenu's own trigger action was never a checkable (or
-  registered-navigable) action, so arrow-key navigation skipped straight
-  over it. Replaced with three flat checkable actions in an exclusive
-  `QActionGroup` -- ordinary navigable actions now, reached via Down like
-  any checklist value, with Qt handling the "picking one unchecks the
-  others" behavior natively.
+- **"Price Source" is a real drop-to-the-side submenu again, now properly
+  keyboard-operable.** A first attempt replaced it with flat checkable
+  actions to fix navigability, but that traded away the submenu affordance
+  entirely -- reverted in favor of keeping the real submenu and fixing the
+  actual gap: its own opening action is now a registered navigable stop
+  (reached via Down, right after Clear Filter, same position "Group by
+  Type" occupies on checklist columns), and **Right arrow or Space, once
+  it's highlighted, opens it for real** -- positioned like a native
+  submenu, with Qt's own unmodified Up/Down/Enter/Escape handling inside
+  it (see NOTES.md for how the box's own app-level key interception gets
+  out of the way for the duration, and back afterward).
 - **"Clear Filter" and "Clear All Filters" now also forget each column's
   remembered search-narrowing text**, not just the real filter state --
   previously a cleared column's search box could still come back prefilled

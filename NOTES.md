@@ -203,29 +203,57 @@ is unchanged -- it still narrows against the checkbox labels, which is
 just "help me find one to click," a separate concern from what Enter
 commits as a real filter.
 
-## Debugging note: Price Source wasn't keyboard-reachable (follow-up round)
+## Debugging note: Price Source wasn't keyboard-reachable (two attempts, real submenu kept in the end)
 
 Reported bug: arrow-key navigation in Price's filter menu couldn't reach
-"Price Source" at all. Root cause: it used to be a real `QMenu.addMenu()`
+"Price Source" at all. Root cause: it was a real `QMenu.addMenu()`
 submenu -- and a submenu's own trigger action isn't `isCheckable()`, so
 `_MenuSearchBox._navigable_actions()` (which only ever targeted checkable
 actions, plus whatever's explicitly registered via
-`add_navigable_action()`) skipped straight past it. Even if it HAD been
-registered as navigable, `setActiveAction()` alone doesn't open a
-submenu the way real mouse hover or QMenu's own internal focus-driven
-popup timer does, since real Qt focus never actually leaves the search
-box in this design (see `_MenuSearchBox`'s own docstring) -- Space/Enter
-on a highlighted submenu action wouldn't have popped it open either.
+`add_navigable_action()`) skipped straight past it.
 
-**Fix**: replaced the submenu with three flat, ordinary checkable
-actions in a `QActionGroup(exclusive=True)` -- Qt handles "picking one
-unchecks the others" natively, so no custom radio-button bookkeeping was
-needed. Being checkable, they're automatically included in
-`_navigable_actions()` with zero special-casing, exactly like any
-checklist value or "Group by Type" toggle -- Down from the box now walks
-TCGplayer -> Card Kingdom -> Cardmarket -> Clear Filter in menu order,
-confirmed headlessly. No other column ever used a real submenu, so this
-was the only place this class of bug could hide.
+**First attempt**: replaced the submenu with three flat, ordinary
+checkable actions in a `QActionGroup(exclusive=True)`. Fixed the
+navigability problem (checkable actions need zero special-casing), but
+was explicitly rejected on review in favor of keeping the real drop-to-
+the-side submenu -- the flat layout doesn't scale as cleanly if a future
+column ever wants a genuine picker with more than 2-3 options, and the
+nested-menu affordance (a clear visual "this opens something else," Right
+arrow to descend into it) is worth keeping as a real, reusable pattern
+for that future case, not just for Price.
+
+**Final fix**: kept the real submenu, positioned in the same spot a
+checklist column's "Group by Type"/"Monocolored only" occupy (right below
+the search/expression box and Clear Filter -- see
+`_add_expression_filter_controls`), and made it keyboard-operable
+properly:
+
+- The submenu-opening action is now registered via
+  `add_navigable_action()`, same as Clear Filter, so Down actually reaches
+  it (`_MenuSearchBox._navigable_actions()`, generalized to accept any
+  registered action alongside checkable ones -- see its own docstring).
+- **Right arrow OR Space, while it's highlighted, opens the submenu for
+  real** (`_MenuSearchBox._open_submenu_for_action`) -- positioned like a
+  native submenu (to the right of the action's own rect) and shown via
+  `.exec()`, which blocks until it closes. Once open, Up/Down/Enter/
+  Escape inside it are handled entirely by Qt's own native `QMenu`
+  logic -- no custom interception needed, the same "a plain checklist
+  menu with no embedded widget already gets correct navigation from Qt
+  with zero extra code" situation `data_management_dialog.py`'s own
+  edition-picker menu already relies on.
+- **The trick**: `_MenuSearchBox`'s own application-level event filter
+  (the thing that makes Up/Down/Space work for ITS OWN menu in the first
+  place -- see the class docstring's point 1) would otherwise swallow the
+  submenu's OWN arrow keys before native `QMenu` handling ever saw them.
+  `_open_submenu_for_action` temporarily removes it before calling
+  `.exec()` on the submenu, and reinstalls it afterward -- unless a real
+  selection was made, in which case the whole parent menu closes too
+  (matching native "picking a leaf item deep in a submenu closes the
+  whole chain" behavior a mouse click already has here, since this
+  submenu is a plain `QMenu`, not a stay-open one).
+- Confirmed headlessly both ways: selecting a source closes the parent
+  menu and updates the model; cancelling (Escape/click-away) leaves the
+  parent open with navigation still fully working afterward.
 
 ## Fix: "Clear Filter" and "Clear All Filters" now also forget remembered search text (follow-up round)
 

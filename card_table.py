@@ -94,7 +94,7 @@ from PySide6.QtCore import (
     Qt, QAbstractTableModel, QModelIndex, Signal, QTimer, QRect, QEvent,
     QItemSelection, QItemSelectionModel,
 )
-from PySide6.QtGui import QKeySequence, QPainter, QColor, QBrush, QShortcut, QActionGroup
+from PySide6.QtGui import QKeySequence, QPainter, QColor, QBrush, QShortcut
 
 from mock_data import RARITY_ORDER, PRICE_SOURCES
 from card_popover import CardPopover
@@ -1001,13 +1001,18 @@ class _MenuSearchBox(QLineEdit):
     NAVIGABLE ACTIONS are, by default, every VISIBLE CHECKABLE action in
     the menu (the value checkboxes, plus "Group by Type"/"Monocolored
     only"/etc. where present) -- PLUS anything explicitly registered via
-    add_navigable_action(), currently just "Clear Filter" (see
-    CardTableHeader._build_context_menu). Clear Filter isn't checkable
-    (it's a one-shot action, not a toggle), so it needed explicit
-    registration to be reachable at all; Space now triggers WHATEVER
-    action is currently highlighted regardless of checkable-ness (see the
-    Key_Space handler below), which is what actually activates it once
-    reached.
+    add_navigable_action(): "Clear Filter" on every menu, and Price's own
+    "Price Source" submenu-opening action (see
+    CardTableHeader._build_context_menu / _add_expression_filter_
+    controls). Neither is checkable (one's a one-shot action, the other
+    opens a submenu rather than toggling), so both needed explicit
+    registration to be reachable at all. Once reached: Space activates
+    WHATEVER is currently highlighted (see the Key_Space handler below) --
+    toggling a checkable value, running Clear Filter, or (same as Right
+    arrow) opening a highlighted submenu via _open_submenu_for_action,
+    which hands off to Qt's own native, unmodified keyboard handling for
+    the duration -- a plain submenu with no embedded search box needs
+    none of this class's own interception (see that method's docstring).
     """
 
     PAGE_STEP = 10  # rows moved per Page Up/Down press -- filter checklists have no fixed "visible row count" to derive this from, so this is a reasonable fixed jump rather than a computed one
@@ -1180,6 +1185,50 @@ class _MenuSearchBox(QLineEdit):
         self._menu.setActiveAction(actions[index])
         self._menu.update()  # belt-and-suspenders repaint if setActiveAction doesn't force one
 
+    def _open_submenu_for_action(self, action):
+        """
+        Opens a highlighted action's own SUBMENU (currently only ever
+        Price's "Price Source") with genuine, native Qt keyboard
+        interaction -- Up/Down/Enter/Escape all handled by Qt itself,
+        zero custom interception needed, the same "a plain checklist menu
+        with no embedded widget already gets correct navigation for free"
+        situation data_management_dialog.py's own edition-picker menu
+        already relies on.
+
+        Positioned like a real submenu (to the right of the highlighted
+        action's own rect in the parent menu) and shown via `.exec()`,
+        which blocks until the submenu closes -- by a real selection, or
+        by Escape/click-away (returns None either way it doesn't select).
+
+        WHY THIS TEMPORARILY REMOVES OUR OWN APPLICATION-LEVEL FILTER:
+        this class exists specifically to intercept arrow keys/Space/
+        Enter application-wide, ahead of Qt's own native QMenu handling,
+        for OUR OWN menu (see the class docstring's point 1). That's
+        exactly the WRONG thing to do to a different, ordinary popup --
+        left installed, it would swallow the submenu's own Up/Down/Enter
+        before native QMenu handling ever saw them. Removed here, then
+        reinstalled once the submenu closes (unless the whole parent menu
+        is about to close anyway -- see below), so this box's own
+        navigation resumes normally afterward if the parent is still open.
+        """
+        submenu = action.menu()
+        if submenu is None:
+            return
+        rect = self._menu.actionGeometry(action)
+        pos = self._menu.mapToGlobal(rect.topRight())
+        self._remove_app_filter()
+        chosen = submenu.exec(pos)
+        QApplication.instance().installEventFilter(self)
+        if chosen is not None:
+            # A real selection was made. This submenu is a plain QMenu
+            # (not a stay-open one -- see _add_expression_filter_
+            # controls), so a MOUSE click on one of its items already
+            # closes the entire menu chain, parent included -- native,
+            # unmodified Qt nested-popup behavior. A keyboard selection
+            # should do the exact same thing, not leave the parent
+            # dangling open in a state no mouse user could ever reach.
+            self._menu.close()
+
     def eventFilter(self, watched, event):
         # Deliberately NOT checking `watched is self` here. That condition
         # holds when an event is manually constructed and sent straight at
@@ -1201,6 +1250,17 @@ class _MenuSearchBox(QLineEdit):
             if event.key() == Qt.Key_Down:
                 self._move_highlight(1)
                 return True
+            if event.key() == Qt.Key_Right:
+                # Only meaningful when the highlighted action actually
+                # HAS a submenu (Price Source) -- otherwise this is an
+                # ordinary text-cursor movement inside the box, so it's
+                # deliberately left unconsumed (falls through to
+                # QLineEdit's own default handling) rather than swallowed
+                # unconditionally.
+                active = self._menu.activeAction()
+                if active is not None and active.menu() is not None:
+                    self._open_submenu_for_action(active)
+                    return True
             if event.key() == Qt.Key_Home:
                 self._jump_highlight(0)
                 return True
@@ -1230,9 +1290,9 @@ class _MenuSearchBox(QLineEdit):
                 # same _move_highlight() Up/Down already use fixes this for
                 # free: it already filters to _navigable_actions() (see
                 # that method), and neither the disabled header label nor
-                # a submenu-opening action is checkable or registered, so
-                # both are already excluded by the exact logic that's
-                # already proven correct for arrow-key nav.
+                # an unregistered submenu-opening action is checkable or
+                # registered, so both are already excluded by the exact
+                # logic that's already proven correct for arrow-key nav.
                 self._move_highlight(1)
                 return True
             if event.key() == Qt.Key_Space:
@@ -1242,17 +1302,22 @@ class _MenuSearchBox(QLineEdit):
                 # search box the whole time, so typing keeps narrowing the
                 # list). Without this, Space was always just a literal
                 # character typed into the field, never reaching any
-                # toggle/trigger logic at all. Triggers WHATEVER is
-                # currently highlighted -- a checkable value (toggles it,
-                # same as _StayOpenMenu's own click handling) or a
-                # registered one-shot action like Clear Filter (runs it) --
-                # rather than only checkable ones, so Clear Filter is
-                # actually reachable by keyboard once navigated to.
-                # Only intercepted once something is actually highlighted
-                # (i.e. Up/Down has been pressed at least once) -- before
-                # that, Space still types normally, so a multi-word search
-                # term like "Lightly Played" isn't broken by this.
+                # toggle/trigger logic at all. A highlighted SUBMENU
+                # action opens its submenu (same as Right -- see above);
+                # otherwise this triggers WHATEVER is currently
+                # highlighted -- a checkable value (toggles it, same as
+                # _StayOpenMenu's own click handling) or a registered
+                # one-shot action like Clear Filter (runs it) -- rather
+                # than only checkable ones, so Clear Filter is actually
+                # reachable by keyboard once navigated to. Only
+                # intercepted once something is actually highlighted (i.e.
+                # Up/Down has been pressed at least once) -- before that,
+                # Space still types normally, so a multi-word search term
+                # like "Lightly Played" isn't broken by this.
                 active = self._menu.activeAction()
+                if active is not None and active.menu() is not None:
+                    self._open_submenu_for_action(active)
+                    return True
                 if active is not None and (active.isCheckable() or active in self._extra_navigable_actions):
                     active.trigger()
                     return True
@@ -1682,43 +1747,13 @@ class CardTableHeader(QHeaderView):
         header_action = menu.addAction(f"Filter by {label}")
         header_action.setEnabled(False)  # acts as a section label, not clickable
 
-        # Price Source lives here regardless of which filter UI this
-        # column gets below it -- it's a display/grouping choice ("which
-        # price column am I even looking at"), not a filter itself, so it
-        # applies whether Price ends up with a checklist or an expression
-        # box. FLAT checkable actions in a QActionGroup (exclusive=True
-        # gives "picking one unchecks the others" for free), NOT a
-        # QMenu.addMenu() submenu -- a submenu's own trigger action isn't
-        # checkable and was never included in _MenuSearchBox's arrow-key
-        # navigation (see _navigable_actions()), so it was a real, reported
-        # keyboard dead end: nothing about setActiveAction() alone opens a
-        # submenu the way real mouse hover or QMenu's own internal focus
-        # does. Flat checkable actions sidestep the problem entirely --
-        # they're ordinary navigable actions like any checklist value.
-        if column == COL_PRICE:
-            price_label = menu.addAction("Price Source")
-            price_label.setEnabled(False)
-            price_group = QActionGroup(menu)
-            price_group.setExclusive(True)
-            for source_key, source_label in PRICE_SOURCES:
-                price_action = menu.addAction(source_label)
-                price_action.setCheckable(True)
-                price_action.setChecked(self.model().price_source == source_key)
-                price_action.setActionGroup(price_group)
-                # Only react to a source becoming CHECKED -- QActionGroup's
-                # own exclusivity fires `toggled(False)` on whichever
-                # action it just unchecked too, and re-applying the OLD
-                # source on that event would just undo the switch a
-                # moment after QActionGroup finishes flipping the checks.
-                price_action.toggled.connect(
-                    lambda checked, k=source_key: self.model().set_price_source(k) if checked else None
-                )
-            menu.addSeparator()
-
         # EXPRESSION_COLUMNS (Have/Want/Power/Toughness/Price/Name) get a
         # single typed expression box instead of a value checklist -- see
         # this class's own docstring and NOTES.md's "Filter overhaul"
-        # entry for why a checklist doesn't scale for these.
+        # entry for why a checklist doesn't scale for these. (Price's own
+        # "Price Source" submenu lives inside _add_expression_filter_
+        # controls, positioned below the box and Clear Filter -- see that
+        # method.)
         if column in EXPRESSION_COLUMNS:
             self._add_expression_filter_controls(menu, column)
             return menu
@@ -1900,6 +1935,13 @@ class CardTableHeader(QHeaderView):
         substring syntax) and closes the menu. "Clear Filter" -- right
         below the box, registered as a navigable action the same way the
         checklist columns' own Clear Filter is -- empties it in one step.
+
+        Price additionally gets its own "Price Source" SUBMENU right below
+        Clear Filter -- the same position "Group by Type"/"Monocolored
+        only"/"Group by Color" occupy in the checklist columns' menus (see
+        _build_context_menu). A genuine QMenu.addMenu() submenu, not flat
+        actions -- see _open_submenu_for_action's docstring for why that's
+        the right call once it's reachable by keyboard at all.
         """
         expr_box = _MenuSearchBox(
             menu,
@@ -1917,6 +1959,29 @@ class CardTableHeader(QHeaderView):
             lambda: (self.model().clear_column_filter(column), menu.close())
         )
         expr_box.add_navigable_action(clear_action)
+
+        if column == COL_PRICE:
+            menu.addSeparator()
+            # Plain QMenu (NOT _StayOpenMenu) -- picking a source is a
+            # one-shot "choose exactly one" action, so a MOUSE selection
+            # here closes the whole submenu chain (native Qt nested-popup
+            # behavior, unmodified) exactly as it always has; a KEYBOARD
+            # selection now matches that intentionally -- see
+            # _open_submenu_for_action.
+            price_menu = menu.addMenu("Price Source")
+            for source_key, source_label in PRICE_SOURCES:
+                price_action = price_menu.addAction(source_label)
+                price_action.setCheckable(True)
+                price_action.setChecked(self.model().price_source == source_key)
+                price_action.triggered.connect(
+                    lambda checked=False, k=source_key: self.model().set_price_source(k)
+                )
+            # Registers the SUBMENU-OPENING action itself (menuAction())
+            # as navigable -- not checkable, so without this it would be
+            # invisible to Up/Down like every other non-checkable action
+            # is by design (see _MenuSearchBox's "NAVIGABLE ACTIONS"
+            # docstring paragraph).
+            expr_box.add_navigable_action(price_menu.menuAction())
 
     def build_show_columns_menu(self):
         """

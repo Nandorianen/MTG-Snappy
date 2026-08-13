@@ -60,6 +60,36 @@ wraps between columns, Down opens the filter menu, Enter/Space sorts,
 Tab/Ctrl+Tab/Shift+Tab hand off to the table (group-aware landing, shared
 with the meta-button row's own Tab handling).
 
+**Meta-button row: Up/Down ≠ Left/Right, and a menu-owning button's popup
+needs its own toggle/no-wrap handling.** An earlier version aliased
+Up/Down to the exact same cycling Left/Right does across
+Inventory/Wishlist/Columns/Clear Filters — wrong, since Down/Up on a
+menu-owning button (only Columns today) should EXPAND/COLLAPSE that menu
+instead, not move focus along the row. Fixed in
+`CardDatabaseView.eventFilter`: Left/Right still cycle
+(`_focus_adjacent_metabutton`); Down opens the focused button's menu via
+`self._metabutton_menu_openers` (a no-op for buttons with no menu); Up is
+reserved for collapsing but, by construction, can never actually reach a
+focused button while a menu is open (see next paragraph), so it's just
+consumed there. Two more real gaps this same pass fixed, both specific to
+Columns' `_StayOpenMenu`: (1) Qt's native QMenu arrow-key handling CYCLES
+(Up from the first item wraps to the last) — wrong for a menu standing in
+for a button's expanded/collapsed state, so `_StayOpenMenu.keyPressEvent`
+(card_table.py) now clamps Down at the last item and closes the menu on
+Up-past-the-top instead of wrapping — the same Up-collapses convention
+`_MenuSearchBox`'s own filter menus already have, just without that
+class's two-step "land on nothing highlighted first" version, since there's
+no search box here to double as that intermediate stop. (2) a live QMenu
+grabs the keyboard for the whole app while showing, so the Alt+3 QShortcut
+that opened it can't fire a SECOND time to close it — worked around by
+checking for "the same Alt+N pressed again while this button's menu is
+open" directly in `CardDatabaseView`'s own application-level eventFilter
+(installed for other reasons already — see next paragraph), which still
+receives keypresses during that grab the same way `_MenuSearchBox`'s own
+app-level filter does. `_show_columns_menu` now tracks open/closed state
+(`self._open_menu`) so both a repeat click and a repeat Alt+3 toggle-close
+rather than reopen.
+
 **Plain Tab had to be caught via an app-level `eventFilter`, not
 `keyPressEvent`**, for both `CardTableHeader` and `CardDatabaseView`'s
 meta-button row: `QWidget::event()` runs its own internal
@@ -361,3 +391,10 @@ hit, so whichever happens first is a no-op for the other.
 6. **A single piece of state answering two conceptually different
    questions** ("how much" and "what shape") is a sign it should be two
    separate variables, not a formula needing more tuning.
+7. **A live QMenu's keyboard grab silences background QShortcuts, not
+   just background keyPressEvent handlers.** If a hotkey needs to act a
+   SECOND time while the menu it opened is still showing (e.g. toggle it
+   closed), don't expect the same QShortcut to fire again — intercept the
+   keypress in an application-level eventFilter instead, which still
+   receives events during the grab (same mechanism `_MenuSearchBox` and
+   `ImageZoomWidget`'s own outside-click filters already rely on).

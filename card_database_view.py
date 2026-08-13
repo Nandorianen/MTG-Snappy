@@ -50,6 +50,30 @@ own Ctrl+Tab (below) jumps straight to the table's HEADER (leftmost
 visible column) rather than a cell -- a header is a meaningfully
 different, closer destination than a cell once it's operable on its own.
 Plain Tab still lands on a cell.
+
+UP/DOWN VS. LEFT/RIGHT ON A FOCUSED METABUTTON -- these mean genuinely
+different things, not "cycle the row" for all four (a real bug in an
+earlier version, since fixed): Left/Right move focus along the row of
+buttons (wrapping, see _focus_adjacent_metabutton). Down/Up instead
+EXPAND/COLLAPSE whichever popup menu the focused button owns (currently
+only Columns) -- Down opens it, Up is reserved for closing it. A button
+with no menu (Inventory/Wishlist/Clear Filters) just treats Down/Up as a
+no-op, since there's nothing to expand or collapse.
+
+MENU TOGGLE + ALT+N WHILE OPEN: a live QMenu grabs the keyboard for the
+whole application while showing (see _install_metabutton_keyboard_nav's
+own comment on this), which means the Alt+1..4 QShortcuts genuinely can't
+fire a second time while a menu they opened is still up -- pressing Alt+3
+again to close Columns' menu would otherwise silently do nothing. Fixed
+via the SAME application-level eventFilter this class already installs
+for its other keyboard handling: it still receives keypresses during a
+grab (the same reasoning _MenuSearchBox and ImageZoomWidget's own
+outside-click filters depend on elsewhere in this app), so it recognizes
+"the hotkey that opened this menu was pressed again" and closes it. See
+self._open_menu / _show_columns_menu / _on_columns_menu_closed for the
+open/closed tracking this relies on, and card_table.py's _StayOpenMenu
+for the matching fix to Up/Down's own native cycling inside the menu
+itself (Up at the top now collapses instead of wrapping to the bottom).
 """
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QApplication
@@ -104,9 +128,11 @@ class CardDatabaseView(QWidget):
         # Not checkable -- this is a plain dropdown-opening button, not a
         # persistent on/off state like the two toggles either side of it.
         # Uses CardTableHeader.build_show_columns_menu(), rebuilt fresh on
-        # each click (same pattern card_table.py's own price-source
+        # each open (same pattern card_table.py's own price-source
         # dropdown uses) so it can never show a stale snapshot of which
-        # columns are currently visible.
+        # columns are currently visible. See _show_columns_menu for the
+        # open/close TOGGLE logic this button now needs (see module
+        # docstring's "MENU TOGGLE + ALT+N WHILE OPEN" section).
         self.columns_button = QPushButton("Columns \u25be")
         self.columns_button.setStyleSheet(TOGGLE_STYLE)
         self.columns_button.clicked.connect(self._show_columns_menu)
@@ -156,6 +182,19 @@ class CardDatabaseView(QWidget):
             self.inventory_toggle, self.wishlist_toggle,
             self.columns_button, self.clear_filters_button,
         ]
+
+        # Tracks whichever metabutton-owned popup menu is currently open
+        # (only Columns has one today, but keying this off the OWNING
+        # BUTTON rather than hardcoding "the Columns menu" lets a future
+        # menu-owning metabutton reuse the exact same toggle/Down/Up/Alt+N
+        # machinery for free). None whenever nothing's open. See
+        # _show_columns_menu (toggle open/close), _on_columns_menu_closed
+        # (clears this the instant the menu's own aboutToHide fires, for
+        # every way it can close), and eventFilter's Alt+N/Down branches.
+        self._open_menu = None
+        self._open_menu_button = None
+        self._metabutton_menu_openers = {self.columns_button: self._show_columns_menu}
+
         self._install_metabutton_keyboard_nav()
 
         button_row = QHBoxLayout()
@@ -173,11 +212,29 @@ class CardDatabaseView(QWidget):
         layout.addWidget(self.table)
 
     def _show_columns_menu(self):
+        """
+        Opens the Columns visibility-checklist menu -- or, if it's ALREADY
+        open, closes it instead. A second activation (another click on the
+        button, or the same Alt+3 that opened it -- see eventFilter's
+        Alt+N branch, needed since a live QMenu's keyboard grab stops that
+        QShortcut from firing a second time on its own) should dismiss it,
+        the same "press again to put it away" convention any native popup
+        button gets for free -- this is the fix for that previously
+        missing toggle behavior. self._open_menu is the single source of
+        truth both this method and eventFilter read/act on.
+        """
+        if self._open_menu is not None:
+            self._open_menu.close()
+            return
+
         menu = self.table.header.build_show_columns_menu()
+        self._open_menu = menu
+        self._open_menu_button = self.columns_button
+        menu.aboutToHide.connect(self._on_columns_menu_closed)
         menu.exec(self.columns_button.mapToGlobal(self.columns_button.rect().bottomLeft()))
         # This menu is parented to the header (see build_show_columns_menu
         # -> _StayOpenMenu(self)), which outlives every menu built from
-        # it -- without an explicit teardown, every click here would leave
+        # it -- without an explicit teardown, every open here would leave
         # one more hidden, never-deleted menu behind. Same fix, same
         # reasoning, as card_table.py's own CardTableHeader._run_context_menu
         # -- see NOTES.md's "menu search box focus leak" entry.
@@ -186,10 +243,24 @@ class CardDatabaseView(QWidget):
         # Unlike CardTableHeader's own filter/group-by menus (which
         # open FROM the table's header and hand focus back to the table
         # when they close), this menu opens from a button that lives
-        # outside the table entirely -- closing it (via a selection, or
-        # Escape) should leave the user right back where they started,
-        # not silently relocate them into the table underneath.
+        # outside the table entirely -- closing it (via a selection,
+        # Escape, an outside click, the menu's own Up-collapse, or the
+        # Alt+3 toggle-close above) should leave the user right back
+        # where they started, not silently relocate them into the table.
         self.columns_button.setFocus()
+
+    def _on_columns_menu_closed(self):
+        """
+        Clears the open-menu tracking the instant the menu's own
+        aboutToHide fires -- which happens SYNCHRONOUSLY, before
+        menu.exec() in _show_columns_menu() above even returns, for every
+        way the menu can close: an item picked, Escape, an outside click,
+        _StayOpenMenu's own Up-collapse (see card_table.py), or the Alt+3
+        toggle-close in eventFilter below. Nothing else needs its own
+        separate cleanup path.
+        """
+        self._open_menu = None
+        self._open_menu_button = None
 
     def _sync_toggle_buttons(self):
         for button, column in (
@@ -232,7 +303,13 @@ class CardDatabaseView(QWidget):
         # way: an application-level filter runs ahead of that internal
         # handling unconditionally, for every keypress anywhere in the
         # app -- we narrow it straight back down to "was this actually
-        # one of our four buttons" inside eventFilter below.
+        # one of our four buttons" (or, for the Alt+N-while-a-menu-is-
+        # open case, "is a metabutton menu currently open at all") inside
+        # eventFilter below. This SAME app-level reach is also what makes
+        # the Alt+N-while-open branch possible in the first place: it
+        # still sees keypresses even while a QMenu we opened has the
+        # keyboard grab (see module docstring's "MENU TOGGLE + ALT+N
+        # WHILE OPEN" section).
         QApplication.instance().installEventFilter(self)
         # Alt+1..4, in the same order as self._meta_buttons -- a faster,
         # mouse-free way to jump straight to a specific meta-button instead
@@ -247,16 +324,19 @@ class CardDatabaseView(QWidget):
         # with no extra guard needed) not at all while a QMenu is open:
         # a live popup menu grabs the keyboard for the whole application
         # while showing, so a shortcut on a background widget simply
-        # doesn't get delivered until it closes.
+        # doesn't get delivered until it closes -- see eventFilter's
+        # Alt+N branch for how a SECOND Alt+N (to close that same menu)
+        # is handled instead, since it can't rely on this QShortcut firing.
         #
         # Each hotkey ACTIVATES its button (button.click()), not just
         # focuses it -- Alt+1 should behave like actually pressing the
         # Inventory button, toggling it off again on a second press, the
         # same as clicking it would. click() already does the right thing
         # whether the button is checkable (Inventory/Wishlist -- toggles)
-        # or a one-shot action (Columns opens its menu, Clear Filters
-        # runs), so there's no need to branch on which kind of button this
-        # particular hotkey happens to target.
+        # or a one-shot action (Columns opens its menu -- toggle-closes it
+        # via _show_columns_menu if pressed again while it's still able to
+        # fire; Clear Filters runs), so there's no need to branch on which
+        # kind of button this particular hotkey happens to target.
         self._metabutton_shortcuts = []  # kept alive -- QShortcut has no other owner
         for i, button in enumerate(self._meta_buttons, start=1):
             shortcut = QShortcut(QKeySequence(f"Alt+{i}"), self)
@@ -272,61 +352,114 @@ class CardDatabaseView(QWidget):
         button.setFocus(Qt.ShortcutFocusReason)
         button.click()
 
+    def _alt_key_for_button(self, button):
+        """
+        Qt.Key_1..Key_4 map onto self._meta_buttons by POSITION -- the
+        same order the Alt+1..4 QShortcuts are bound in above. Used by
+        eventFilter to recognize "the same hotkey that opened this menu
+        was just pressed again" while a metabutton's menu is open and its
+        own QShortcut can't fire a second time (see module docstring's
+        "MENU TOGGLE + ALT+N WHILE OPEN" section).
+        """
+        return Qt.Key_1 + self._meta_buttons.index(button)
+
     def eventFilter(self, watched, event):
-        if event.type() == QEvent.KeyPress and watched in self._meta_buttons:
-            key = event.key()
-            mods = event.modifiers()
+        if event.type() != QEvent.KeyPress:
+            return super().eventFilter(watched, event)
 
-            if key in (Qt.Key_Left, Qt.Key_Up):
-                self._focus_adjacent_metabutton(watched, -1)
-                return True
-            if key in (Qt.Key_Right, Qt.Key_Down):
-                self._focus_adjacent_metabutton(watched, 1)
-                return True
+        # A metabutton-owned menu is open (currently only ever Columns)
+        # and the SAME Alt+N that opened it was pressed again -- toggle
+        # it closed. Checked FIRST and independent of `watched`: a live
+        # QMenu grabs the keyboard for the whole application while
+        # showing, so `watched` here is the MENU, never one of our
+        # buttons -- this event would never reach the `watched in
+        # self._meta_buttons` branch below at all, which is exactly why
+        # this needs its own separate check rather than folding into it.
+        if (self._open_menu is not None and event.modifiers() == Qt.AltModifier
+                and event.key() == self._alt_key_for_button(self._open_menu_button)):
+            self._metabutton_menu_openers[self._open_menu_button]()
+            return True
 
-            if key == Qt.Key_Escape:
-                # A quick, NON-destructive way out of this row -- unlike
-                # Tab/Shift+Tab/Ctrl+Tab below (which deliberately jump the
-                # table's cell selection to a specific group boundary, see
-                # focus_table_for_metabutton_tab), Escape just hands focus
-                # back to the table exactly as it already was, leaving
-                # whatever cell selection was active before the user
-                # tabbed up here completely untouched. A plain setFocus()
-                # -- no selection-model call at all -- is what guarantees
-                # that: Qt doesn't touch selection state just because
-                # focus moves within the same window.
-                self.table.setFocus()
-                return True
+        if watched not in self._meta_buttons:
+            return super().eventFilter(watched, event)
 
-            # Shift+Tab: Qt reports this as a distinct Key_Backtab on most
-            # platforms rather than Key_Tab with ShiftModifier set, so both
-            # forms are checked -- same belt-and-suspenders check used for
-            # this exact ambiguity elsewhere in the app (_MenuSearchBox,
-            # CardTableView.keyPressEvent).
-            if key == Qt.Key_Backtab or (key == Qt.Key_Tab and mods & Qt.ShiftModifier):
-                self.table.focus_table_for_metabutton_tab(backward=True)
-                return True
-            if key == Qt.Key_Tab and mods == Qt.ControlModifier:
-                # Ctrl+Tab specifically goes one level UP from a cell --
-                # straight to the table's HEADER row (its leftmost visible
-                # column) instead of a card row. Split out from plain Tab
-                # below now that headers are keyboard-focusable in their
-                # own right (see card_table.py's CardTableHeader) --
-                # Ctrl+Tab is the fast, direct path to column sorting/
-                # filtering without detouring through the grid first.
-                # Focus-only (see CardTableView.focus_leftmost_header) --
-                # arriving via a plain focus hop shouldn't also open that
-                # column's filter menu.
-                self.table.focus_leftmost_header()
-                return True
-            if key == Qt.Key_Tab and mods == Qt.NoModifier:
-                # Plain Tab hands focus to a CELL in the table (landing on
-                # its first cell/group) -- see CardTableView.keyPressEvent
-                # for what Ctrl+Tab means once focus is actually IN the
-                # table (jump to the next group), a separate, later
-                # meaning from the header-focused Ctrl+Tab above.
-                self.table.focus_table_for_metabutton_tab(backward=False)
-                return True
+        key = event.key()
+        mods = event.modifiers()
+
+        if key in (Qt.Key_Left, Qt.Key_Right):
+            self._focus_adjacent_metabutton(watched, -1 if key == Qt.Key_Left else 1)
+            return True
+
+        if key == Qt.Key_Down:
+            # Down EXPANDS -- opens the focused button's own menu, if it
+            # has one (currently only Columns, via
+            # self._metabutton_menu_openers). A deliberate no-op for the
+            # plain toggle/one-shot buttons, which have nothing to
+            # expand. NOT the same as Left/Right (an earlier version
+            # aliased Up/Down to the same cycling Left/Right does --
+            # fixed here: these are two conceptually different actions,
+            # not four-way cycling).
+            opener = self._metabutton_menu_openers.get(watched)
+            if opener is not None:
+                opener()
+            return True
+
+        if key == Qt.Key_Up:
+            # Up COLLAPSES -- but by construction, a menu can only be open
+            # while keyboard events are routed to IT (its own grab), never
+            # to a genuinely focused button (see the Alt+N branch above
+            # for why an open menu's own Up-collapse is instead handled
+            # inside _StayOpenMenu.keyPressEvent, in card_table.py). So Up
+            # reaching a focused button here means there is, structurally,
+            # nothing currently open to collapse -- still explicitly
+            # consumed (not left to fall through to the Left/Right
+            # cycling it used to alias) so the "Up/Down mean something
+            # different from Left/Right" rule holds without exception.
+            return True
+
+        if key == Qt.Key_Escape:
+            # A quick, NON-destructive way out of this row -- unlike
+            # Tab/Shift+Tab/Ctrl+Tab below (which deliberately jump the
+            # table's cell selection to a specific group boundary, see
+            # focus_table_for_metabutton_tab), Escape just hands focus
+            # back to the table exactly as it already was, leaving
+            # whatever cell selection was active before the user
+            # tabbed up here completely untouched. A plain setFocus()
+            # -- no selection-model call at all -- is what guarantees
+            # that: Qt doesn't touch selection state just because
+            # focus moves within the same window.
+            self.table.setFocus()
+            return True
+
+        # Shift+Tab: Qt reports this as a distinct Key_Backtab on most
+        # platforms rather than Key_Tab with ShiftModifier set, so both
+        # forms are checked -- same belt-and-suspenders check used for
+        # this exact ambiguity elsewhere in the app (_MenuSearchBox,
+        # CardTableView.keyPressEvent).
+        if key == Qt.Key_Backtab or (key == Qt.Key_Tab and mods & Qt.ShiftModifier):
+            self.table.focus_table_for_metabutton_tab(backward=True)
+            return True
+        if key == Qt.Key_Tab and mods == Qt.ControlModifier:
+            # Ctrl+Tab specifically goes one level UP from a cell --
+            # straight to the table's HEADER row (its leftmost visible
+            # column) instead of a card row. Split out from plain Tab
+            # below now that headers are keyboard-focusable in their
+            # own right (see card_table.py's CardTableHeader) --
+            # Ctrl+Tab is the fast, direct path to column sorting/
+            # filtering without detouring through the grid first.
+            # Focus-only (see CardTableView.focus_leftmost_header) --
+            # arriving via a plain focus hop shouldn't also open that
+            # column's filter menu.
+            self.table.focus_leftmost_header()
+            return True
+        if key == Qt.Key_Tab and mods == Qt.NoModifier:
+            # Plain Tab hands focus to a CELL in the table (landing on
+            # its first cell/group) -- see CardTableView.keyPressEvent
+            # for what Ctrl+Tab means once focus is actually IN the
+            # table (jump to the next group), a separate, later
+            # meaning from the header-focused Ctrl+Tab above.
+            self.table.focus_table_for_metabutton_tab(backward=False)
+            return True
 
         return super().eventFilter(watched, event)
 
@@ -334,9 +467,11 @@ class CardDatabaseView(QWidget):
         """
         Moves focus one step (+1/-1) along self._meta_buttons from
         `current_button`, WRAPPING at both ends (Python's % already wraps
-        negative indices correctly) -- unlike Tab, which deliberately
-        leaves this row instead of looping (see eventFilter above), arrow
-        keys are meant to stay a closed loop over just these buttons.
+        negative indices correctly) -- Left/Right stay a closed loop over
+        just these buttons (unlike Tab, which deliberately leaves this
+        row instead -- see eventFilter above). Up/Down no longer route
+        through here at all (see eventFilter's Down/Up branches) -- they
+        mean expand/collapse now, not "cycle like Left/Right."
         """
         index = self._meta_buttons.index(current_button)
         next_index = (index + direction) % len(self._meta_buttons)

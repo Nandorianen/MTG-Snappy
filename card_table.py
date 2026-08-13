@@ -886,6 +886,22 @@ class _StayOpenMenu(QMenu):
     menu -- the standard Qt idiom for a checklist-style dropdown (used for
     both the column visibility picker and the per-column value filter,
     where you want to check/uncheck several items in one go).
+
+    ALSO overrides Up/Down keyboard navigation for menus that have NO
+    embedded search box (currently only the Columns visibility picker --
+    every checklist/expression filter menu CardTableHeader builds embeds a
+    _MenuSearchBox instead, whose own app-level eventFilter intercepts
+    Up/Down before they ever reach this class -- see that class's
+    docstring point 1, so this override never fires for those). Qt's own
+    native QMenu arrow-key handling CYCLES (Up from the first item wraps
+    to the last, and vice versa) -- reasonable for an ordinary dismiss-
+    with-Escape menu, but wrong here: this menu really stands in for an
+    EXPANDED/COLLAPSED state of the button that opened it (see
+    CardDatabaseView's Columns button), so "Up past the top" should mean
+    "collapse back to the button," the same convention CardTableHeader's
+    own keyboard-opened filter menus already get via _MenuSearchBox's own
+    Up-collapse behavior. Down is capped at the last item instead of
+    wrapping, for the same "this isn't a cyclic picker" reasoning.
     """
     def mouseReleaseEvent(self, event):
         action = self.activeAction()
@@ -893,6 +909,32 @@ class _StayOpenMenu(QMenu):
             action.trigger()
             return
         super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key_Up, Qt.Key_Down):
+            actions = [a for a in self.actions() if a.isVisible() and a.isEnabled()]
+            current = self.activeAction()
+            if event.key() == Qt.Key_Down:
+                if current in actions:
+                    index = actions.index(current)
+                    if index < len(actions) - 1:
+                        self.setActiveAction(actions[index + 1])
+                    # already on the last item -- clamp, don't wrap
+                elif actions:
+                    self.setActiveAction(actions[0])
+                return
+            # Key_Up
+            if current in actions:
+                index = actions.index(current)
+                if index > 0:
+                    self.setActiveAction(actions[index - 1])
+                    return
+            # Already on the first item (or nothing highlighted at all --
+            # there's nowhere "above" that either) -- collapse the whole
+            # menu instead of wrapping to the bottom.
+            self.close()
+            return
+        super().keyPressEvent(event)
 
 
 class _MenuSearchBox(QLineEdit):

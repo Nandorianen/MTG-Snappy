@@ -56,7 +56,8 @@ class SideNav(QWidget):
         self.view_changed.emit(key)
 
     def select_tab(self, key):
-        """Called by main.py's Ctrl+1/2/3 shortcuts to switch tabs programmatically."""
+        """Called by main.py's digit shortcuts (1/2/3, no Ctrl -- see
+        this module's own docstring) to switch tabs programmatically."""
         button = self.buttons.get(key)
         if button and not button.isChecked():
             button.setChecked(True)

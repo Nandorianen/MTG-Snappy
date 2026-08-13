@@ -24,10 +24,10 @@ THREE TABS:
                       action.
   3. Decks & Tags -- this app's OWN local save data (not from Scryfall at
                       all) -- structurally identical to the Metadata tab's
-                      rows, per your request, just pointed at two different
-                      files with a different action-button label (see
-                      DataFileRow's docstring for why "Update" doesn't make
-                      sense here and "Locate..." does).
+                      rows, just pointed at two different files with a
+                      different action-button label (see DataFileRow's
+                      docstring for why "Update" doesn't make sense here
+                      and "Locate..." does).
 
 WHAT'S ACTUALLY REAL vs. MOCKED:
   - Browse buttons (file AND folder) open genuine QFileDialogs, and if you
@@ -245,11 +245,10 @@ class DataFileRow(QWidget):
     date/action-button on one line (where the dialog is wide enough),
     then a wrapped description underneath. Shared by the Metadata tab (7
     Scryfall bulk-data files) and the Decks & Tags tab (2 local save
-    files) -- structurally identical, per your request, with the action
-    button's label as the one thing that differs between them: "Update"
-    implies redownloading from Scryfall, which makes no sense for the
-    user's own local save data, so that tab passes action_label="Locate..."
-    instead.
+    files) -- structurally identical, with the action button's label as
+    the one thing that differs between them: "Update" implies
+    redownloading from Scryfall, which makes no sense for the user's own
+    local save data, so that tab passes action_label="Locate..." instead.
 
     See the module docstring for why Browse is real (genuine QFileDialog +
     a real, ASYNC os.stat() -- see check_path_async()) while the action

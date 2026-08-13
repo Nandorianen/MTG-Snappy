@@ -4,24 +4,24 @@ frameless_dialog.py
 Shared base for popup windows that shouldn't pretend to be their own
 separate application: no OS title bar, a thin custom title bar (name +
 close button, draggable), and auto-close on a genuine click in the main
-app window. Originally built just for CardDetailDialog; pulled out here so
-TagApplyDialog can share the exact same (slightly fiddly to get right)
-click-outside-closes logic instead of duplicating it.
+app window. Used by CardDetailDialog and TagApplyDialog (via
+dialog_common.py's VerticalTabDialog, by Options and Data Management too)
+so the click-outside-closes logic -- slightly fiddly to get right -- lives
+in exactly one place.
 
 See _TitleBar and FramelessDialog.eventFilter for the two tricky bits:
 dragging without a native title bar, and telling "a click in the real main
 window" apart from "a click inside this dialog" or "inside a transient
 popup menu this dialog opened" (a QMenu's own `.window()` is the menu
-itself, not the main window, so choosing an dropdown option never
+itself, not the main window, so choosing a dropdown option never
 accidentally closes the dialog mid-click).
 
-show_title (new): the title bar is still needed everywhere as a drag
-handle + close button, but the TEXT it shows is now optional -- added so
-CardDetailDialog can put the card's name directly in the content pane
-(styled bigger/bolder, doubling as that pane's header) instead of showing
-the name twice, once in the OS-title-bar-substitute and again in the
-content below it. TagApplyDialog is unaffected -- it never passes this, so
-it defaults to True and keeps showing "Apply Tags" up top same as before.
+show_title: the title bar is always needed as a drag handle + close
+button, but the TEXT it shows is optional -- False lets a dialog put its
+own heading directly in the content pane instead (CardDetailDialog does
+this: the card's name is styled bigger/bolder as the Card pane's own
+header, so it isn't shown twice). Defaults to True, which is what
+TagApplyDialog relies on to show "Apply Tags" in the title bar.
 """
 
 from PySide6.QtWidgets import QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QToolButton, QApplication

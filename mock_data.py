@@ -4,11 +4,11 @@ mock_data.py
 Stand-in for the real data layer we'll build later (Scryfall bulk import -> SQLite).
 
 Why a separate module at all, for something this small? Because when we DO replace
-this with real SQLite queries, the rest of the app (main_window.py) should not need
-to change AT ALL — it just calls get_all_cards() and gets back the same shape of
-data (a list of dicts). This is the "swap the engine, keep the interface" idea:
-as long as the function signature and return shape stay the same, main.py never
-needs to know or care where the cards actually came from.
+this with real SQLite queries, the rest of the app (main.py and friends) should not
+need to change AT ALL -- it just calls get_all_cards() and gets back the same shape
+of data (a list of dicts). This is the "swap the engine, keep the interface" idea:
+as long as the function signature and return shape stay the same, calling code
+never needs to know or care where the cards actually came from.
 
 Each dict mirrors a *subset* of real Scryfall fields, using the same key names
 Scryfall uses (name, mana_cost, type_line, oracle_text, colors, set, rarity) so that
@@ -243,19 +243,13 @@ def get_all_cards():
     """
     The master card catalog -- every card, each showing both how many you
     own (Have) and how many you've wishlisted (Want). This is the ONLY
-    dataset function now (Inventory was folded in here too, alongside
-    Wishlist's earlier collapse -- see PROJECT_CONTEXT.md's "mid-project
-    architectural pivot" section): Inventory and Wishlist are both just
-    "Have > 0" / "Want > 0" filter LENSES on this same catalog, applied
-    live via CardDatabaseView's toggle buttons (card_database_view.py),
-    not separate pre-filtered datasets fetched under a different function
-    name. "Have > 0" isolation used to mean calling a second function
-    (get_inventory_cards(), now removed) that happened to return identical
-    data in this small mock -- collapsing it here removes a redundant seam
-    that would only have grown more confusing once a real, larger dataset
-    made the two functions' results actually diverge in places they
-    shouldn't (a card should isolate the same way regardless of which
-    function fetched it).
+    dataset function: Inventory and Wishlist are both just "Have > 0" /
+    "Want > 0" filter LENSES on this same catalog, applied live via
+    CardDatabaseView's toggle buttons (card_database_view.py), not
+    separate datasets fetched under a different function name -- see
+    PROJECT_CONTEXT.md's "recurring patterns" section for why that's the
+    standing rule in this app: a card should isolate the same way
+    regardless of which lens is looking at it.
     """
     return _with_collection_fields(MOCK_CARDS, _INVENTORY_QTY, _WISHLIST_QTY)
 
@@ -286,7 +280,7 @@ def swatch_for_card(card):
 # ---------------------------------------------------------------------------
 # Card detail data: editions, legalities, rulings.
 #
-# ARCHITECTURE NOTE: a row in the Inventory/Wishlist table represents ONE
+# ARCHITECTURE NOTE: a row in the Card Database table represents ONE
 # owned/wanted COPY of a card IN A SPECIFIC PRINTING (that's what "set" and
 # "rarity" on a MOCK_CARDS entry mean). The card detail popup needs something
 # different: the FULL print history for that card NAME, independent of which

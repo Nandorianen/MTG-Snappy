@@ -5,33 +5,27 @@ The central spreadsheet: a QAbstractTableModel (data) + QTableView (display)
 pair, plus custom machinery layered on top:
 
 1. CardTableHeader (QHeaderView subclass) -- draws a small direction-aware
-   sort arrow and filter-active dot on every column via paintSection; and
-   handles RIGHT-click for a per-column filter, PLUS (for Type/Mana Cost/
-   Price specifically) the "Group by Type," "Group by Color," and "Price
-   Source" controls that used to live behind a separate dropdown-arrow zone
-   in the header itself. Consolidating those into the same right-click menu
-   the filter already lives in removed a second, visually near-identical
-   arrow glyph that used to sit right next to the sort arrow (see the
-   "Type/Mana/Price header cleanup" note below) -- one right-click menu per
-   column is simpler to explain than "click here to sort, click 4px to the
-   right of that to open a totally different menu." Also builds the "Show
-   Columns" visibility-picker menu (build_show_columns_menu below), though
-   that's no longer shown FROM the header itself -- see CardDatabaseView's
-   standalone Columns button.
+   sort arrow and filter-active dot on every column via paintSection, and
+   handles RIGHT-click for a per-column filter menu. For Type/Mana Cost/
+   Price, that same menu also holds "Group by Type," "Group by Color," and
+   "Price Source" -- one menu per column, so there's a single place to
+   explain "everything about how this column is filtered/grouped/sourced"
+   rather than a second click-zone with an unrelated meaning. Also builds
+   the "Show Columns" visibility-picker menu (build_show_columns_menu
+   below) -- shown from CardDatabaseView's standalone Columns button, not
+   from the header itself.
 
-   EDITION AND RARITY ARE NOW TWO ORDINARY, INDEPENDENT COLUMNS, not a
-   single custom-painted "Edition / Rarity" split column with two
-   independently-sortable halves (that design is gone -- see NOTES.md for
-   why and for the one thing worth remembering when touching either
-   column: a print's rarity is a property OF a specific edition/printing,
-   not of the card in the abstract, so any code that reads or changes
-   rarity should always be doing so alongside -- and scoped to -- a
-   specific edition, never rarity in isolation. card_detail_popup.py's
-   edition switcher already gets this right by construction, since
-   picking a print there updates edition and rarity together from the
-   same print record).
+   EDITION AND RARITY ARE TWO ORDINARY, INDEPENDENT COLUMNS -- each
+   sorted/filtered/resized like any other. One thing worth remembering
+   when touching either: a print's rarity is a property OF a specific
+   edition/printing, not of the card in the abstract, so any code that
+   reads or changes rarity should always do so alongside -- and scoped
+   to -- a specific edition, never rarity in isolation.
+   card_detail_popup.py's edition switcher already gets this right by
+   construction, since picking a print there updates edition and rarity
+   together from the same print record.
 
-   FILTERS ARE NOW TWO DIFFERENT SHAPES, DEPENDING ON THE COLUMN (see
+   FILTERS COME IN TWO DIFFERENT SHAPES, DEPENDING ON THE COLUMN (see
    NOTES.md's "Filter overhaul" entry for the full reasoning): Type,
    Mana Cost (color), Edition, and Rarity are genuinely bounded, small
    categorical sets, so they keep the checklist-with-search-box UI.
@@ -53,8 +47,8 @@ pair, plus custom machinery layered on top:
    only in the MODEL's presentation layer (self._display_rows) -- the real
    card data (self._cards) is never contaminated with fake rows.
 
-3. HEADERS ARE NOW FULLY KEYBOARD-FOCUSABLE (this round). A column can hold
-   KEYBOARD focus independently of Qt's own real focus -- see
+3. Headers are fully keyboard-focusable, independently of Qt's own real
+   focus -- a column can hold KEYBOARD focus on its own, see
    CardTableHeader._focused_column, focus_column(), activate_column().
    Reachable via Alt+Shift+Up/Down from the table (CardTableView.
    keyPressEvent, jumping from the current cell's column) or Ctrl+Tab from
@@ -72,18 +66,6 @@ pair, plus custom machinery layered on top:
    ONLY changes behavior for keyboard-opened menus; a mouse right-click
    still hands focus back to the TABLE when its menu closes, exactly as
    before -- see _run_context_menu's `keyboard` flag.
-
-WHY THERE'S NO PER-ROW "..." ACTIONS COLUMN ANYMORE:
-An earlier version had a rightmost "actions" column (ActionButtonDelegate)
-painting a small "..." button per row and reacting to its own click.
-Removed: every action behind it (Apply Tags, Add to Deck/Inventory/
-Wishlist) is fundamentally a SELECTION-scoped operation -- "do this to
-every card I currently have selected," not "do this to the one card I
-happened to click a button on." A per-row button was the wrong shape for
-that from the start. These now live in the row right-click menu instead
-(see CardTableView._show_selection_menu), which already had to compute
-"the current selection" for the tag-apply flow -- reused here rather than
-adding a second, narrower "just this one row" pathway alongside it.
 """
 
 from PySide6.QtWidgets import (
@@ -107,13 +89,11 @@ from tag_apply_dialog import TagApplyDialog
 #   kind "checkbox" -> column 0, native Qt checkbox via CheckStateRole.
 #   kind "price"     -> drawn normally in cells, but its HEADER has a dropdown menu.
 #   kind "text"      -> plain text, default rendering, default single-column sort.
-# Edition and Rarity used to be one custom-painted "split" column (two
-# independently-sortable halves in one header section) -- now two ordinary
-# columns, each sorted/filtered/resized exactly like any other ("text").
-# See NOTES.md for why that design was dropped, and the one thing to
+# Edition and Rarity are ordinary columns, sorted/filtered/resized like
+# any other ("text") -- see this module's own docstring ("EDITION AND
+# RARITY ARE TWO ORDINARY, INDEPENDENT COLUMNS") for the one thing to
 # remember when touching either: rarity is a property of a specific
-# PRINTING, not the card in the abstract -- see this module's own
-# docstring, "EDITION AND RARITY ARE NOW TWO ORDINARY COLUMNS."
+# PRINTING, not the card in the abstract.
 COLUMNS = [
     ("selected", "", "checkbox"),
     ("qty", "Qty", "text"),
@@ -187,9 +167,9 @@ EXPRESSION_COLUMNS = {COL_QTY, COL_CROSS_QTY, COL_NAME, COL_POWER, COL_TOUGHNESS
 # everywhere they're compared/displayed instead of being a normal string.
 EMPTY_VALUE_LABEL = "(none)"
 
-# Menu labels for columns whose header label is blank (currently just the
-# checkbox column, since the old blank-labeled "actions" column is gone --
-# see the module docstring's "no per-row actions column" note).
+# Menu labels for columns whose header label is blank -- currently just
+# the checkbox column (its own real label is a native Qt checkbox, not
+# text).
 MENU_COLUMN_LABELS = {COL_SELECTED: "Checkbox"}
 
 # --- Grouping helpers --------------------------------------------------------
@@ -375,7 +355,7 @@ class CardTableModel(QAbstractTableModel):
         self._source_cards = cards       # the master, unfiltered pool
         self._cards = list(cards)         # currently filtered + sorted + grouped working set
         self.price_source = PRICE_SOURCES[0][0]
-        self.qty_label = qty_label              # e.g. "Have" on both All Card Database and Inventory
+        self.qty_label = qty_label              # configurable per instance, e.g. "Have"
         self.cross_qty_label = cross_qty_label  # e.g. "Want" alongside it
         self._sort_key = None
         self._sort_reverse = False
@@ -826,14 +806,11 @@ class CardTableModel(QAbstractTableModel):
         # place: colorless just isn't part of this filtering dimension at all.
         if self.mana_excluded_colors and any(c in self.mana_excluded_colors for c in card_colors):
             return False
-        # Colorless is also exempt from "Monocolored only" -- earlier this
-        # excluded colorless cards (len == 0 != 1), which is the correct
-        # reading of "monocolored" in the abstract, but conflicts with this
-        # app's actual rule for colorless/X cards specifically: they're
-        # meant to be untouched by ANY mana filter, this one included, not
-        # just the per-color checkboxes above. `len(card_colors) not in
-        # (0, 1)` -- i.e. still excludes genuine MULTICOLOR cards, just no
-        # longer colorless ones.
+        # Colorless is exempt from "Monocolored only" too: `len(card_colors)
+        # not in (0, 1)` excludes genuine MULTICOLOR cards while leaving
+        # colorless cards untouched -- consistent with colorless/X cards
+        # being exempt from every mana filter in this method, not just the
+        # per-color checkboxes above.
         if self.mana_mono_only and len(card_colors) not in (0, 1):
             return False
         # Same set-membership exclusion as the mana-color check above,
@@ -869,18 +846,14 @@ class CardTableModel(QAbstractTableModel):
 
         self._cards = [c for c in self._source_cards if self._passes_filters(c)]
 
-        # Only sort if the user has actually picked a sort column. Falling
-        # back to "sort by name" here used to be unconditional -- but the
-        # table's INITIAL display (built directly in __init__, above) never
-        # goes through this method at all, so the very first time
-        # _commit_reorder() ran for ANY reason (a filter click, a group-by
-        # toggle, or a selection-scoped bulk action like Add to Inventory)
-        # would silently jump the table from its original order to
-        # alphabetical -- a real, visible "why did that just resort itself"
-        # surprise, not something the user asked for. Skipping the sort
-        # entirely when _sort_key is None preserves self._source_cards'
-        # original order instead, consistent with what's already on screen
-        # before anything triggers a reorder.
+        # Only sort if the user actually picked a sort column -- falling
+        # back to "sort by name" unconditionally would silently reorder
+        # the table the moment ANY unrelated action (a filter click, a
+        # group-by toggle, a selection-scoped bulk edit) happens to call
+        # this method, since the table's initial __init__ render never
+        # goes through here. Skipping the sort when _sort_key is None
+        # preserves self._source_cards' original order instead, matching
+        # what's already on screen before anything triggers a reorder.
         if self._sort_key is not None:
             key_funcs = self._key_funcs()
             func = key_funcs.get(self._sort_key, key_funcs["name"])
@@ -949,17 +922,16 @@ class _MenuSearchBox(QLineEdit):
        key (Qt delivers to installed event filters first, target's own
        event handling last). A keyPressEvent override here was therefore
        never actually reached -- QMenu's own navigation ate the key first.
-       This is also what was BROKEN before this class covered the
-       expression box too: a plain QLineEdit with no such interception
-       left Down/Up to QMenu's own native handling, which (since nothing
-       had ever been "the active action") would jump to the first
-       navigable-looking thing it could find -- which could land back on
-       the QWidgetAction wrapping the text box ITSELF, reported as
-       "pressing Down goes back to the textbox." Routing every text box
-       through this one class removes that whole failure mode by
-       construction: setActiveAction() is a direct, supported API for
-       "highlight exactly this action" that never targets the box itself.
-       Install the filter at the APPLICATION level so it runs ahead of
+       Routing every text box through this one class matters: a bare
+       QLineEdit with no such interception leaves Down/Up to QMenu's own
+       native handling, which (since nothing was ever "the active
+       action") jumps to the first navigable-looking thing it finds --
+       which can land back on the QWidgetAction wrapping the text box
+       ITSELF ("pressing Down goes back to the textbox"). setActiveAction()
+       is a direct, supported API for "highlight exactly this action" that
+       never targets the box itself, removing that failure mode by
+       construction. Install the filter at the APPLICATION level so it
+       runs ahead of
        Qt's own internal handling, same shape as the Tab-key interception
        documented in collapsible_pane.py's module docstring. Only VISIBLE
        actions returned by _navigable_actions() are ever targeted. Up is
@@ -1148,12 +1120,12 @@ class _MenuSearchBox(QLineEdit):
         "nothing highlighted" already IS effectively "back at the search
         box" (real Qt keyboard focus never actually leaves the search box
         the whole time a filter menu is open -- see this class's own
-        docstring point 1), so collapsing straight from row 0 skipped
-        that intermediate, meaningful stop entirely. Was a real, reported
-        bug: pressing Up with any row highlighted closed the whole menu
-        instead of stepping back up to "search box active" first. Works
-        identically whether the "row" in question is a checklist value or
-        the registered Clear Filter action -- both are just entries in
+        docstring point 1), so collapsing straight from row 0 would skip
+        that intermediate, meaningful stop entirely -- pressing Up with
+        any row highlighted would close the whole menu instead of
+        stepping back to "search box active" first. Works identically
+        whether the "row" in question is a checklist value or the
+        registered Clear Filter action -- both are just entries in
         _navigable_actions() to this method.
         """
         actions = self._navigable_actions()
@@ -1200,29 +1172,23 @@ class _MenuSearchBox(QLineEdit):
         _handle_submenu_key), rather than trusting Qt's native nested-
         popup keyboard routing to reach it.
 
-        WHY NOT A SECOND submenu.exec()/.popup() CALL, THE FIRST DESIGN
-        TRIED: `QMenu.setActiveAction()` on an action that has a submenu
-        turns out to open that submenu IMMEDIATELY as a documented-ish Qt
-        side effect -- meaning by the time Down navigation lands on Price
-        Source (see _move_highlight), Qt has ALREADY shown it, on its own,
-        before this method is ever called. Calling `.exec(pos)` again on
-        top of that -- the first design -- re-popped an already-visible
-        QMenu, which (confirmed by testing) both shifted its on-screen
-        position by a few pixels versus where Qt had already placed it,
-        and left its internal state inconsistent enough that Left-arrow-
-        to-close and Enter/Space-to-select stopped working reliably after
-        the first use. See NOTES.md for the fuller diagnosis.
+        Never calls exec()/popup() on an already-visible menu:
+        `QMenu.setActiveAction()` on an action with a submenu opens that
+        submenu IMMEDIATELY as an undocumented Qt side effect, so by the
+        time Down navigation lands here (see _move_highlight), Qt has
+        usually already shown it. This just ADOPTS whatever's already
+        open at its current position; `.popup()` is only a fallback for
+        the rare case auto-open didn't happen. Re-showing an already-
+        visible menu via a second exec() call was tried first and caused
+        visible position jitter plus unreliable Left/Enter/Space
+        afterward -- see NOTES.md's "Price Source submenu keyboard
+        access" entry for the full diagnosis.
 
-        THIS VERSION never calls exec()/popup() a second time on an
-        already-visible menu: if Qt's own auto-open already showed it
-        (the common case), this just ADOPTS it as-is, at its own current
-        position -- no repositioning, no jitter. `.popup()` is only
-        called as a fallback for the (should-be-rare) case where auto-
-        open somehow didn't already happen. Either way, the first real
-        item is explicitly highlighted immediately -- addressing "opens
-        but nothing's focused" -- and `self._open_submenu` being set is
-        what redirects this box's own eventFilter into
-        _handle_submenu_key for as long as the submenu stays engaged.
+        The first real item is explicitly highlighted immediately (so
+        the submenu never opens with nothing focused), and
+        `self._open_submenu` being set is what redirects this box's own
+        eventFilter into _handle_submenu_key for as long as the submenu
+        stays engaged.
         """
         submenu = action.menu()
         if submenu is None:
@@ -1355,17 +1321,14 @@ class _MenuSearchBox(QLineEdit):
                 self._move_highlight(-1)
                 return True
             if event.key() == Qt.Key_Tab:
-                # Previously unhandled -- fell through to QMenu's own
-                # default Tab navigation, which walks EVERY action
-                # (including the disabled "Filter by X" header label and
-                # the Show Columns submenu trigger), neither of which
-                # should ever be a navigable stop. Routing through the
-                # same _move_highlight() Up/Down already use fixes this for
-                # free: it already filters to _navigable_actions() (see
-                # that method), and neither the disabled header label nor
-                # an unregistered submenu-opening action is checkable or
-                # registered, so both are already excluded by the exact
-                # logic that's already proven correct for arrow-key nav.
+                # Routed through the same _move_highlight() Up/Down use --
+                # QMenu's own default Tab navigation would walk EVERY
+                # action, including the disabled "Filter by X" header
+                # label and the Show Columns submenu trigger, neither of
+                # which should ever be a navigable stop. _move_highlight
+                # already filters to _navigable_actions() (see that
+                # method), which already excludes both since neither is
+                # checkable or explicitly registered.
                 self._move_highlight(1)
                 return True
             if event.key() == Qt.Key_Space:
@@ -1407,49 +1370,32 @@ class _MenuSearchBox(QLineEdit):
 class CardTableHeader(QHeaderView):
     """
     Custom header handling:
-      - Edition/Rarity: painted as two halves, each independently sortable.
-      - Every other section: default Qt painting, plus two small overlays
-        this class adds -- a direction-aware sort arrow (▲/▼) on whichever
-        column is the active sort, and a filter-active dot on whichever
-        columns currently have a filter applied. Type/Mana Cost/Price used
-        to ALSO reserve a separate dropdown-arrow zone here for "group by"/
-        "price source" -- that's gone now (see "Type/Mana/Price header
-        cleanup" below); those controls moved into the same right-click
-        menu the value-filter checklist already lives in, so clicking
-        ANYWHERE in one of these headers just sorts, same as any other
-        column, and the arrow zone that used to be reserved for the old
-        dropdown is now just more room for the sort arrow.
+      - Every section: default Qt painting, plus three small overlays this
+        class adds -- a direction-aware sort arrow (▲/▼) on whichever
+        column is the active sort, a filter-active dot on whichever
+        columns currently have a filter applied, and a keyboard-focus
+        ring. Every column behaves identically -- clicking anywhere in a
+        header sorts by it; there's no separate click-zone reserved for
+        anything else.
       - RIGHT-click anywhere: a context menu with a per-column value
         checklist filter (where applicable) -- for Type/Mana Cost/Price
         specifically, also "Group by Type"/"Group by Color"/"Price
         Source" (see _build_context_menu) -- empty (and shown as no menu
         at all) for columns with nothing to filter or configure. Column-
         visibility toggling ("Show Columns") lives in a separate top-level
-        button now (CardDatabaseView), not duplicated into every column's
-        own menu -- build_show_columns_menu() below still builds that
-        menu's contents, just no longer wires it in HERE.
+        button (CardDatabaseView), not duplicated into every column's own
+        menu -- build_show_columns_menu() below still builds that menu's
+        contents, just isn't wired to open from here.
       - A few pixels at each section border are reserved EXCLUSIVELY for
         drag-to-resize, checked first, before any of the above.
-      - KEYBOARD FOCUS (this round): a column can hold keyboard focus
-        independently of Qt's own real focus (self._focused_column, drawn
+      - KEYBOARD FOCUS: a column can hold keyboard focus independently of
+        Qt's own real focus (self._focused_column, drawn
         as a ring via _paint_focus_ring) -- see focus_column()/
         activate_column() and keyPressEvent below. This is the part that
         makes right-click menus, sorting, and column visibility all
         reachable without a mouse at all: Alt+Shift+Up/Down from the table
         (CardTableView.keyPressEvent) or Ctrl+Tab from CardDatabaseView's
         meta-button row both land here.
-
-    TYPE/MANA/PRICE HEADER CLEANUP: these three used to paint a SECOND
-    small arrow glyph (▾, opening a "group by"/"price source" menu) right
-    next to where the sort arrow now lives, and the two looked confusingly
-    similar side by side while also being genuinely different affordances
-    (sort-on-click vs. open-a-menu). Moving "Group by Type," "Group by
-    Color," and "Price Source" into the existing right-click filter menu
-    (as ordinary checkable actions / a submenu, alongside the value
-    checklist that menu already has) removes that visual clash entirely --
-    one menu per column for "everything about how this column is
-    filtered/grouped/sourced," one click-anywhere-to-sort behavior for
-    every header, no second arrow to explain.
 
     Reads/writes model state directly via self.model() (Qt wires this up
     automatically once the header is attached to a view via
@@ -1459,17 +1405,15 @@ class CardTableHeader(QHeaderView):
     WHY RESIZE IS HANDLED MANUALLY RATHER THAN VIA super().mousePressEvent():
     Qt's own QHeaderView normally detects "click near a border" internally
     and starts a resize drag on its own. But since this header already
-    intercepts every mousePressEvent to decide between sort / split-sort /
-    right-click-filter, and those decisions were being made using OUR OWN
-    idea of where the section boundary is, a click near an edge kept
-    getting swallowed as "sort this column" before Qt's internal resize
-    detection ever got a chance to see it -- which is exactly the bug
-    reported ("clicking the border is read as sort"). Rather than hope our
-    margin and Qt's internal margin happen to agree, RESIZE_MARGIN below is
-    checked FIRST and, when it matches, this class does the entire
-    press/move/release resize sequence itself (see mouseMoveEvent /
-    mouseReleaseEvent) -- deterministic, and directly testable without
-    depending on Qt's internal fuzzy hit-testing.
+    intercepts every mousePressEvent to decide between sort and right-
+    click-filter, and those decisions use OUR OWN idea of where the
+    section boundary is, a click near an edge would get swallowed as "sort
+    this column" before Qt's internal resize detection ever got a chance
+    to see it. Rather than hope our margin and Qt's internal margin happen
+    to agree, RESIZE_MARGIN below is checked FIRST and, when it matches,
+    this class does the entire press/move/release resize sequence itself
+    (see mouseMoveEvent / mouseReleaseEvent) -- deterministic, and directly
+    testable without depending on Qt's internal fuzzy hit-testing.
     """
 
     sort_requested = Signal(str)
@@ -1530,24 +1474,17 @@ class CardTableHeader(QHeaderView):
         self._search_box_memory = {}
 
         # Tab/Backtab are caught via an APPLICATION-level event filter
-        # (see eventFilter below), NOT keyPressEvent -- this matters, and
-        # was a real, reported bug before the switch. QHeaderView is a
-        # QAbstractItemView subclass, and Qt's own QWidget::event() tries
-        # its OWN internal focusNextPrevChild() handling for a plain,
-        # unmodified Tab/Shift+Tab BEFORE this widget's keyPressEvent()
-        # ever runs -- but that internal handling is explicitly SKIPPED
-        # for Ctrl/Alt-modified keys, which is exactly why Ctrl+Tab always
-        # worked correctly here while plain Tab/Shift+Tab left the header
-        # in an inconsistent focus state (the cell selection moved, but
-        # real Qt focus and the header's own ring stayed put). Same
-        # general class of "Qt's internal Tab handling doesn't reliably
-        # defer to widget-level key logic" issue already documented (and
-        # fixed the identical way -- an app-level filter installed ahead
-        # of Qt's own routing) in collapsible_pane.py's module docstring
-        # and card_database_view.py's meta-button event filter. Installed
-        # once here, for this header's whole lifetime (same as those two
-        # examples), rather than scoped to a single transient popup the
-        # way _MenuSearchBox's own filter is.
+        # (see eventFilter below), NOT keyPressEvent: QHeaderView is a
+        # QAbstractItemView subclass, and Qt's own internal
+        # focusNextPrevChild() handling for a plain, unmodified Tab/
+        # Shift+Tab runs BEFORE keyPressEvent() -- but skips Ctrl/Alt-
+        # modified keys, which is why Ctrl+Tab needs no special handling
+        # here while plain Tab does. Same fix shape as
+        # collapsible_pane.py's Tab interception and card_database_view.py's
+        # meta-button filter -- see NOTES.md's debugging-lessons entry #4
+        # for the general pattern. Installed once, for this header's whole
+        # lifetime, rather than scoped to a single popup the way
+        # _MenuSearchBox's own filter is.
         QApplication.instance().installEventFilter(self)
 
     def eventFilter(self, watched, event):
@@ -1575,18 +1512,17 @@ class CardTableHeader(QHeaderView):
         return super().eventFilter(watched, event)
 
     def paintSection(self, painter: QPainter, rect: QRect, logical_index: int):
-        # Every column now gets plain Qt default section painting (colors
-        # via main.py's QSS) plus this class's own overlays -- a sort
-        # arrow, a filter-active dot, a keyboard-focus ring. Edition and
-        # Rarity used to be one custom-painted "split" section here; now
-        # they're ordinary columns like any other, so there's nothing left
-        # to special-case in this method.
+        # Every column gets plain Qt default section painting (colors via
+        # main.py's QSS) plus this class's own overlays -- a sort arrow, a
+        # filter-active dot, a keyboard-focus ring. Every column is an
+        # ordinary section; nothing here is special-cased per column.
         super().paintSection(painter, rect, logical_index)
-        # `is not None` matters here, not just style: _column_keys has
-        # no entry at all for the checkbox column, so dict.get() returns
-        # None for it -- comparing that directly against a genuinely-unset
-        # _active_sort_key (also None) used to be True, painting a stray
-        # sort arrow on it at startup before anything had ever been sorted.
+        # `is not None` matters here, not just style: _column_keys has no
+        # entry at all for the checkbox column, so dict.get() returns None
+        # for it. Without this guard, comparing that directly against a
+        # genuinely-unset _active_sort_key (also None) would be True,
+        # painting a stray sort arrow on the checkbox column even before
+        # anything has ever been sorted.
         if self._active_sort_key is not None and self._column_keys.get(logical_index) == self._active_sort_key:
             self._paint_sort_arrow(painter, rect)
         if self._column_has_active_filter(logical_index):
@@ -1686,12 +1622,8 @@ class CardTableHeader(QHeaderView):
             return
 
         # Clicking anywhere in a column's header sorts by it, full stop --
-        # Type/Mana Cost/Price used to reserve a right-edge zone here that
-        # opened a totally different menu instead (see the class
-        # docstring's "Type/Mana/Price header cleanup" note), and Edition/
-        # Rarity used to be one section split into two independently-
-        # clickable halves -- both gone now; every column behaves
-        # identically.
+        # every column behaves identically, with no separate click-zone
+        # for a different action.
         key = self._column_keys.get(logical_index)
         if key:
             self._apply_sort(key)
@@ -1764,13 +1696,12 @@ class CardTableHeader(QHeaderView):
         menu got there in the first place.
         """
         menu = self._build_context_menu(column)
-        # Show Columns used to live here too, so EVERY column's right-click
-        # menu had at least one item even when nothing was filterable
-        # (Checkbox, Actions). Now that it's a standalone button (see
-        # CardDatabaseView), those columns have nothing left to show --
-        # better to show no menu at all than an empty popup. Also means
-        # Down-to-open on a keyboard-focused Checkbox column is a
-        # deliberate no-op -- there's genuinely nothing there to open.
+        # A column with nothing filterable (Checkbox) builds an empty
+        # menu here (Show Columns lives in its own standalone button --
+        # see CardDatabaseView -- not duplicated into every column's own
+        # menu) -- better to show no menu at all than an empty popup.
+        # Also means Down-to-open on a keyboard-focused Checkbox column is
+        # a deliberate no-op -- there's genuinely nothing there to open.
         if menu.isEmpty():
             return
         if keyboard:
@@ -1786,15 +1717,12 @@ class CardTableHeader(QHeaderView):
         # `menu` is a local variable, but its Qt PARENT is `self` (this
         # header -- see _StayOpenMenu(self) in _build_context_menu), which
         # outlives every menu built from it. Without an explicit teardown,
-        # every right-click/keyboard-open left one more hidden, never-
-        # deleted QMenu (and its embedded search/expression box) parented
-        # to the header -- harmless functionally, but see NOTES.md's "menu
-        # search box focus leak" entry for why this was also the likely
-        # cause of a real, reported visual bug (a stray blinking cursor in
-        # an old, hidden search box). deleteLater() is safe here even
-        # though `column`'s own bookkeeping below still reads state off
-        # `menu` first -- deletion is deferred to the next event-loop
-        # pass, not immediate.
+        # every right-click/keyboard-open would leave one more hidden,
+        # never-deleted QMenu (and its embedded search/expression box)
+        # parented to the header -- see NOTES.md's "menu search box focus
+        # leak" entry. deleteLater() is safe here even though `column`'s
+        # own bookkeeping below still reads state off `menu` first --
+        # deletion is deferred to the next event-loop pass, not immediate.
         menu.deleteLater()
         # The menu (filter checklist, group-by, price source, ...) just
         # closed, whether via a selection, Enter, Escape/click-away, or
@@ -1921,12 +1849,13 @@ class CardTableHeader(QHeaderView):
         search_box.add_navigable_action(clear_action)
         menu.addSeparator()
 
-        # "Group by Type"/"Group by Color" -- moved here from a separate
-        # dropdown-arrow zone that used to live in the header itself (see
-        # the class docstring's "Type/Mana/Price header cleanup" note).
-        # Checkable + toggled (not triggered) so it behaves like every
-        # other control in this STAY-OPEN menu: click it, see the effect,
-        # keep going, rather than the menu snapping shut.
+        # "Group by Type"/"Group by Color" live in this same right-click
+        # menu (alongside the value filter) rather than a separate
+        # dropdown-arrow zone in the header -- one menu per column for
+        # everything about how it's filtered/grouped/sourced. Checkable +
+        # toggled (not triggered) so it behaves like every other control
+        # in this STAY-OPEN menu: click it, see the effect, keep going,
+        # rather than the menu snapping shut.
         if column == COL_TYPE:
             group_action = menu.addAction("Group by Type")
             group_action.setCheckable(True)
@@ -2001,8 +1930,8 @@ class CardTableHeader(QHeaderView):
         Prefilled with whatever expression is already active on this
         column (`initial_text` -- unlike the checklist boxes' own
         narrowing text, this already comes straight from real, persisted
-        filter state via get_column_expression(), so it was never lost on
-        reopen even before this round's fixes). Enter applies the typed
+        filter state via get_column_expression(), so it's never lost on
+        reopen). Enter applies the typed
         text (CardTableModel.set_column_expression parses it -- see that
         method and _matches_expression for the actual >, >=, <, <=, != /
         substring syntax) and closes the menu. "Clear Filter" -- right
@@ -2058,13 +1987,11 @@ class CardTableHeader(QHeaderView):
 
     def build_show_columns_menu(self):
         """
-        Standalone "Show Columns" visibility-toggle menu -- pulled out of
-        _build_context_menu (where it used to be rebuilt IDENTICALLY inside
-        every single column's right-click menu, the exact same "same lens,
-        rebuilt N times" redundancy already resolved elsewhere in this app
-        for Inventory/Wishlist/All-Card-Database). Now built exactly once,
-        on demand, for the single "Columns" button CardDatabaseView puts in
-        its button row alongside Inventory/Wishlist.
+        Standalone "Show Columns" visibility-toggle menu, built once on
+        demand for the single "Columns" button CardDatabaseView puts in
+        its button row alongside Inventory/Wishlist -- not duplicated into
+        every column's own right-click menu (see this module's docstring,
+        point 1).
 
         Returns a _StayOpenMenu (not built inline by the caller) so
         toggling several columns' visibility in one sitting doesn't require
@@ -2258,23 +2185,16 @@ class CardTableHeader(QHeaderView):
         left, the way the rest of this class's focus-loss handling
         normally works.
 
-        WHY THIS EXTRA STEP WAS STILL NEEDED, EVEN AFTER MOVING TAB
-        HANDLING TO THE APP-LEVEL FILTER (see eventFilter above, and that
-        __init__ comment for the confirmed root cause -- Qt's own
-        QWidget::event() runs focusNextPrevChild() for a plain Tab/
-        Shift+Tab BEFORE keyPressEvent, but explicitly skips that for
-        Ctrl/Alt-modified keys, which is why Ctrl+Tab always worked and
-        plain Tab didn't): catching the key earlier stops Qt's internal
-        handling from running AT ALL, but doesn't by itself guarantee
-        THIS widget hands off its own focus state cleanly -- doing that
-        explicitly here, before the connected slot's own setFocus() call
-        on the table, removes any remaining ambiguity about which side
-        "wins" the real Qt focus. Clearing state HERE, directly and
-        unconditionally, removes any dependency on exactly how/when Qt's
-        own internal handling processes the same
-        keypress -- the header relinquishes itself deterministically
-        before the table ever tries to claim focus, rather than the two
-        racing.
+        WHY THIS EXTRA STEP IS STILL NEEDED, EVEN WITH TAB CAUGHT AT THE
+        APP-LEVEL FILTER (see eventFilter above and __init__'s comment for
+        the Qt mechanism): catching the key earlier stops Qt's internal
+        focusNextPrevChild() handling from running at all, but doesn't by
+        itself guarantee THIS widget hands off its own focus state
+        cleanly. Doing that explicitly here, before the connected slot's
+        own setFocus() call on the table, removes any ambiguity about
+        which side "wins" real Qt focus -- the header relinquishes itself
+        deterministically before the table ever tries to claim it, rather
+        than the two racing.
         """
         self._focused_column = None
         self._suppress_focus_clear = False  # no menu is open at this point; nothing to protect
@@ -2423,9 +2343,8 @@ class CardTableView(QTableView):
         (CardTableHeader.clear_all_search_memory) in one call, so neither
         the CardDatabaseView button nor the Ctrl+Alt+F shortcut has to
         remember to call both separately (and can't drift to calling only
-        one of them). This is the method both of those now bind to,
-        instead of either binding straight to card_model.clear_all_filters
-        the way earlier rounds did.
+        one of them). This is the method both of those bind to, instead of
+        either binding straight to card_model.clear_all_filters directly.
         """
         self.card_model.clear_all_filters()
         self.header.clear_all_search_memory()
@@ -2946,9 +2865,9 @@ class CardTableView(QTableView):
         the selection at each header row and skipping it entirely (rather
         than trying to exclude just that one row from a single rectangle,
         which QItemSelection can't express) sidesteps the span quirk
-        instead of fighting it. Degrades to exactly the old single-
-        rectangle behavior whenever no header row falls in the span (the
-        common case, and the only case when nothing's grouped).
+        instead of fighting it. Reduces to a single rectangle whenever no
+        header row falls in the span (the common case, and the only case
+        when nothing's grouped).
         """
         current = self.currentIndex()
         if not current.isValid():
@@ -3166,8 +3085,7 @@ class CardTableView(QTableView):
         inert header row itself) rather than rolling all the way to a
         completely different group. When nothing's grouped,
         _current_group_bounds() just returns the whole table's row range,
-        so this is identical to the old always-jump-to-the-table's-edge
-        behavior.
+        so this simply jumps to the table's actual edge.
 
         ALREADY AT THAT EDGE -- e.g. Ctrl+Up pressed again while already
         sitting on the current group's own top row: rather than staying
@@ -3242,11 +3160,11 @@ class CardTableView(QTableView):
         default Tab-moves-focus behavior -- see keyPressEvent's comment
         for why Ctrl+Tab is intercepted unconditionally.
 
-        ALWAYS COLUMN 0, not "whatever column you were already in" (an
-        earlier version kept the current column) -- a group jump landing
-        at a different column every time depending on where you happened
-        to be standing made the destination unpredictable, especially
-        landing on some arbitrary column when what you actually wanted was
+        ALWAYS COLUMN 0, not "whatever column you were already in" -- a
+        group jump landing at a different column every time depending on
+        where you happened to be standing would make the destination
+        unpredictable, especially landing on some arbitrary column when
+        what you actually wanted was
         "the top of the next group." Column 0 is a fixed, always-visible,
         always-meaningful landing spot regardless of prior position -- the
         same reasoning CardDatabaseView's meta-button row uses when handing

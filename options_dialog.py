@@ -7,10 +7,9 @@ sensible default and looks/behaves correctly, but nothing here reads from or
 writes to a real settings store yet.
 
 Built on VerticalTabDialog (dialog_common.py) -- see that module's docstring
-for the shared tab-list/stack/keyboard-shortcut plumbing, which used to live
-directly in this file until DataManagementDialog needed the identical
-chrome. This file now only owns what's actually Options-specific: which
-tabs/pages exist, and what's on each one.
+for the shared tab-list/stack/keyboard-shortcut plumbing. This file only
+owns what's actually Options-specific: which tabs/pages exist, and what's
+on each one.
 
 WHY THE ACCENT-COLOR SWATCHES (Themes page) ARE QRadioButton, NOT
 QToolButton: an exclusive group of QRadioButtons sharing one parent layout

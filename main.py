@@ -6,23 +6,22 @@ left (SideNav) driving a QStackedWidget on the right that swaps between
 Card Database, Tag Database, and Deck Viewer (in that order -- see
 side_nav.py's TABS).
 
-The app opens with NO tab selected and an empty placeholder pane ("Open
-any of the tabs on the left...") rather than defaulting to one -- see
+The app opens with NO tab selected -- an empty placeholder pane ("Open
+any of the tabs on the left...") until the user picks one -- see
 self._build_empty_state() and the stack-index-offset comment in __init__.
 Tabs are switchable via 1/2/3 (no Ctrl -- see _handle_digit_shortcut)
 matching TABS' order, in addition to clicking the side nav.
 
 Card Database is the full browsable catalog (every card, showing both Have
-and Want counts) -- there's no separate always-filtered "Inventory" or
-"Wishlist" tab anymore; both are just filter LENSES on this same catalog.
-CardDatabaseView (card_database_view.py) puts Inventory/Wishlist toggle
-buttons above the table as a shortcut for excluding qty == 0 on the Have or
-Want column -- the exact same effect as right-clicking that column's header
-and unchecking "0" manually, just faster and with visible on/off state.
+and Want counts); Inventory and Wishlist are filter LENSES on it, not
+separate tabs -- see card_database_view.py's CardDatabaseView, which puts
+Inventory/Wishlist toggle buttons above the table as a shortcut for
+excluding qty == 0 on the Have or Want column (the same effect as right-
+clicking that column's header and unchecking "0" manually, just faster
+and with visible on/off state).
 
-This replaces the earlier three-panel-with-persistent-detail-panel design --
-the detail view now lives in card_table.py's hover popover instead of a
-fixed panel, freeing up horizontal space for the spreadsheet itself.
+The detail view lives in card_table.py's hover popover, leaving the full
+window width available for the spreadsheet itself.
 """
 
 import sys
@@ -70,9 +69,9 @@ class MainWindow(QMainWindow):
         self._data_management_dialog = None
 
         # --- Build the views that live in the stack ---
-        # LAZY VIEW CONSTRUCTION: no tab is built during startup at all --
-        # the app now opens on the empty-state placeholder (see below), so
-        # EVERY tab is deferred until either the user clicks it or the
+        # LAZY VIEW CONSTRUCTION: no tab is built during startup -- the
+        # app opens on the empty-state placeholder (see below), so EVERY
+        # tab is deferred until either the user clicks it or the
         # background preload queue gets to it. Card Database and Deck
         # Viewer are real, non-trivial widget trees -- CardDatabaseView
         # alone measured ~60ms even against today's tiny 9-card mock
@@ -80,10 +79,10 @@ class MainWindow(QMainWindow):
         # them before they're actually needed is exactly the kind of work
         # standing between opening the app and having a usable window,
         # which conflicts with this app's snappiness priority. Same
-        # lazy-build-on-first-visit pattern VerticalTabDialog already uses
-        # for dialog tabs (dialog_common.py) -- see that module's
-        # docstring for the general reasoning; applied here to the
-        # top-level SideNav tabs instead.
+        # lazy-build-on-first-visit pattern VerticalTabDialog uses for
+        # dialog tabs (dialog_common.py) -- see that module's docstring
+        # for the general reasoning; applied here to the top-level
+        # SideNav tabs instead.
         #
         # Lazy alone just MOVES the one-time construction cost from launch
         # to "whenever the user first clicks over" -- still a real, felt
@@ -110,10 +109,9 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self._build_empty_state())
         for _ in self._view_builders:
             self.stack.addWidget(QWidget())  # placeholder, replaced on first visit
-        # Deliberately NOT building any tab eagerly here (unlike the old
-        # "always show Tag Database on launch" behavior) -- the app now
-        # opens on the empty-state pane above, and every real tab is left
-        # to the background preload queue below / an actual click.
+        # No tab is built eagerly here -- the app opens on the empty-state
+        # pane above, and every real tab is left to the background preload
+        # queue below / an actual click.
 
         # --- Side nav ---
         self.side_nav = SideNav()
@@ -145,7 +143,7 @@ class MainWindow(QMainWindow):
         # instead: one queued task runs, then schedules the next one after
         # PRELOAD_STEP_DELAY_MS rather than looping straight through the
         # whole queue in one call. That gap is what keeps this from just
-        # being the old eager-construction-at-launch problem moved a few
+        # being an eager-construction-at-launch freeze moved a few
         # hundred ms later -- Qt gets to service any pending input/paint
         # event in between two preload steps, so a click during preload
         # doesn't queue up behind one long unbroken freeze.
@@ -174,10 +172,9 @@ class MainWindow(QMainWindow):
 
     def _build_empty_state(self):
         """
-        The pane shown before the user has opened any tab -- deliberately
-        replacing the old "always default to Tag Database" behavior, so
-        launching the app never silently commits to building a tab the
-        user didn't actually ask for.
+        The pane shown before the user has opened any tab -- launching the
+        app never silently commits to building a tab the user didn't
+        actually ask for.
         """
         label = QLabel("Open any of the tabs on the left to view their contents.")
         label.setAlignment(Qt.AlignCenter)
@@ -190,12 +187,12 @@ class MainWindow(QMainWindow):
 
     def _build_card_database(self):
         # Right-click-to-tag needs a reference to the Tag Database's tree.
-        # Tag Database is no longer guaranteed to exist yet by the time
-        # this runs -- nothing is built eagerly anymore (see the
-        # empty-state startup change) -- so explicitly ensure it first
-        # rather than assuming some other code path already triggered it.
-        # Reuses the same guarded builder every other path goes through,
-        # so this is a harmless no-op if Tag Database already exists.
+        # Views build lazily on first visit (see the empty-state startup
+        # design above), so Tag Database isn't guaranteed to exist yet by
+        # the time this runs -- explicitly ensure it first rather than
+        # assuming some other code path already triggered it. Reuses the
+        # same guarded builder every other path goes through, so this is a
+        # harmless no-op if Tag Database already exists.
         self._ensure_view_built(self._tab_indexes["tags"])
         self.card_database = CardDatabaseView(get_all_cards())
         # Goes through .table since CardDatabaseView WRAPS the real
@@ -426,18 +423,18 @@ QHeaderView::section {
     padding: 4px;
 }
 QMenu {
-    /* Nothing styled QMenu at all before this -- once ANY QSS is applied
-       to the application (as main.py does via app.setStyleSheet below),
-       Qt's style engine stops relying on the native platform style's
-       automatic hover/selected rendering for widgets it hasn't been told
-       about. A menu's "currently active/highlighted action" (whether set
-       by real mouse hover OR programmatically via QMenu.setActiveAction(),
-       as card_table.py's _MenuSearchBox does for keyboard navigation) had
-       no visible effect under the app's stylesheet without a matching
-       ::item:selected rule below -- the navigation logic itself could be
-       working perfectly and still look like nothing was happening.
-       Background/border here match QTableView/QTreeWidget's own styling
-       above for visual consistency with the rest of the app. */
+    /* Required for keyboard navigation to be visible: once ANY QSS is
+       applied to the QApplication, Qt's style engine stops relying on
+       the native platform style's automatic hover/selected rendering for
+       widgets it hasn't been told about. Without a matching
+       ::item:selected rule below, a menu's "currently active/highlighted
+       action" (set via mouse hover OR programmatically via
+       QMenu.setActiveAction(), as card_table.py's _MenuSearchBox does
+       for keyboard navigation) has no visible effect -- the navigation
+       logic can be working perfectly and still look like nothing is
+       happening (see NOTES.md's "state-vs-visibility" debugging entry).
+       Background/border match QTableView/QTreeWidget's own styling above
+       for visual consistency. */
     background-color: #2b2d31;
     border: 1px solid #3a3c41;
 }
@@ -461,14 +458,12 @@ QMenu::separator {
     margin: 4px 0px;
 }
 QScrollBar:vertical, QScrollBar:horizontal {
-    /* Added alongside DataManagementDialog's scroll areas (its Metadata/
-       Card Images/Decks & Tags tabs are the first place this app uses a
-       QScrollArea). Same lesson as the QMenu rules above, pre-empted this
-       time instead of rediscovered: once ANY custom QSS is applied to the
-       QApplication, Qt stops rendering EVERY unstyled native widget with
-       its normal platform look, not just the ones we happen to be testing
-       -- a scrollbar with no rule here would show up as a jarring light
-       native bar in an otherwise flat dark app. */
+    /* Same principle as the QMenu rule above: once ANY custom QSS is
+       applied to the QApplication, Qt stops rendering EVERY unstyled
+       native widget with its normal platform look, not just the ones
+       being tested -- a QScrollArea (used by Data Management's tabs)
+       with no rule here would show up as a jarring light native bar in
+       an otherwise flat dark app. */
     background: #1e1f22;
     border: none;
     margin: 0px;
@@ -498,11 +493,11 @@ SideNav QPushButton {
     border: none;
     border-radius: 4px;
     background-color: transparent;
-    /* Same focus-rectangle removal as above -- this was the actual cause
-       of the visible "dashed rectangle THEN highlight" two-step: the
-       native focus rect painted immediately on click, and only the
-       checked-state color came from our own styling, so they visibly
-       arrived in two separate steps. */
+    /* Same focus-rectangle removal as above -- without it, Qt paints its
+       native dashed focus rect immediately on click, while the checked-
+       state color only arrives once our own styling catches up, so a
+       press visibly shows "dashed rectangle, THEN highlight" as two
+       separate steps instead of one. */
     outline: 0;
 }
 SideNav QPushButton:checked {

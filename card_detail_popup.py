@@ -27,11 +27,10 @@ FIVE PIECES OF CUSTOM MACHINERY WORTH CALLING OUT:
 
 3. No system title bar, AND no redundant in-dialog title either: this is a
    frameless top-level QDialog with only a thin CLOSE-button strip (see
-   FramelessDialog's show_title=False) -- the card's NAME is what used to
-   duplicate as both the window's title-bar text and a generic "Card" pane
-   caption; now it's shown exactly once, as the Card pane's own header,
-   styled the way a header should be (bold, larger, full-brightness) which
-   also happens to be the same visual weight the title bar used to use.
+   FramelessDialog's show_title=False) -- the card's NAME is shown exactly
+   once, as the Card pane's own header, styled the way a header should be
+   (bold, larger, full-brightness) rather than also duplicated into a
+   title bar.
    KNOWN LIMITATION: going frameless also loses the OS's native edge-drag
    resize; this dialog is a fixed size for now rather than reimplementing
    resize handles, which wasn't asked for.
@@ -47,21 +46,16 @@ FIVE PIECES OF CUSTOM MACHINERY WORTH CALLING OUT:
    QWidget of its own (see ImageZoomWidget) -- it behaves like a real
    image viewer: opens fit-to-screen, tracks a zoom scalar and a
    separate pan point (not a single crop rectangle -- see
-   ImageZoomWidget's own docstring for why that distinction is what
-   finally made wheel-zoom grow the window correctly, and for the two
-   earlier, now-superseded designs that didn't), and supports actual
-   click-drag panning once zoomed in past what fits on screen, falling
-   back to the original click-drag-moves-the-window behavior when
-   nothing is cropped. This resolves the reticle-zoom idea that used to
-   be parked in NOTES.md -- see README.md's changelog entry for this
-   round for the full design writeup and design journey.
+   ImageZoomWidget's own docstring for why that distinction is what makes
+   wheel-zoom grow the window correctly; NOTES.md has the two earlier,
+   now-superseded designs), and supports actual click-drag panning once
+   zoomed in past what fits on screen, falling back to the original
+   click-drag-moves-the-window behavior when nothing is cropped.
 
-5. StatField's clickable (dropdown) variant now CENTERS BY HUGGING ITS OWN
+5. StatField's clickable (dropdown) variant CENTERS BY HUGGING ITS OWN
    CONTENT rather than centering long text inside an artificially wide
    button -- see StatField's docstring for why that distinction is what
-   actually fixes Edition/Price/Language/Condition's alignment, and why
-   the old "reserve the arrow's width twice" patch was treating a symptom
-   instead of the real cause.
+   actually fixes Edition/Price/Language/Condition's alignment.
 """
 
 from PySide6.QtCore import (
@@ -135,15 +129,14 @@ STAT_ROW_SPACING = 9
 # of an exact answer.
 ROW_COLUMN_SPACING = 8
 # StatField's own inner QVBoxLayout margin (left/right side). Named here
-# because the dynamic_anchor calculation in set_text() needs to know this
-# exact number: anchor_center is computed relative to a FIELD's OUTER left
-# edge (to match how a real grid column's width/center is measured), but
-# it gets applied via setContentsMargins() on the LABEL INSIDE that field,
-# whose own local coordinate origin is already shifted right by this same
-# margin. Forgetting to subtract it was a real, measured ~4px bug -- not a
-# rounding artifact -- caught by instantiating the dialog headlessly and
-# comparing actual rendered text positions rather than trusting the
-# algebra alone. Keep this in sync with StatField.__init__'s own
+# because the dynamic_anchor calculation in set_text() needs this exact
+# number: anchor_center is computed relative to a FIELD's OUTER left edge
+# (matching how a real grid column's width/center is measured), but gets
+# applied via setContentsMargins() on the LABEL INSIDE that field, whose
+# own local coordinate origin is already shifted right by this same
+# margin -- subtracting it is what keeps the two coordinate spaces
+# consistent (see NOTES.md's "Type-column alignment" entry for the bug
+# this fixes). Keep in sync with StatField.__init__'s own
 # `layout.setContentsMargins(FIELD_INNER_MARGIN, 0, FIELD_INNER_MARGIN, 0)`.
 FIELD_INNER_MARGIN = 4
 
@@ -197,37 +190,20 @@ class StatField(QWidget):
     for a QToolButton with a popup menu -- used for Edition, Language,
     Condition, and Price.
 
-    WHY THE CLICKABLE VARIANT USED TO DRIFT LEFT (and how this fixes it):
-    The old approach stretched the QToolButton to fill the ENTIRE field
-    width, then relied on the button's own `text-align: center` CSS plus
-    manually-reserved left/right padding to make the text land in the
-    middle. That's two independent systems fighting over the same pixels:
-    Qt's style engine positions the native dropdown-arrow subcontrol
-    (QToolButton::menu-indicator) according to its OWN geometry rules,
-    while our CSS `padding-left`/`padding-right` was a separate, hand-
-    guessed estimate of how much room that arrow actually needs. When the
-    two disagreed -- which they did, consistently -- the visible text sat
-    off-center by a fixed, structural amount, not a per-case glitch.
-
-    THE FIX, PART 1 (centering): stop stretching the button to fill the
-    field. Give it QSizePolicy.Maximum so it sizes to its own sizeHint()
-    and nothing more, then center THAT tight button within the field using
-    ordinary layout stretches (addStretch() on both sides in a
-    QHBoxLayout) -- see __init__ below. Centering happens at the LAYOUT
-    level now, not via CSS text-align, so it doesn't care what the native
-    style does internally.
-
-    THE FIX, PART 2 (the arrow itself): rather than trying to reserve
-    exactly the right amount of space for the native dropdown-arrow
-    subcontrol -- which is what caused part 1's bug in the first place,
-    and remains a source of "aligns by a width that quietly includes an
-    arrow nobody asked to measure" even once the button hugs its own
-    content -- the arrow is removed entirely (`menu-indicator { image:
-    none; width: 0px; }`). The value text itself is the click target
-    (QToolButton with an attached QMenu opens that menu on any click,
-    arrow glyph or not), so the arrow was purely decorative and, worse,
-    the one remaining thing whose width this class had to estimate rather
-    than measure. No estimate, no drift.
+    WHY THE CLICKABLE VARIANT CENTERS BY HUGGING ITS OWN CONTENT, NOT BY
+    STRETCHING TO FILL THE FIELD: centering via CSS `text-align: center`
+    on a full-width button depends on correctly reserving space for Qt's
+    native dropdown-arrow subcontrol alongside it -- two independent
+    systems (Qt's own arrow placement, our own padding estimate) that have
+    to agree on the same pixels to look right. This class sidesteps that
+    entirely: the button is sized to its own `sizeHint()`
+    (`QSizePolicy.Maximum`) and centered within the field via ordinary
+    layout stretches (`addStretch()` on both sides -- see __init__ below),
+    and the native arrow is removed rather than padded around
+    (`menu-indicator { image: none; width: 0px; }`), since the value text
+    itself is already the click target. No arrow to reserve space for, no
+    two systems to keep in agreement. See NOTES.md's "StatField clickable-
+    variant centering" entry for what this replaced and why it drifted.
     """
 
     def __init__(
@@ -273,12 +249,10 @@ class StatField(QWidget):
         The "notional 1/3-width slot" is read directly from a real
         single-column sibling cell in the SAME QGridLayout (see
         set_grid_anchor(), called by CardDetailDialog right after building
-        the grid), rather than approximated via a formula. Two earlier
-        approaches -- deriving it from Type's own width alone, and later a
-        correction formula involving row spacing -- were each individually
-        reasonable-looking but ultimately still guesses about what a
-        DIFFERENT, independently-laid-out row's column width was. A
-        QGridLayout removes the guessing entirely: column widths are a
+        the grid) -- not approximated via a formula. Two earlier formula-
+        based approaches each looked reasonable and were each wrong for a
+        different reason (see NOTES.md's "Type-column alignment" entry).
+        A QGridLayout removes the guessing entirely: column widths are a
         single property the grid itself computes and enforces identically
         for every cell in that column, spanning or not, so asking the grid
         (via cellRect()) for column 0's width IS the authoritative answer,
@@ -461,11 +435,8 @@ class StatField(QWidget):
             # origin is already shifted right by FIELD_INNER_MARGIN (this
             # field's own inner QVBoxLayout margin) relative to that outer
             # edge. Subtracting it here is what keeps the two coordinate
-            # spaces consistent -- skipping this was a real, measured bug
-            # (confirmed by instantiating the dialog and comparing actual
-            # rendered pixel positions, not just re-deriving the algebra
-            # again): every dynamic_anchor value/caption landed exactly
-            # FIELD_INNER_MARGIN pixels further right than intended.
+            # spaces consistent -- see NOTES.md's "Type-column alignment"
+            # entry for the bug this fixes.
             anchor_center = ref_width / 2 - FIELD_INNER_MARGIN
 
             # indent = distance from Type's left edge to where the text
@@ -651,40 +622,14 @@ class ImageZoomWidget(QWidget):
     become a configurable Options-window setting eventually (explicitly
     low priority), not hardcoded forever.
 
-    HISTORY -- two earlier designs that didn't hold up, kept here in
-    case a related bug resurfaces:
-    - FIRST design tracked window pixel size (_zoom) and image crop
-      (_view_rect) as two independent variables, with a reticle zoom
-      pegging _zoom to whatever fit the screen while _view_rect kept
-      narrowing independently. Wheel-zoom only ever touched _zoom, never
-      _view_rect, so scrolling out after several reticle zooms shrank the
-      WINDOW while the CROP (and the multiplier it drove) stayed frozen
-      at whatever a deep reticle chain had left it at -- the number could
-      report huge magnification even once the window was smaller than
-      its own starting size.
-    - SECOND design deleted _zoom and let a single crop rectangle
-      (_view_rect) drive everything, with wheel-zoom shrinking/growing
-      BOTH the rectangle's width and height by the same factor. This
-      fixed the previous drift, but revealed a NEW problem: scaling both
-      dimensions together means the crop's shape (and therefore the
-      fit-to-screen window's shape) can never change under wheel alone
-      -- wheel-zooming in from the default (card-shaped) crop just
-      produces a smaller, STILL card-shaped crop, which is invisible on
-      a flat placeholder AND never grows the window past its original
-      letterboxed size, since "fit a still-card-shaped rectangle to the
-      screen" always produces the identical result regardless of how
-      small the rectangle conceptually is. Reticle-select worked because
-      it could deliberately produce an odd-shaped crop; wheel alone
-      never could. Repeated unclamped reticle zooms could also push the
-      crop's size far below any wheel-side floor, so a single wheel-out
-      tick after enough reticle zooms could snap the number down by a
-      huge amount in one step instead of shrinking gradually.
-    - THIS version separates "how big is the image" (_zoom, uniform,
-      never distorts the image's own shape) from "which part is
-      centered" (_pan_center) explicitly, rather than trying to
-      represent both with a single rectangle -- and bounds _zoom to a
-      fixed range so neither of the above failure modes has room to
-      recur.
+    HISTORY: two earlier designs (a separate window-size/crop-rectangle
+    pair, then a single crop rectangle scaled by wheel) each fixed a real
+    bug and revealed the next one -- see NOTES.md's "Reticle-zoom image
+    viewer" entry for the full history. THIS version separates "how big
+    is the image" (_zoom, uniform, never distorts shape) from "which part
+    is centered" (_pan_center) explicitly, instead of representing both
+    with one rectangle, and bounds _zoom to a fixed range so neither
+    earlier failure mode has room to recur.
 
     WHY grabMouse() DURING A RETICLE DRAG: the window can be much larger
     than a small fixed starting size (it opens fit-to-screen). Without an
@@ -790,9 +735,8 @@ class ImageZoomWidget(QWidget):
         self.setGeometry(x, y, size.width(), size.height())
         # Explicit repaint request -- NOT guaranteed by setGeometry()
         # above, which only triggers Qt's automatic repaint when the new
-        # geometry actually DIFFERS from the current one. Hit this exact
-        # gap once already in an earlier version of this class -- see
-        # README.md's changelog for that round.
+        # geometry actually DIFFERS from the current one (e.g. re-entering
+        # a zoom level the window is already sized for).
         self.update()
 
     def _clamp_pan_center(self, screen):
@@ -1142,20 +1086,18 @@ class CardDetailDialog(FramelessDialog):
         resize). There's no dynamic-resize scenario a fixed column width
         would ever need to adapt to, so locking it down loses nothing.
 
-        WHY THIS WAS NEEDED: setMaximumWidth() on an individual value
-        button (see StatField.set_text()) caps what THAT WIDGET is
-        allocated, but doesn't reliably stop QGridLayout from using an
-        uncapped minimumSizeHint() when it decides how wide a COLUMN
-        itself needs to be -- a number every cell in that column
-        contributes to jointly. That's a genuinely different computation
-        than the old per-row QHBoxLayout structure had to do, where each
-        row's width was decided independently and never needed to
-        reconcile against a DIFFERENT row's content at all. Setting BOTH
-        setColumnMinimumWidth() and setMaximumWidth() on every cell in a
-        column to the exact SAME number removes any remaining degree of
-        freedom for Qt to negotiate -- the column can't be anything other
-        than that fixed value, regardless of what any individual cell's
-        internal size hint claims.
+        WHY THIS WAS NEEDED: setMaximumWidth() on an individual cell (see
+        StatField.set_text()) caps what THAT WIDGET is allocated, but
+        doesn't reliably stop QGridLayout from sizing the whole COLUMN off
+        an uncapped minimumSizeHint() -- a real difference from the old
+        per-row QHBoxLayout structure, where each row's width was decided
+        independently and never had to reconcile against a different
+        row's content. Setting BOTH setColumnMinimumWidth() and
+        setMaximumWidth() on every cell in a column to the identical
+        number removes Qt's remaining freedom to negotiate -- the column
+        can't be anything other than that fixed value. See NOTES.md's
+        "Type-column alignment" entry for the failed attempts that
+        preceded this fix.
         """
         col_width = self.card_grid.cellRect(
             1, 0
@@ -1203,10 +1145,11 @@ class CardDetailDialog(FramelessDialog):
 
     def _build_card_pane(self):
         # NOT using self._pane_layout() here -- the Card pane's header is
-        # the card's NAME now, not a generic caption, and it gets a
-        # visually heavier style (bold, larger, full-brightness) to match
-        # what the window's title bar used to look like, since this is
-        # replacing that text rather than sitting alongside it.
+        # the card's NAME, not a generic caption, styled heavier (bold,
+        # larger, full-brightness) since this dialog has no separate
+        # title-bar text of its own (see FramelessDialog's show_title=False
+        # in this dialog's __init__) -- the name is shown exactly once,
+        # here.
         layout = QVBoxLayout()
         layout.setContentsMargins(4, 4, 10, 4)
 
@@ -1299,8 +1242,8 @@ class CardDetailDialog(FramelessDialog):
         # Applies the currently-selected Edition/Language/Condition/Foil
         # back onto the actual collection entry (see _apply_changes) --
         # without this there was no way to actually CHANGE what a card in
-        # Inventory/All Card Database is recorded as, only preview
-        # different options. Deliberately doesn't close the dialog
+        # Card Database is recorded as, only preview different options.
+        # Deliberately doesn't close the dialog
         # afterward (unlike the tag-apply widget's one-shot Apply) -- this
         # is more of a "preview, then commit, keep browsing" tool than a
         # single decisive action. Styled to match CardDatabaseView's
@@ -1370,9 +1313,10 @@ class CardDetailDialog(FramelessDialog):
         layout = self._pane_layout("Rulings")
         self.rulings_list = QListWidget()
         self.rulings_list.setWordWrap(True)
-        # At least as wide as the Legality pane -- previously it only got
-        # whatever the 3:2 stretch split left over, which could shrink
-        # below Legality's content-driven width.
+        # At least as wide as the Legality pane, rather than left to
+        # whatever share of the row a stretch factor happens to leave it --
+        # a pane holding rulings text shouldn't end up narrower than one
+        # holding a short "format: status" list.
         self.rulings_list.setMinimumWidth(self._legality_column_width())
         layout.addWidget(self.rulings_list)
         return layout

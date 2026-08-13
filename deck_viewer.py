@@ -14,8 +14,8 @@ from PySide6.QtCore import Qt
 from tree_pane import TreePane
 from collapsible_pane import CollapsibleSplitter
 
-# Placeholder seed data -- stands in for a real decks/folders database query,
-# same pattern as mock_data.py's get_inventory_cards().
+# Placeholder seed data -- stands in for a real decks/folders database
+# query, same pattern as mock_data.py's get_all_cards().
 SEED_DECKS = [
     {"name": "Standard", "is_folder": True, "children": [
         {"name": "Mono Red Aggro", "is_folder": False},

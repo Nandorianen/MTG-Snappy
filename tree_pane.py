@@ -55,9 +55,10 @@ def _make_icon(color, shape):
     Builds a small flat-colored icon -- a rounded square for folders, a
     circle for leaf items, so the SHAPE (not just color) tells folders and
     decks/tags apart at a glance even before you account for chosen color.
-    This is the "just color fill, as with card images" stand-in you asked
-    for; swapping in real icon artwork later only means changing this
-    function's body.
+    A flat color fill stands in for real icon artwork, the same way a flat
+    color swatch stands in for a real card image elsewhere in the app;
+    swapping in real artwork later only means changing this function's
+    body.
     """
     pixmap = QPixmap(16, 16)
     pixmap.fill(Qt.transparent)
@@ -243,9 +244,9 @@ class TreePane(QWidget):
 
     def _generate_unique_name(self, base_label):
         """
-        Always numbered, per your spec ("New Folder (1)" even for the very
-        first one) -- scans the WHOLE tree (not just the current folder) for
-        the highest existing "{base_label} (N)" and returns N+1.
+        Always numbered ("New Folder (1)" even for the very first one) --
+        scans the WHOLE tree (not just the current folder) for the highest
+        existing "{base_label} (N)" and returns N+1.
         """
         import re
         pattern = re.compile(rf'^{re.escape(base_label)} \((\d+)\)$')

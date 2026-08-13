@@ -2,10 +2,7 @@
 dialog_common.py
 -----------------
 Shared chrome for every "vertical tab list + stacked pages" modal window in
-this app (OptionsDialog, DataManagementDialog, and any future one). Pulled
-out once a SECOND such dialog needed the exact same tab-list/stack/
-Ctrl+Tab wiring OptionsDialog already had, rather than copying that
-~40-line pattern a second time.
+this app (OptionsDialog, DataManagementDialog, and any future one).
 
 WHY A SHARED BASE CLASS, NOT JUST SHARED CONSTANTS:
 The tab-list-plus-stack wiring (building the QListWidget, syncing it to a
@@ -119,16 +116,15 @@ class VerticalTabDialog(FramelessDialog):
 
     PAGES ARE BUILT LAZILY, NOT ALL AT ONCE: only the currently-viewed
     tab's widgets actually get constructed; every other tab starts as an
-    empty placeholder until the user first clicks over to it. A dialog
-    with several tabs (Options has six) previously paid the FULL
-    construction cost of every single page before the window could even
-    appear, most of which might never get looked at in a given session --
-    real, avoidable work standing between a click and a window showing up,
-    which conflicts directly with this app's snappiness priority. See
+    empty placeholder until the user first clicks over to it. Building
+    every page eagerly would pay the FULL construction cost of every
+    single tab before the window could even appear, most of which might
+    never get looked at in a given session (Options alone has six) --
+    real, avoidable work standing between a click and a window showing
+    up, which conflicts directly with this app's snappiness priority. See
     `_show_tab()`.
 
-    KEYBOARD SUPPORT (originally worked out for OptionsDialog; now shared
-    by everything built on this base):
+    KEYBOARD SUPPORT (shared by every dialog built on this base):
       - Up/Down/Home/End/type-ahead in the tab list -- free, from
         QListWidget, not reimplemented.
       - Tab/Shift+Tab moves focus through a page's own controls in the
@@ -157,16 +153,16 @@ class VerticalTabDialog(FramelessDialog):
 
         # LAZY PAGE CONSTRUCTION: only the page for whichever tab is
         # actually being looked at gets built. Building every page eagerly
-        # (the original approach) meant paying the FULL construction cost
-        # of every tab before the window could even appear -- for a
-        # 6-tab dialog like Options, most of those tabs might never get
-        # visited in a given session. Each tab starts as an empty
-        # placeholder widget in the stack; _show_tab() swaps in the REAL
-        # page (built by calling the subclass-provided factory function,
-        # exactly once per tab) the first time that tab is actually
-        # selected. Subsequent visits to an already-built tab are free --
-        # _built_pages just tracks which indices have already been swapped
-        # in, so a tab is never rebuilt from scratch on every revisit.
+        # would pay the FULL construction cost of every tab before the
+        # window could even appear -- for a 6-tab dialog like Options,
+        # most of those tabs might never get visited in a given session.
+        # Each tab starts as an empty placeholder widget in the stack;
+        # _show_tab() swaps in the REAL page (built by calling the
+        # subclass-provided factory function, exactly once per tab) the
+        # first time that tab is actually selected. Subsequent visits to
+        # an already-built tab are free -- _built_pages just tracks which
+        # indices have already been swapped in, so a tab is never rebuilt
+        # from scratch on every revisit.
         self._page_factories = self.page_factories()
         self._built_pages = set()
         self.stack = QStackedWidget()

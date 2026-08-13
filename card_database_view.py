@@ -2,13 +2,12 @@
 card_database_view.py
 ----------------------
 Wraps a CardTableView with an outer button row -- Inventory/Wishlist filter-
-preset toggles plus a Columns visibility dropdown (replacing what used to be
-a "Show Columns" submenu duplicated into every column's own right-click
-menu). This is deliberately the same architectural slot NOTES.md's
-"Flexible search engine" entry describes wanting later (a Ctrl+F popup
-living ABOVE whichever table has focus). Building that outer layer now
-means the future search box has an obvious home instead of forcing another
-"does this belong inside or outside CardTableView" decision when it arrives.
+preset toggles plus a Columns visibility dropdown. This is deliberately the
+same architectural slot NOTES.md's "Flexible search engine" entry describes
+wanting later (a Ctrl+F popup living ABOVE whichever table has focus).
+Building that outer layer now means the future search box has an obvious
+home instead of forcing another "does this belong inside or outside
+CardTableView" decision when it arrives.
 
 WHY THIS IS A SEPARATE WIDGET RATHER THAN CHANGING CardTableView ITSELF:
 CardTableView's job (per its own module docstring) is the table: model,
@@ -22,15 +21,12 @@ changes, and nothing that already reaches into it (main.py's tag_source
 wiring, the status bar's rowCount() read) breaks -- it just now reaches
 through self.table instead.
 
-WHY THIS REPLACES THE SEPARATE INVENTORY TAB:
-Inventory was always "All Card Database, pre-filtered to Have > 0" --
-mock_data.py's get_inventory_cards() and get_all_cards() already returned
-identically-shaped rows (same qty/cross_qty source lists), just under two
-different function names. That's the exact same redundancy the Wishlist
-tab had before it got folded into a filter lens on "All Card Database"
-(see PROJECT_CONTEXT.md's "mid-project architectural pivot" section) --
-Inventory gets the same treatment here: one table, one Inventory-mode
-toggle button standing in for what used to be a whole separate tab.
+Inventory and Wishlist are both filter LENSES on the one Card Database
+table (Have > 0 / Want > 0), not separate tabs or datasets -- see
+PROJECT_CONTEXT.md's "recurring patterns" section for why that's the
+standing rule in this app. The Inventory toggle excludes qty == "0" from
+the Qty column; Wishlist does the same for cross_qty -- identical in
+effect to right-clicking that column's header and unchecking "0" by hand.
 
 TOGGLE STATE IS TWO-WAY, NOT A SHORTCUT THAT FIRES AND FORGETS:
 Clicking "Inventory" excludes qty == "0" from the Qty column (identical to
@@ -48,12 +44,12 @@ a button showing the wrong state -- silently lying about what filter is
 actually applied, which is worse than not having the buttons show state
 at all.
 
-KEYBOARD ACCESS TO TABLE HEADERS (this round): headers are now themselves
-keyboard-focusable (see card_table.py's CardTableHeader). This row's
-own Ctrl+Tab (below) reflects that: it now jumps straight to the table's
-HEADER (leftmost visible column) rather than a cell, since a header is a
-meaningfully different, closer destination now that it's operable on its
-own. Plain Tab is unchanged -- it still lands on a cell.
+KEYBOARD ACCESS TO TABLE HEADERS: headers are themselves
+keyboard-focusable (see card_table.py's CardTableHeader), so this row's
+own Ctrl+Tab (below) jumps straight to the table's HEADER (leftmost
+visible column) rather than a cell -- a header is a meaningfully
+different, closer destination than a cell once it's operable on its own.
+Plain Tab still lands on a cell.
 """
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QApplication
@@ -107,12 +103,10 @@ class CardDatabaseView(QWidget):
 
         # Not checkable -- this is a plain dropdown-opening button, not a
         # persistent on/off state like the two toggles either side of it.
-        # Reuses the SAME menu-building code that used to be duplicated
-        # into every column's own right-click menu (CardTableHeader.
-        # build_show_columns_menu) -- one shared instance now, rebuilt
-        # fresh on each click (same pattern card_table.py's own price-
-        # source dropdown already uses) so it can never show a stale
-        # snapshot of which columns are currently visible.
+        # Uses CardTableHeader.build_show_columns_menu(), rebuilt fresh on
+        # each click (same pattern card_table.py's own price-source
+        # dropdown uses) so it can never show a stale snapshot of which
+        # columns are currently visible.
         self.columns_button = QPushButton("Columns \u25be")
         self.columns_button.setStyleSheet(TOGGLE_STYLE)
         self.columns_button.clicked.connect(self._show_columns_menu)

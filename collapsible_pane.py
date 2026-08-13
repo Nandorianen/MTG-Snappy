@@ -7,8 +7,9 @@ CollapsibleSplitter wraps ANY left widget + right widget pair with:
     single click, without needing to drag the divider to zero,
   - collapsing the LEFT pane when the user clicks anywhere in the RIGHT
     widget's contents,
-  - collapsing on Tab (a placeholder binding, as you said -- easy to rebind
-    later).
+  - collapsing on Tab (a provisional binding -- easy to rebind to
+    something else later if Tab turns out to be wanted for something
+    more specific to whatever's inside the two panes).
 
 This class deliberately knows NOTHING about trees, decks, or tags -- it just
 holds "widget A" and "widget B." That's what makes it reusable for the Deck
@@ -16,16 +17,15 @@ Viewer and Tag Database views today, and for anything else later that wants
 a collapsible sidebar (e.g. a future filter panel).
 
 WHY TAB IS HANDLED IN eventFilter() RATHER THAN keyPressEvent()/event():
-An earlier version of this file caught Key_Tab in the SPLITTER's own
-event() override. That worked in isolated tests (calling splitter.event()
-directly) but not in the real app, and here's why: keyboard focus normally
-sits on a CHILD widget -- the tree inside the left pane, or a table inside
-the right pane -- not on the splitter itself. Qt delivers key events
-directly to whichever widget currently has focus, and that widget's own
-event() handling intercepts Tab internally to move focus to the next widget,
-before the event ever bubbles up to a parent's event() override. So a
-Key_Tab pressed while the tree has focus never reaches the splitter's
-event() at all.
+Keyboard focus normally sits on a CHILD widget -- the tree inside the left
+pane, or a table inside the right pane -- not on the splitter itself. Qt
+delivers key events directly to whichever widget currently has focus, and
+that widget's own event() handling intercepts Tab internally to move
+focus to the next widget, before the event ever bubbles up to a parent's
+event() override -- so a Key_Tab pressed while the tree has focus never
+reaches the splitter's own event() at all. See NOTES.md's debugging-
+lessons entry #4 for the general pattern (this is the first of several
+places in this app that need the same fix).
 The fix: an application-level event filter (installed via
 QApplication.installEventFilter) runs BEFORE the event reaches its target
 widget's own event() handling, for every event in the whole application.

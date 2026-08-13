@@ -1,7 +1,7 @@
 """
 tag_tree.py
 -----------
-The Tag Database tab. Now built on the SAME TreePane + CollapsibleSplitter
+The Tag Database tab. Built on the SAME TreePane + CollapsibleSplitter
 as deck_viewer.py -- this is the payoff of building TreePane generically:
 this file is almost entirely just configuration (labels + seed data), not
 new logic. That directly satisfies goal #7 ("Tag Database pane should

@@ -81,22 +81,28 @@ from PySide6.QtCore import Qt, QEvent
 from PySide6.QtGui import QKeySequence, QShortcut
 
 from card_table import CardTableView, COL_QTY, COL_CROSS_QTY
+from scaling import scale_manager, sp
 
-TOGGLE_STYLE = """
-QPushButton {
-    padding: 5px 14px;
+
+def _toggle_style():
+    """Function, not a static string -- see main.py's build_stylesheet
+    comment for why any QSS carrying a pixel metric has to be rebuilt
+    fresh against the current ui_scale rather than frozen at import."""
+    return f"""
+QPushButton {{
+    padding: {sp(5)}px {sp(14)}px;
     border: 1px solid #3a3c41;
-    border-radius: 4px;
+    border-radius: {sp(4)}px;
     background-color: #2b2d31;
-}
-QPushButton:checked {
+}}
+QPushButton:checked {{
     background-color: #3d6a8f;
     border: 1px solid #4f8fc0;
-}
-QPushButton:hover:!checked {
+}}
+QPushButton:hover:!checked {{
     background-color: #313338;
-}
-QPushButton:focus {
+}}
+QPushButton:focus {{
     /* Same "outline: 0" trick main.py's SideNav buttons already use to
        drop Qt's native dashed focus rectangle -- replaced here with an
        underline on the button's own text instead, a much less visually
@@ -105,7 +111,7 @@ QPushButton:focus {
        below for how these buttons are actually navigated once focused. */
     outline: none;
     text-decoration: underline;
-}
+}}
 """
 
 
@@ -123,7 +129,7 @@ class CardDatabaseView(QWidget):
         self.wishlist_toggle = QPushButton("Wishlist")
         for button in (self.inventory_toggle, self.wishlist_toggle):
             button.setCheckable(True)
-            button.setStyleSheet(TOGGLE_STYLE)
+            button.setStyleSheet(_toggle_style())
 
         # Not checkable -- this is a plain dropdown-opening button, not a
         # persistent on/off state like the two toggles either side of it.
@@ -134,7 +140,7 @@ class CardDatabaseView(QWidget):
         # open/close TOGGLE logic this button now needs (see module
         # docstring's "MENU TOGGLE + ALT+N WHILE OPEN" section).
         self.columns_button = QPushButton("Columns \u25be")
-        self.columns_button.setStyleSheet(TOGGLE_STYLE)
+        self.columns_button.setStyleSheet(_toggle_style())
         self.columns_button.clicked.connect(self._show_columns_menu)
 
         # One-shot action (not checkable, like Columns) -- resets every
@@ -151,7 +157,7 @@ class CardDatabaseView(QWidget):
         # columns and get reset the same way everything else does, then
         # re-sync themselves via the modelReset listener below like always.
         self.clear_filters_button = QPushButton("Clear Filters")
-        self.clear_filters_button.setStyleSheet(TOGGLE_STYLE)
+        self.clear_filters_button.setStyleSheet(_toggle_style())
         self.clear_filters_button.clicked.connect(self.table.clear_all_filters)
 
 
@@ -198,18 +204,31 @@ class CardDatabaseView(QWidget):
         self._install_metabutton_keyboard_nav()
 
         button_row = QHBoxLayout()
-        button_row.setContentsMargins(8, 6, 8, 6)
+        button_row.setContentsMargins(sp(8), sp(6), sp(8), sp(6))
         button_row.addWidget(self.inventory_toggle)
         button_row.addWidget(self.wishlist_toggle)
         button_row.addWidget(self.columns_button)
         button_row.addWidget(self.clear_filters_button)
         button_row.addStretch()  # reserved space -- future search box lands here
+        self._button_row = button_row
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         layout.addLayout(button_row)
         layout.addWidget(self.table)
+
+        # Live rescaling: re-apply the four buttons' QSS (padding/border-
+        # radius) and the row's own margins whenever ui_scale changes --
+        # neither is touched automatically by Qt's font-metrics reflow,
+        # unlike the buttons' own TEXT, which already scales for free via
+        # the app-wide font (see scaling.py).
+        scale_manager.scale_changed.connect(self._apply_button_row_scale)
+
+    def _apply_button_row_scale(self):
+        for button in self._meta_buttons:
+            button.setStyleSheet(_toggle_style())
+        self._button_row.setContentsMargins(sp(8), sp(6), sp(8), sp(6))
 
     def _show_columns_menu(self):
         """

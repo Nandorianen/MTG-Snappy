@@ -82,6 +82,7 @@ from mock_data import RARITY_ORDER, PRICE_SOURCES
 from card_popover import CardPopover
 from card_detail_popup import CardDetailDialog
 from tag_apply_dialog import TagApplyDialog
+from scaling import scale_manager, sp
 
 
 # --- Column definitions -----------------------------------------------------
@@ -1579,8 +1580,10 @@ class CardTableHeader(QHeaderView):
     def _paint_sort_arrow(self, painter, rect, right_margin=4):
         painter.save()
         painter.setPen(QColor(SORT_ARROW_COLOR))
-        arrow_rect = QRect(rect.right() - SORT_ARROW_ZONE_WIDTH - right_margin, rect.top(),
-                            SORT_ARROW_ZONE_WIDTH, rect.height())
+        zone_width = sp(SORT_ARROW_ZONE_WIDTH)
+        margin = sp(right_margin)
+        arrow_rect = QRect(rect.right() - zone_width - margin, rect.top(),
+                            zone_width, rect.height())
         painter.drawText(arrow_rect, Qt.AlignCenter, self._sort_arrow_glyph())
         painter.restore()
 
@@ -1600,7 +1603,9 @@ class CardTableHeader(QHeaderView):
         painter.save()
         painter.setPen(Qt.NoPen)
         painter.setBrush(QColor(FILTER_DOT_COLOR))
-        painter.drawEllipse(rect.left() + 4, rect.top() + 4, FILTER_DOT_SIZE, FILTER_DOT_SIZE)
+        offset = sp(4)
+        dot_size = sp(FILTER_DOT_SIZE)
+        painter.drawEllipse(rect.left() + offset, rect.top() + offset, dot_size, dot_size)
         painter.restore()
 
     def _paint_focus_ring(self, painter, rect):
@@ -1612,10 +1617,10 @@ class CardTableHeader(QHeaderView):
         painter.save()
         pen = painter.pen()
         pen.setColor(QColor(HEADER_FOCUS_RING_COLOR))
-        pen.setWidth(2)
+        pen.setWidth(sp(2))
         painter.setPen(pen)
         painter.setBrush(Qt.NoBrush)
-        painter.drawRect(rect.adjusted(1, 1, -2, -2))
+        painter.drawRect(rect.adjusted(sp(1), sp(1), -sp(2), -sp(2)))
         painter.restore()
 
     # --- Manual resize: press near a border, drag, release -------------------
@@ -1634,10 +1639,11 @@ class CardTableHeader(QHeaderView):
         section_x = self.sectionViewportPosition(logical_index)
         section_width = self.sectionSize(logical_index)
         rel_x = pos.x() - section_x
+        margin = sp(self.RESIZE_MARGIN)
 
-        if rel_x >= section_width - self.RESIZE_MARGIN:
+        if rel_x >= section_width - margin:
             return logical_index
-        if rel_x <= self.RESIZE_MARGIN:
+        if rel_x <= margin:
             visual = self.visualIndex(logical_index)
             if visual > 0:
                 return self.logicalIndex(visual - 1)
@@ -1675,7 +1681,7 @@ class CardTableHeader(QHeaderView):
     def mouseMoveEvent(self, event):
         if self._resizing_column is not None:
             delta = event.position().toPoint().x() - self._resize_start_x
-            new_width = max(self.MIN_SECTION_WIDTH, self._resize_start_width + delta)
+            new_width = max(sp(self.MIN_SECTION_WIDTH), self._resize_start_width + delta)
             self.resizeSection(self._resizing_column, new_width)
             event.accept()
             return
@@ -2316,7 +2322,7 @@ class CardTableView(QTableView):
         self.card_model.modelReset.connect(self._select_default_cell_if_unselected)
 
         self.horizontalHeader().setStretchLastSection(False)
-        self.setColumnWidth(COL_SELECTED, 28)
+        self.setColumnWidth(COL_SELECTED, sp(28))
         self.verticalHeader().setVisible(False)
 
         self.viewport().setMouseTracking(True)
@@ -2375,6 +2381,25 @@ class CardTableView(QTableView):
         # table first appears, not only after the first sort/filter/group
         # change.
         self._select_default_cell_if_unselected()
+
+        # Live rescaling: the checkbox column's fixed width and every
+        # header paint metric (sort arrow, filter dot, focus ring -- all
+        # already routed through sp() at PAINT time above) need an
+        # explicit repaint/relayout trigger on a scale change, since none
+        # of them are driven by Qt's own automatic font-metrics reflow.
+        # Row heights, by contrast, need NO explicit handling here: Qt's
+        # default row-height delegate already derives from the current
+        # font's metrics, so a text_scale change grows them for free the
+        # next time the view paints -- resizeRowsToContents() below just
+        # makes that recompute happen immediately instead of waiting for
+        # an incidental repaint.
+        scale_manager.scale_changed.connect(self._apply_table_scale)
+
+    def _apply_table_scale(self):
+        self.setColumnWidth(COL_SELECTED, sp(28))
+        self.resizeRowsToContents()
+        self.header.update()
+        self.viewport().update()
 
     def clear_all_filters(self):
         """

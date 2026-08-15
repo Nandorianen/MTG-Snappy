@@ -38,6 +38,8 @@ from tag_tree import TagTreePanel
 from deck_viewer import DeckViewerView
 from card_database_view import CardDatabaseView
 from mock_data import get_all_cards
+import scaling
+from scaling import scale_manager, sp
 # OptionsDialog and DataManagementDialog are deliberately NOT imported here
 # at module level -- see _open_options/_open_data_management, and the
 # background-preload block in __init__, below.
@@ -169,6 +171,19 @@ class MainWindow(QMainWindow):
         # text field (a filter search box, an in-progress Qty edit)
         # before that widget ever saw the keystroke.
         QApplication.instance().installEventFilter(self)
+
+        # Live rescaling: whenever either scale changes (Ctrl+wheel
+        # anywhere, or a slider in Options -- see scaling.py), rebuild
+        # and reapply the app-wide stylesheet so every sp()-driven
+        # padding/border-radius/scrollbar-size value in it picks up the
+        # new ui_scale immediately. Text scaling itself needs no such
+        # hook here -- scale_manager already reapplies the font directly
+        # (see ScaleManager._apply_font_scale), and Qt's own layout
+        # system reflows around that on its own.
+        scale_manager.scale_changed.connect(self._apply_scaled_stylesheet)
+
+    def _apply_scaled_stylesheet(self):
+        QApplication.instance().setStyleSheet(build_stylesheet())
 
     def _build_empty_state(self):
         """
@@ -366,6 +381,27 @@ class MainWindow(QMainWindow):
     # for analogous "this key means something different depending on
     # context" situations.
     def eventFilter(self, watched, event):
+        # Ctrl+Wheel: global combined interface+text zoom, from anywhere
+        # in the app (any widget, not just this window) -- checked FIRST,
+        # independent of `watched`, for the same reason
+        # CardDatabaseView's own Alt+N-while-menu-open check is: this has
+        # to work regardless of which specific widget currently has
+        # keyboard/mouse focus, so keying it to `watched` would make it
+        # fire inconsistently depending on what's under the cursor. See
+        # scaling.py's module docstring for why this moves BOTH scales
+        # together rather than just one.
+        if event.type() == QEvent.Wheel and event.modifiers() & Qt.ControlModifier:
+            # angleDelta().y() is in eighths of a degree; Qt's own
+            # convention is 120 units per one physical "notch" on a
+            # standard detented wheel -- dividing by 120 is what turns a
+            # possibly-multi-notch scroll (a fast flick) into a whole
+            # number of steps instead of over- or under-reacting to it.
+            delta = event.angleDelta().y()
+            if delta != 0:
+                steps = delta / 120
+                scale_manager.adjust_combined(steps)
+            return True  # consumed -- don't ALSO scroll whatever's under the cursor
+
         if event.type() == QEvent.KeyPress and event.modifiers() == Qt.NoModifier:
             key = event.key()
             if key in (Qt.Key_1, Qt.Key_2, Qt.Key_3) and self._digit_shortcuts_active():
@@ -393,13 +429,40 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
 
-STYLE_SHEET = """
-QWidget {
+def build_stylesheet():
+    """
+    Returns the app-wide QSS as a freshly-built string, with every pixel
+    metric (padding, border-radius, min-height/width, scrollbar
+    thickness, ...) routed through scaling.sp() instead of a bare
+    literal -- see scaling.py's module docstring for why this has to be
+    a FUNCTION, called fresh on every scale change (via
+    MainWindow._apply_scaled_stylesheet), rather than a static module-
+    level string computed once at import time: a plain string built at
+    import time would freeze at whatever ui_scale happened to be active
+    the moment this module first loaded, and Ctrl+wheel / the Options
+    sliders would have nothing left to change.
+
+    1px hairline borders/heights (QTableView's border, QMenu::separator's
+    height, the sort-arrow/focus-ring line widths elsewhere) are
+    deliberately LEFT UNSCALED -- a hairline is a hairline at any zoom
+    level in most real UIs (this app's own header focus ring already
+    makes the same choice at 2px, see card_table.py's
+    HEADER_FOCUS_RING_COLOR usage), and sp(1) would round-trip to the
+    same "1" for most of this app's supported scale range anyway.
+    """
+    return f"""
+/* NOTE: deliberately no `font-size: Npx` rule here (there used to be
+   one, fixed at 13px). A QSS font-size on QWidget would win over
+   QApplication's own default font -- which is exactly the mechanism
+   text_scale relies on (see scaling.py's _apply_font_scale) -- so
+   leaving a hardcoded font-size in this stylesheet would have silently
+   pinned every widget's text at 13px regardless of text_scale. Font
+   size is controlled ENTIRELY via the app's default QFont from here on. */
+QWidget {{
     background-color: #1e1f22;
     color: #e3e3e3;
-    font-size: 13px;
-}
-QTableView, QTreeWidget, QListWidget {
+}}
+QTableView, QTreeWidget, QListWidget {{
     background-color: #2b2d31;
     border: 1px solid #3a3c41;
     gridline-color: #3a3c41;
@@ -409,20 +472,20 @@ QTableView, QTreeWidget, QListWidget {
        selection clearly via background-color below; the extra native
        focus outline just looks like a visual bug on top of it. */
     outline: 0;
-}
-QTableView::item:selected, QTreeWidget::item:selected {
+}}
+QTableView::item:selected, QTreeWidget::item:selected {{
     background-color: #3d6a8f;
-}
-QTableView::item:focus, QTreeWidget::item:focus {
+}}
+QTableView::item:focus, QTreeWidget::item:focus {{
     outline: none;
     border: none;
-}
-QHeaderView::section {
+}}
+QHeaderView::section {{
     background-color: #141517;
     border: 1px solid #3a3c41;
-    padding: 4px;
-}
-QMenu {
+    padding: {sp(4)}px;
+}}
+QMenu {{
     /* Required for keyboard navigation to be visible: once ANY QSS is
        applied to the QApplication, Qt's style engine stops relying on
        the native platform style's automatic hover/selected rendering for
@@ -437,27 +500,27 @@ QMenu {
        for visual consistency. */
     background-color: #2b2d31;
     border: 1px solid #3a3c41;
-}
-QMenu::item {
-    padding: 4px 24px 4px 8px;
+}}
+QMenu::item {{
+    padding: {sp(4)}px {sp(24)}px {sp(4)}px {sp(8)}px;
     background-color: transparent;
-}
-QMenu::item:selected {
+}}
+QMenu::item:selected {{
     /* Same selection color QTableView/QTreeWidget already use above --
        this is the rule that makes arrow-key navigation in the filter-menu
        search box (and ordinary mouse hover in every other menu in the
        app) actually visible. */
     background-color: #3d6a8f;
-}
-QMenu::item:disabled {
+}}
+QMenu::item:disabled {{
     color: #6b6f76;
-}
-QMenu::separator {
+}}
+QMenu::separator {{
     height: 1px;
     background-color: #3a3c41;
-    margin: 4px 0px;
-}
-QScrollBar:vertical, QScrollBar:horizontal {
+    margin: {sp(4)}px 0px;
+}}
+QScrollBar:vertical, QScrollBar:horizontal {{
     /* Same principle as the QMenu rule above: once ANY custom QSS is
        applied to the QApplication, Qt stops rendering EVERY unstyled
        native widget with its normal platform look, not just the ones
@@ -467,31 +530,31 @@ QScrollBar:vertical, QScrollBar:horizontal {
     background: #1e1f22;
     border: none;
     margin: 0px;
-}
-QScrollBar:vertical { width: 12px; }
-QScrollBar:horizontal { height: 12px; }
-QScrollBar::handle:vertical, QScrollBar::handle:horizontal {
+}}
+QScrollBar:vertical {{ width: {sp(12)}px; }}
+QScrollBar:horizontal {{ height: {sp(12)}px; }}
+QScrollBar::handle:vertical, QScrollBar::handle:horizontal {{
     background: #3a3c41;
-    border-radius: 5px;
-}
-QScrollBar::handle:vertical { min-height: 24px; }
-QScrollBar::handle:horizontal { min-width: 24px; }
-QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {
+    border-radius: {sp(5)}px;
+}}
+QScrollBar::handle:vertical {{ min-height: {sp(24)}px; }}
+QScrollBar::handle:horizontal {{ min-width: {sp(24)}px; }}
+QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {{
     background: #4f8fc0;
-}
+}}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
-QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
     height: 0px;
     width: 0px;
-}
-QScrollBar::add-page, QScrollBar::sub-page {
+}}
+QScrollBar::add-page, QScrollBar::sub-page {{
     background: none;
-}
-SideNav QPushButton {
+}}
+SideNav QPushButton {{
     text-align: left;
-    padding: 8px;
+    padding: {sp(8)}px;
     border: none;
-    border-radius: 4px;
+    border-radius: {sp(4)}px;
     background-color: transparent;
     /* Same focus-rectangle removal as above -- without it, Qt paints its
        native dashed focus rect immediately on click, while the checked-
@@ -499,21 +562,21 @@ SideNav QPushButton {
        press visibly shows "dashed rectangle, THEN highlight" as two
        separate steps instead of one. */
     outline: 0;
-}
-SideNav QPushButton:checked {
+}}
+SideNav QPushButton:checked {{
     background-color: #3d6a8f;
-}
-SideNav QPushButton:hover:!checked {
+}}
+SideNav QPushButton:hover:!checked {{
     background-color: #2b2d31;
-}
-SideNav QPushButton:pressed {
+}}
+SideNav QPushButton:pressed {{
     /* Shows the highlight color the instant the mouse/touch goes DOWN,
        rather than waiting for release (when Qt actually fires the
        checked-state change) -- this is what makes the click feel
        immediate rather than laggy, especially noticeable on a touchpad
        where press-to-release timing is longer. */
     background-color: #3d6a8f;
-}
+}}
 """
 
 
@@ -542,7 +605,14 @@ def _build_splash_pixmap():
 
 def main():
     app = QApplication(sys.argv)
-    app.setStyleSheet(STYLE_SHEET)
+    # Records the platform's real default font point size as this app's
+    # 1.0x text_scale baseline -- must run before anything else touches
+    # fonts or builds the stylesheet below (build_stylesheet's sp() calls
+    # don't depend on it, but keeping "establish the scale baseline"
+    # first is the correct order regardless). See scaling.py's
+    # init_from_app docstring.
+    scaling.init_from_app(app)
+    app.setStyleSheet(build_stylesheet())
 
     # Shown immediately, before MainWindow's own construction (which does
     # real, measurable work -- see the lazy-view-construction comment in

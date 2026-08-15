@@ -7,10 +7,15 @@ are designed to sit ABOVE their content as a horizontal strip; getting them
 to behave as a narrow VERTICAL sidebar fights the widget rather than using
 it. A button group gives the same "exactly one active at a time" behavior
 with layout that matches what you actually want.
+
+Width/margins/spacing are all sp()-scaled and re-applied live on
+scale_manager.scale_changed -- see scaling.py.
 """
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QButtonGroup
 from PySide6.QtCore import Signal
+
+from scaling import scale_manager, sp
 
 # (internal key, display label) -- the key is what gets emitted on view_changed
 # and is what main.py uses to decide which widget to show in the QStackedWidget.
@@ -28,10 +33,16 @@ class SideNav(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.setFixedWidth(140)
+        self.setFixedWidth(sp(140))
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(6, 6, 6, 6)
-        layout.setSpacing(4)
+        layout.setContentsMargins(sp(6), sp(6), sp(6), sp(6))
+        layout.setSpacing(sp(4))
+        # Live rescaling: re-derive the fixed width and margins whenever
+        # ui_scale changes (Ctrl+wheel or Options' slider) -- setFixedWidth
+        # and setContentsMargins were both one-shot calls above, so
+        # without this the nav strip would stay stuck at whatever width
+        # was active when the app launched.
+        scale_manager.scale_changed.connect(self._apply_scale)
 
         self.buttons = {}  # key -> QPushButton, so shortcuts can trigger them by key
         self.button_group = QButtonGroup(self)
@@ -51,6 +62,11 @@ class SideNav(QWidget):
         # (see main.py) until the user actually picks a tab. QButtonGroup
         # with setExclusive(True) is fine left with none checked -- that
         # only constrains "at most one checked," not "always exactly one."
+
+    def _apply_scale(self):
+        self.setFixedWidth(sp(140))
+        self.layout().setContentsMargins(sp(6), sp(6), sp(6), sp(6))
+        self.layout().setSpacing(sp(4))
 
     def _on_clicked(self, key):
         self.view_changed.emit(key)

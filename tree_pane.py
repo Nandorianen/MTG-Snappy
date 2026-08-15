@@ -40,6 +40,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QIcon, QPixmap, QPainter, QColor, QKeySequence, QShortcut, QBrush
+from scaling import sp
 
 # Palette offered in the right-click "Change Icon Color" submenu. Reusing a
 # spread of hues rather than anything MTG-specific, since this same palette
@@ -59,17 +60,26 @@ def _make_icon(color, shape):
     color swatch stands in for a real card image elsewhere in the app;
     swapping in real artwork later only means changing this function's
     body.
+
+    Sized via sp(16) -- evaluated fresh every call (icons are baked
+    QPixmaps, not live-redrawn), so an icon created AFTER a scale change
+    is correctly sized; existing tree items keep whatever icon size was
+    baked in when they were created/last-recolored. See NOTES.md's
+    "Scaling infrastructure" entry -- retroactively re-baking every
+    existing icon on a live scale change is a known, tracked gap, not
+    solved this round.
     """
-    pixmap = QPixmap(16, 16)
+    size = sp(16)
+    pixmap = QPixmap(size, size)
     pixmap.fill(Qt.transparent)
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.Antialiasing)
     painter.setBrush(QColor(color))
     painter.setPen(Qt.NoPen)
     if shape == "folder":
-        painter.drawRoundedRect(1, 2, 14, 12, 3, 3)
+        painter.drawRoundedRect(1, 2, size - 2, size - 4, sp(3), sp(3))
     else:
-        painter.drawEllipse(2, 2, 12, 12)
+        painter.drawEllipse(2, 2, size - 4, size - 4)
     painter.end()
     return QIcon(pixmap)
 
@@ -110,7 +120,7 @@ class TreePane(QWidget):
         self._clipboard_mode = None   # "cut" or "copy"
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setContentsMargins(sp(4), sp(4), sp(4), sp(4))
 
         # No toolbar here (deliberately removed) -- it only ever covered
         # "new item" / "new folder," a fraction of what right-click and the

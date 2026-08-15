@@ -17,6 +17,7 @@ from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QFrame
 from PySide6.QtCore import Qt
 
 from mock_data import swatch_for_card
+from scaling import sp
 
 
 class CardPopover(QWidget):
@@ -28,20 +29,29 @@ class CardPopover(QWidget):
         super().__init__(None, Qt.ToolTip)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setContentsMargins(sp(10), sp(10), sp(10), sp(10))
 
         self.art_box = QFrame()
-        self.art_box.setFixedSize(160, 223)  # placeholder, same MTG-ish aspect ratio as before
+        self.art_box.setFixedSize(sp(160), sp(223))  # placeholder, same MTG-ish aspect ratio as before
         layout.addWidget(self.art_box)
 
+        # No hardcoded font-size here (there used to be one, 14px) --
+        # same reasoning as main.py's old QWidget rule: a literal QSS
+        # font-size would override the scaled app default font. Bold
+        # weight only; size comes from a relative point-size bump on the
+        # live default font instead, same pattern frameless_dialog.py's
+        # title uses.
         self.name_label = QLabel()
-        self.name_label.setStyleSheet("font-weight: 600; font-size: 14px;")
+        name_font = self.name_label.font()
+        name_font.setPointSizeF(name_font.pointSizeF() * 1.08)
+        name_font.setBold(True)
+        self.name_label.setFont(name_font)
         self.name_label.setWordWrap(True)
         layout.addWidget(self.name_label)
 
         self.text_label = QLabel()
         self.text_label.setWordWrap(True)
-        self.text_label.setFixedWidth(200)
+        self.text_label.setFixedWidth(sp(200))
         layout.addWidget(self.text_label)
 
         # Popover's own background/border, independent of the main window's

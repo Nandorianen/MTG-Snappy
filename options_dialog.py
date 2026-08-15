@@ -33,6 +33,8 @@ from PySide6.QtCore import Qt, QTimer
 
 from dialog_common import VerticalTabDialog, APPLY_BUTTON_STYLE, DANGER_BUTTON_STYLE, section_label
 from tree_pane import ICON_PALETTE  # shared color palette -- see Themes page
+import scaling
+from scaling import scale_manager, sp
 
 # --- Tab definitions ---------------------------------------------------
 OPTION_TABS = [
@@ -58,27 +60,35 @@ MODIFIER_KEYS = ["Ctrl", "Alt", "Shift"]
 # current rather than an arbitrary first item.
 CURRENT_ACCENT = "#4f8fc0"
 
-SWATCH_STYLE = """
+def _swatch_style(color):
+    """Function taking the swatch's own color -- see main.py's
+    build_stylesheet comment for why pixel metrics in QSS need to be
+    evaluated fresh against the current ui_scale rather than frozen."""
+    return f"""
 QRadioButton {{
     background-color: {color};
-    border: 2px solid transparent;
-    border-radius: 5px;
+    border: {sp(2)}px solid transparent;
+    border-radius: {sp(5)}px;
 }}
 QRadioButton::indicator {{ width: 0px; height: 0px; }}
-QRadioButton:checked {{ border: 2px solid #e3e3e3; }}
-QRadioButton:focus {{ border: 2px solid #ffffff; }}
+QRadioButton:checked {{ border: {sp(2)}px solid #e3e3e3; }}
+QRadioButton:focus {{ border: {sp(2)}px solid #ffffff; }}
 """
-
 
 class OptionsDialog(VerticalTabDialog):
     def __init__(self, parent=None):
         super().__init__("Options", OPTION_TABS, parent)
-        # Fixed size, same known limitation as CardDetailDialog (frameless
-        # windows lose native edge-drag resize -- see NOTES.md's DPI/
-        # scaling entry, which already flags this dialog as one of the
-        # places that'll need real resize/reflow support before that
-        # work is done).
-        self.resize(760, 500)
+        # Base size scales with ui_scale (sp()) -- still not truly
+        # resizable by the user (frameless windows lose native edge-drag
+        # resize; see NOTES.md's DPI/scaling entry), but at least a
+        # deliberate Ctrl+wheel/Options-slider zoom now grows the window
+        # to match instead of leaving it locked at one physical size
+        # while everything drawn inside it gets larger/smaller.
+        self.resize(sp(760), sp(500))
+        scale_manager.scale_changed.connect(self._apply_dialog_scale)
+
+    def _apply_dialog_scale(self):
+        self.resize(sp(760), sp(500))
 
     def page_factories(self):
         return [
@@ -108,12 +118,18 @@ class OptionsDialog(VerticalTabDialog):
         cancel_button.clicked.connect(self.reject)
 
         apply_button = QPushButton("Apply")
-        apply_button.setStyleSheet(APPLY_BUTTON_STYLE.replace("#3d6a8f", "#2b2d31").replace("font-weight: 600;", ""))
+        # APPLY_BUTTON_STYLE is now a FUNCTION (see dialog_common.py --
+        # it has to be, for live rescaling), so this can no longer treat
+        # its return value as a cacheable string to string-replace once;
+        # call it fresh, and do the same two substitutions on the result.
+        apply_button.setStyleSheet(
+            APPLY_BUTTON_STYLE().replace("#3d6a8f", "#2b2d31").replace("font-weight: 600;", "")
+        )
         apply_button.clicked.connect(self._on_apply)
 
         ok_button = QPushButton("OK")
         ok_button.setDefault(True)  # Enter/Return anywhere in the dialog activates this
-        ok_button.setStyleSheet(APPLY_BUTTON_STYLE)
+        ok_button.setStyleSheet(APPLY_BUTTON_STYLE())
         ok_button.clicked.connect(self.accept)
 
         row.addWidget(cancel_button)
@@ -130,6 +146,40 @@ class OptionsDialog(VerticalTabDialog):
         """
         self.apply_feedback_label.setText("Applied ✓")
         QTimer.singleShot(1800, lambda: self.apply_feedback_label.setText(""))
+
+    # --- Interface/text scale sliders (Interface page) --------------------
+    def _on_ui_scale_slider_changed(self, value):
+        self._ui_scale_value_label.setText(f"{value}%")
+        scale_manager.set_ui_scale(value / 100.0)
+
+    def _on_text_scale_slider_changed(self, value):
+        self._text_scale_value_label.setText(f"{value}%")
+        scale_manager.set_text_scale(value / 100.0)
+
+    def _sync_scale_sliders(self):
+        """
+        Re-reads scale_manager's current values into both sliders/labels
+        -- called whenever EITHER scale changes, from ANY source
+        (Ctrl+wheel being the main one this page didn't itself cause).
+        blockSignals is required, not just tidy: setValue() fires
+        valueChanged, which is connected to the _on_..._changed methods
+        above that call BACK into scale_manager.set_*_scale -- without
+        blocking, an external Ctrl+wheel change would recurse through
+        this sync a second time (harmlessly idempotent, but wasteful --
+        same reasoning CardDatabaseView._sync_toggle_buttons already
+        documents for its own blockSignals use).
+        """
+        if not hasattr(self, "_ui_scale_slider"):
+            return  # this page hasn't been built yet -- nothing to sync
+        for slider, label, value in (
+            (self._ui_scale_slider, self._ui_scale_value_label, scale_manager.ui_scale),
+            (self._text_scale_slider, self._text_scale_value_label, scale_manager.text_scale),
+        ):
+            percent = round(value * 100)
+            slider.blockSignals(True)
+            slider.setValue(percent)
+            slider.blockSignals(False)
+            label.setText(f"{percent}%")
 
     # --- Page builders -------------------------------------------------------
     def _new_page(self, description):
@@ -197,8 +247,8 @@ class OptionsDialog(VerticalTabDialog):
         swatch_group = QButtonGroup(self)
         for color in ICON_PALETTE + [CURRENT_ACCENT]:
             swatch = QRadioButton()
-            swatch.setFixedSize(28, 24)
-            swatch.setStyleSheet(SWATCH_STYLE.format(color=color))
+            swatch.setFixedSize(sp(28), sp(24))
+            swatch.setStyleSheet(_swatch_style(color))
             swatch.setChecked(color == CURRENT_ACCENT)
             swatch_group.addButton(swatch)
             swatch_row.addWidget(swatch)
@@ -256,20 +306,59 @@ class OptionsDialog(VerticalTabDialog):
 
     def _build_ui_page(self):
         page, layout = self._new_page(
-            "Interface density and behavior. UI scale is independent of "
-            "the OS's own DPI/text-scaling setting -- see NOTES.md's "
-            "'variable text scaling & DPI' entry for how the two relate."
+            "Interface density and behavior. Interface scale and text "
+            "scale are independent (see below) and take effect "
+            "immediately -- Ctrl+scroll-wheel anywhere in the app moves "
+            "both together as one combined zoom; the two sliders here "
+            "split them apart. Neither is saved between sessions yet "
+            "(see NOTES.md's 'Scaling infrastructure' entry)."
         )
 
         form = QFormLayout()
         form.setSpacing(10)
 
-        scale_slider = QSlider(Qt.Horizontal)
-        scale_slider.setRange(80, 150)
-        scale_slider.setValue(100)
-        scale_slider.setTickPosition(QSlider.TicksBelow)
-        scale_slider.setTickInterval(10)
-        form.addRow("UI scale (%):", scale_slider)
+        # --- Interface scale: drives scale_manager.ui_scale (icon sizes,
+        # fixed widget widths, padding/margins baked into QSS -- see
+        # scaling.py). REAL and LIVE, not a mock control like the rest of
+        # this page's still-cosmetic settings -- moving this slider
+        # visibly resizes the app immediately, the same as Ctrl+wheel.
+        self._ui_scale_slider = QSlider(Qt.Horizontal)
+        self._ui_scale_slider.setRange(int(scaling.MIN_SCALE * 100), int(scaling.MAX_SCALE * 100))
+        self._ui_scale_slider.setValue(round(scale_manager.ui_scale * 100))
+        self._ui_scale_slider.setTickPosition(QSlider.TicksBelow)
+        self._ui_scale_slider.setTickInterval(10)
+        self._ui_scale_value_label = QLabel(f"{round(scale_manager.ui_scale * 100)}%")
+        self._ui_scale_slider.valueChanged.connect(self._on_ui_scale_slider_changed)
+        ui_scale_row = QHBoxLayout()
+        ui_scale_row.addWidget(self._ui_scale_slider, stretch=1)
+        ui_scale_row.addWidget(self._ui_scale_value_label)
+        form.addRow("Interface scale:", ui_scale_row)
+
+        # --- Text scale: drives scale_manager.text_scale (the app's
+        # default font point size -- see scaling.py). Independent of the
+        # slider above by design (goal #4 -- "maximum customizability").
+        self._text_scale_slider = QSlider(Qt.Horizontal)
+        self._text_scale_slider.setRange(int(scaling.MIN_SCALE * 100), int(scaling.MAX_SCALE * 100))
+        self._text_scale_slider.setValue(round(scale_manager.text_scale * 100))
+        self._text_scale_slider.setTickPosition(QSlider.TicksBelow)
+        self._text_scale_slider.setTickInterval(10)
+        self._text_scale_value_label = QLabel(f"{round(scale_manager.text_scale * 100)}%")
+        self._text_scale_slider.valueChanged.connect(self._on_text_scale_slider_changed)
+        text_scale_row = QHBoxLayout()
+        text_scale_row.addWidget(self._text_scale_slider, stretch=1)
+        text_scale_row.addWidget(self._text_scale_value_label)
+        form.addRow("Text scale:", text_scale_row)
+
+        reset_scale_button = QPushButton("Reset to 100% / 100%")
+        reset_scale_button.clicked.connect(scale_manager.reset)
+        form.addRow("", reset_scale_button)
+
+        # Keeps both sliders honest if the scale changes from OUTSIDE
+        # this page -- Ctrl+wheel anywhere in the app, or (once this page
+        # exists) the other slider's own combined-zoom side effects don't
+        # apply here since the two axes are independent, but Ctrl+wheel
+        # moves both at once and this page needs to reflect that too.
+        scale_manager.scale_changed.connect(self._sync_scale_sliders)
 
         density_combo = QComboBox()
         density_combo.addItems(ROW_DENSITIES)
@@ -364,7 +453,7 @@ class OptionsDialog(VerticalTabDialog):
         layout.addStretch()
 
         reset_button = QPushButton("Reset All Settings to Defaults")
-        reset_button.setStyleSheet(DANGER_BUTTON_STYLE)
+        reset_button.setStyleSheet(DANGER_BUTTON_STYLE())
         layout.addWidget(reset_button)
 
         return page

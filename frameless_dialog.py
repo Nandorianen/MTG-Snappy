@@ -22,10 +22,28 @@ own heading directly in the content pane instead (CardDetailDialog does
 this: the card's name is styled bigger/bolder as the Card pane's own
 header, so it isn't shown twice). Defaults to True, which is what
 TagApplyDialog relies on to show "Apply Tags" in the title bar.
+
+Bar height/margins/close-button metrics are sp()-scaled and reapplied
+live on scale_manager.scale_changed; the title text rides the app-wide
+scaled default font instead of a hardcoded px size -- see scaling.py.
 """
 
 from PySide6.QtWidgets import QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QToolButton, QApplication
 from PySide6.QtCore import Qt, QEvent
+
+from scaling import scale_manager, sp
+
+
+def _close_button_style():
+    """Built as a function, not a module-level string constant, for the
+    same live-rescaling reason build_stylesheet() in main.py is a
+    function -- see that module's comment. Re-called on every scale
+    change (see _TitleBar._apply_scale)."""
+    return (
+        f"QToolButton {{ border: none; padding: {sp(4)}px {sp(8)}px; "
+        f"border-radius: {sp(3)}px; }} "
+        "QToolButton:hover { background-color: #a83a3a; color: white; }"
+    )
 
 
 class _TitleBar(QWidget):
@@ -41,27 +59,50 @@ class _TitleBar(QWidget):
 
     def __init__(self, title, on_close, show_title=True):
         super().__init__()
-        self.setFixedHeight(34)
+        self.setFixedHeight(sp(34))
         self._drag_offset = None
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(10, 0, 6, 0)
+        layout.setContentsMargins(sp(10), 0, sp(6), 0)
 
         if show_title:
+            # No explicit px font-size -- 15px was previously hardcoded
+            # here, which (like main.py's old QWidget rule) would have
+            # silently pinned this label's size regardless of
+            # text_scale. font-weight only; size comes from the scaled
+            # app-wide default font (see scaling.py), just bumped via a
+            # relative point-size offset so the title still reads as
+            # slightly larger than body text at any scale.
             name_label = QLabel(title)
-            name_label.setStyleSheet("font-size: 15px; font-weight: 700;")
+            title_font = name_label.font()
+            title_font.setPointSizeF(title_font.pointSizeF() * 1.15)
+            title_font.setBold(True)
+            name_label.setFont(title_font)
             layout.addWidget(name_label)
+            self._title_label = name_label
+        else:
+            self._title_label = None
 
         layout.addStretch()
 
         close_button = QToolButton()
         close_button.setText("\u2715")  # ✕
-        close_button.setStyleSheet(
-            "QToolButton { border: none; padding: 4px 8px; border-radius: 3px; } "
-            "QToolButton:hover { background-color: #a83a3a; color: white; }"
-        )
+        close_button.setStyleSheet(_close_button_style())
         close_button.clicked.connect(on_close)
         layout.addWidget(close_button)
+        self._close_button = close_button
+
+        # Live rescaling: bar height, margins, and the close button's own
+        # padding/border-radius (baked into its QSS string) all need to
+        # be reapplied when ui_scale changes -- the title label's font
+        # size is relative to the app default font and updates for free
+        # via text_scale, so it needs no explicit handling here.
+        scale_manager.scale_changed.connect(self._apply_scale)
+
+    def _apply_scale(self):
+        self.setFixedHeight(sp(34))
+        self.layout().setContentsMargins(sp(10), 0, sp(6), 0)
+        self._close_button.setStyleSheet(_close_button_style())
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:

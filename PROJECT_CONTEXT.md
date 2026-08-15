@@ -26,10 +26,16 @@ decision below is judged against them.
    preload instead of building everything at launch.
 3. **UX first-class, not just polish.** Full keyboard control, hotkeys,
    hover previews, mouse-wheel print switching — implies working across
-   variable text scaling/DPI too, not just one reference window size
-   (flagged, not yet acted on).
+   variable text scaling/DPI too, not just one reference window size.
+   Runtime UI/text scaling infrastructure now exists (`scaling.py`) —
+   see the Roadmap and NOTES.md's "Scaling infrastructure" entry for
+   what's converted vs. still TODO per file.
 4. **Maximum customizability** (look/feel/usability) — theming, UI scale,
-   keybinding, config-file moddability. Mostly not built yet; see Roadmap.
+   keybinding, config-file moddability. UI scale and text scale are now
+   real, independent, live-adjustable runtime settings (see `scaling.py`
+   and Options' Interface page); not yet PERSISTED between sessions, and
+   theming/keybinding/config-file moddability remain unbuilt — see
+   Roadmap.
 5. **Complete keyboard support** for anything the mouse can do.
 6. **Readable, understandable, solid code** — few crutches, comments and
    docs kept current as design decisions change.
@@ -71,9 +77,17 @@ decision below is judged against them.
 ## File map
 
 - `main.py` — entry point, `MainWindow`, tab wiring (SideNav + stacked
-  views), app-wide QSS. Lazy view construction + staggered background
-  preload; digit shortcuts (1/2/3, no Ctrl) via an app-level event filter
-  so they don't steal input from a focused text field.
+  views), app-wide QSS (built live via `build_stylesheet()`, not a
+  static string — see `scaling.py`). Lazy view construction + staggered
+  background preload; digit shortcuts (1/2/3, no Ctrl) and the global
+  Ctrl+Wheel scale zoom both via the same app-level event filter, so
+  neither steals input from a focused text field.
+- `scaling.py` — **the other seam**: `scale_manager`, the single runtime
+  source of truth for `ui_scale`/`text_scale`, plus the `sp()` helper
+  every fixed-pixel constant elsewhere in the app should route through.
+  One `scale_changed` signal every scale-aware widget listens to. See
+  NOTES.md's "Scaling infrastructure" entry for the design and current
+  per-file conversion status.
 - `mock_data.py` — **the seam**: every function here is what gets
   reimplemented against real SQLite later, with the same signature/return
   shape, so calling code elsewhere never needs to change.
@@ -163,10 +177,18 @@ specifics on any TODO or Partial item.
 - Theming (QPalette-driven accent/light-dark, replacing hardcoded QSS) —
   **TODO**
 - String externalization / i18n — **TODO**
-- UI-scale / DPI-aware layout — **TODO**
+- UI scale / text scale, live-adjustable (Interface page sliders +
+  global Ctrl+Wheel) — **Partial** (real and live at runtime; not
+  persisted; several files' inline QSS and a few lazily-built settings-
+  page widgets don't yet live-rescale an already-open window — see
+  NOTES.md's "Scaling infrastructure" entry for the exact list)
+- DPI-awareness beyond ui_scale/text_scale (querying the OS's own
+  display-scale setting as a starting default) — **TODO**
 
 ### App-wide
 - Lazy tab/dialog construction + background preload — **Done**
+- Runtime UI/text scaling (`scaling.py`, Ctrl+Wheel, Options sliders) —
+  **Partial** — see Options/Settings section above and NOTES.md
 - Flexible cross-field search engine + Ctrl+F popup — **TODO** (landing
   spot reserved in `card_database_view.py`'s button row)
 - Undo/redo + explicit-save-vs-autosave model — **TODO**

@@ -39,9 +39,14 @@ from PySide6.QtWidgets import QSplitter, QSplitterHandle, QApplication
 from PySide6.QtCore import Qt, QEvent, QRect
 from PySide6.QtGui import QPainter, QColor
 
+from scaling import scale_manager, sp
+
 # Height of the clickable/painted toggle zone, centered vertically on the
 # handle. ~4-5x a normal small icon size, per feedback that the original
-# 18px zone was too small a target to reliably click.
+# 18px zone was too small a target to reliably click. Read through sp()
+# at USE time (see _arrow_rect) rather than baked into a frozen module-
+# level int, so Ctrl+wheel/Options' slider actually grows the click
+# target along with everything else -- see scaling.py's module docstring.
 ARROW_ZONE_HEIGHT = 90
 
 
@@ -54,7 +59,7 @@ class _CollapseHandle(QSplitterHandle):
     """
 
     def _arrow_rect(self):
-        zone_height = min(ARROW_ZONE_HEIGHT, self.height())
+        zone_height = min(sp(ARROW_ZONE_HEIGHT), self.height())
         zone_top = (self.height() - zone_height) // 2
         return QRect(0, zone_top, self.width(), zone_height)
 
@@ -83,13 +88,13 @@ class CollapsibleSplitter(QSplitter):
         super().__init__(Qt.Horizontal)
         self._left_widget = left_widget
         self._right_widget = right_widget
-        self._expanded_width = default_left_width
+        self._expanded_width = sp(default_left_width)
         self._collapsed = False
 
         self.addWidget(left_widget)
         self.addWidget(right_widget)
-        self.setSizes([default_left_width, 800])
-        self.setHandleWidth(10)
+        self.setSizes([sp(default_left_width), sp(800)])
+        self.setHandleWidth(sp(10))
         # NOTE: setCollapsible(index, True) is required here, and it means
         # something different than it sounds like. It doesn't just permit
         # dragging past the minimum size -- Qt also uses it to decide
@@ -105,6 +110,20 @@ class CollapsibleSplitter(QSplitter):
         # Tab specifically has to be caught this way rather than in a normal
         # keyPressEvent override.
         QApplication.instance().installEventFilter(self)
+
+        # Live rescaling: handle width and the arrow-zone click target
+        # (see _CollapseHandle._arrow_rect, already sp()-scaled at paint
+        # time) both need the handle to actually repaint when ui_scale
+        # changes -- setHandleWidth is a one-shot call above, so without
+        # this the divider would stay whatever thickness was active at
+        # construction.
+        scale_manager.scale_changed.connect(self._apply_scale)
+
+    def _apply_scale(self):
+        self.setHandleWidth(sp(10))
+        handle = self.handle(1)
+        if handle is not None:
+            handle.update()
 
     def createHandle(self):
         return _CollapseHandle(self.orientation(), self)

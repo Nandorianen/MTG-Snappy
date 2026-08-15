@@ -297,7 +297,9 @@ class DataFileRow(QWidget):
         info_row.addWidget(self.date_label)
 
         self.action_button = QPushButton(action_label)
-        self.action_button.setStyleSheet(APPLY_BUTTON_STYLE)
+        # APPLY_BUTTON_STYLE is a FUNCTION now (see dialog_common.py) --
+        # called here rather than referenced as a bare string.
+        self.action_button.setStyleSheet(APPLY_BUTTON_STYLE())
         self.action_button.clicked.connect(self._on_action)
         info_row.addWidget(self.action_button)
 
@@ -539,7 +541,7 @@ class DataManagementDialog(VerticalTabDialog):
         download_row.addWidget(self.download_feedback_label)
         download_row.addStretch()
         download_button = QPushButton("Download")
-        download_button.setStyleSheet(APPLY_BUTTON_STYLE)
+        download_button.setStyleSheet(APPLY_BUTTON_STYLE())
         download_button.clicked.connect(self._on_download_images)
         download_row.addWidget(download_button)
         outer.addLayout(download_row)

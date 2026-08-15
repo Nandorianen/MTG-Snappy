@@ -56,6 +56,25 @@ FIVE PIECES OF CUSTOM MACHINERY WORTH CALLING OUT:
    CONTENT rather than centering long text inside an artificially wide
    button -- see StatField's docstring for why that distinction is what
    actually fixes Edition/Price/Language/Condition's alignment.
+
+SCALING (scaling.py): every fixed pixel constant this dialog uses
+(spacing constants below, the 900x560 default size, the art box, the
+legality column width, ImageZoomWidget's BASE_SIZE) is routed through
+sp() -- so a NEWLY-OPENED detail popup or zoom window always reflects
+whatever ui_scale is current at the moment it's constructed. Deliberately
+NOT wired to live-rescale an ALREADY-OPEN dialog the way simpler chrome
+(frameless_dialog.py's title bar, dialog_common.py's tab list) is:
+StatField's dynamic-anchor Type-column alignment took three real attempts
+to get right (see NOTES.md) and depends on FIELD_INNER_MARGIN being
+IDENTICAL between the margin actually applied at construction and the
+margin subtracted in set_text()'s anchor formula on every subsequent
+call -- reapplying sp() mid-lifetime without re-deriving both together
+risks exactly the kind of two-independently-computed-numbers drift
+NOTES.md's debugging lesson #3 already warns about. Since this dialog is
+recreated fresh on every double-click anyway (card_table.py never caches
+one), "correct at open time" covers the overwhelmingly common case; see
+NOTES.md's "Scaling infrastructure" entry for this as a tracked TODO
+rather than a silent gap.
 """
 
 from PySide6.QtCore import (
@@ -88,6 +107,7 @@ from PySide6.QtWidgets import (
 )
 
 from frameless_dialog import FramelessDialog
+from scaling import scale_manager, sp
 from mock_data import (
     CONDITIONS,
     FORMATS,
@@ -147,17 +167,21 @@ FIELD_INNER_MARGIN = 4
 # those two, this one is a plain QPushButton (not checkable) -- it's a
 # one-shot action, not a persistent on/off state -- so only the base +
 # hover rules apply; there's no :checked rule to borrow.
-APPLY_BUTTON_STYLE = """
-QPushButton {
-    padding: 5px 14px;
+def _apply_button_style():
+    """Function, not a static string -- see main.py's build_stylesheet
+    comment for why any QSS with a pixel metric has to be evaluated at
+    USE time against the current ui_scale rather than frozen at import."""
+    return f"""
+QPushButton {{
+    padding: {sp(5)}px {sp(14)}px;
     border: 1px solid #4f8fc0;
-    border-radius: 4px;
+    border-radius: {sp(4)}px;
     background-color: #3d6a8f;
     font-weight: 600;
-}
-QPushButton:hover {
+}}
+QPushButton:hover {{
     background-color: #4f8fc0;
-}
+}}
 """
 
 
@@ -272,8 +296,8 @@ class StatField(QWidget):
         self._align = align
         self._dynamic_anchor = dynamic_anchor
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(FIELD_INNER_MARGIN, 0, FIELD_INNER_MARGIN, 0)
-        layout.setSpacing(CAPTION_VALUE_SPACING)
+        layout.setContentsMargins(sp(FIELD_INNER_MARGIN), 0, sp(FIELD_INNER_MARGIN), 0)
+        layout.setSpacing(sp(CAPTION_VALUE_SPACING))
 
         title_label = QLabel(title)
         title_label.setStyleSheet("color: #a8adb5; font-size: 10px;")
@@ -437,7 +461,7 @@ class StatField(QWidget):
             # edge. Subtracting it here is what keeps the two coordinate
             # spaces consistent -- see NOTES.md's "Type-column alignment"
             # entry for the bug this fixes.
-            anchor_center = ref_width / 2 - FIELD_INNER_MARGIN
+            anchor_center = ref_width / 2 - sp(FIELD_INNER_MARGIN)
 
             # indent = distance from Type's left edge to where the text
             # should START if it's centered around that anchor point.
@@ -641,9 +665,18 @@ class ImageZoomWidget(QWidget):
     collapsible_pane.py needing an app-level event filter for Tab.
     """
 
-    BASE_SIZE = QSize(
-        300, 420
-    )  # the card's own aspect ratio (~2.5:3.5) -- a ratio reference only
+    # The card's own aspect ratio (~2.5:3.5) -- a RATIO reference only, not
+    # a literal on-screen size (this window opens fit-to-screen, always
+    # larger than this). Deliberately NOT a class-level constant computed
+    # once at import time -- see this module's own scaling note above and
+    # scaling.py's docstring for why a bare `QSize(sp(300), sp(420))` at
+    # class-body scope would freeze at whatever ui_scale happened to be
+    # active on first import. Set as an INSTANCE attribute in __init__
+    # instead, from the ui_scale current at the moment this particular
+    # zoom window is opened (this widget is always freshly constructed
+    # per open, never cached/reused -- see CardDetailDialog._open_zoom_
+    # window's singleton-per-DIALOG, not per-app, comment).
+    BASE_SIZE = QSize(300, 420)
     MIN_ZOOM = 0.3
     # Explicit ceiling, requested after an earlier design let effective
     # magnification run away far higher than a single wheel-out tick
@@ -662,6 +695,12 @@ class ImageZoomWidget(QWidget):
         super().__init__(None, Qt.Window | Qt.FramelessWindowHint)
         self._color = QColor(color)
         self._on_close = on_close
+
+        # Instance override of the class-level ratio constant above,
+        # scaled to the ui_scale active right now -- see that attribute's
+        # own comment for why this can't just be computed once at class-
+        # definition time.
+        self.BASE_SIZE = QSize(sp(self.BASE_SIZE.width()), sp(self.BASE_SIZE.height()))
 
         self._zoom = 1.0
         self._pan_center = QPointF(0.5, 0.5)
@@ -1014,7 +1053,7 @@ class CardDetailDialog(FramelessDialog):
         # too, rather than leaving it orphaned on screen).
         self._zoom_widget = None
 
-        self.resize(900, 560)
+        self.resize(sp(900), sp(560))
 
         panes_row = QHBoxLayout()
         panes_row.setSpacing(0)
@@ -1122,7 +1161,7 @@ class CardDetailDialog(FramelessDialog):
 
         # Type spans columns 0+1 -- its cap is two locked columns plus the
         # single gap between them, not col_width alone.
-        self.type_field.setMaximumWidth(col_width * 2 + ROW_COLUMN_SPACING)
+        self.type_field.setMaximumWidth(col_width * 2 + sp(ROW_COLUMN_SPACING))
 
     def _pane_layout(self, title):
         """
@@ -1135,12 +1174,12 @@ class CardDetailDialog(FramelessDialog):
         against the caption's own text.
         """
         layout = QVBoxLayout()
-        layout.setContentsMargins(10, 4, 10, 4)
+        layout.setContentsMargins(sp(10), sp(4), sp(10), sp(4))
         header = QLabel(title)
         header.setStyleSheet("color: #a8adb5; font-size: 11px; font-weight: 600;")
         header.setAlignment(Qt.AlignHCenter)
         layout.addWidget(header)
-        layout.addSpacing(8)
+        layout.addSpacing(sp(8))
         return layout
 
     def _build_card_pane(self):
@@ -1151,20 +1190,20 @@ class CardDetailDialog(FramelessDialog):
         # in this dialog's __init__) -- the name is shown exactly once,
         # here.
         layout = QVBoxLayout()
-        layout.setContentsMargins(4, 4, 10, 4)
+        layout.setContentsMargins(sp(4), sp(4), sp(10), sp(4))
 
         name_label = QLabel(self.oracle["name"])
         name_label.setAlignment(Qt.AlignHCenter)
         name_label.setWordWrap(True)
         name_label.setStyleSheet("font-size: 16px; font-weight: 700; color: #e3e3e3;")
         layout.addWidget(name_label)
-        layout.addSpacing(8)
+        layout.addSpacing(sp(8))
 
         self.art_box = ClickableArt()
-        self.art_box.setFixedSize(220, 306)
+        self.art_box.setFixedSize(sp(220), sp(306))
         self.art_box.clicked.connect(self._open_zoom_window)
         layout.addWidget(self.art_box, alignment=Qt.AlignHCenter)
-        layout.addSpacing(14)  # a bit more breathing room before the stats start
+        layout.addSpacing(sp(14))  # a bit more breathing room before the stats start
 
         # All three stat rows (Type/Mana, Edition/Rarity/Price,
         # Language/Condition/Foil) now live in ONE QGridLayout instead of
@@ -1185,8 +1224,8 @@ class CardDetailDialog(FramelessDialog):
         # StatField.set_grid_anchor(), wired up right after Edition's
         # field exists below).
         self.card_grid = QGridLayout()
-        self.card_grid.setHorizontalSpacing(ROW_COLUMN_SPACING)
-        self.card_grid.setVerticalSpacing(STAT_ROW_SPACING)
+        self.card_grid.setHorizontalSpacing(sp(ROW_COLUMN_SPACING))
+        self.card_grid.setVerticalSpacing(sp(STAT_ROW_SPACING))
         self.card_grid.setContentsMargins(0, 0, 0, 0)
         for col in range(3):
             self.card_grid.setColumnStretch(col, 1)
@@ -1237,7 +1276,7 @@ class CardDetailDialog(FramelessDialog):
         # than crowding directly under Language/Condition/Foil -- and so
         # all three gaps in this pane are driven by one constant instead of
         # three numbers that happened to start out close to each other.
-        layout.addSpacing(STAT_ROW_SPACING)
+        layout.addSpacing(sp(STAT_ROW_SPACING))
 
         # Applies the currently-selected Edition/Language/Condition/Foil
         # back onto the actual collection entry (see _apply_changes) --
@@ -1254,16 +1293,16 @@ class CardDetailDialog(FramelessDialog):
         self.apply_feedback_label = QLabel("")
         self.apply_feedback_label.setStyleSheet("color: #4caf50;")
         apply_button = QPushButton("Apply")
-        apply_button.setStyleSheet(APPLY_BUTTON_STYLE)
+        apply_button.setStyleSheet(_apply_button_style())
         apply_button.clicked.connect(self._apply_changes)
         apply_row.addWidget(self.apply_feedback_label)
         apply_row.addStretch()
         apply_row.addWidget(apply_button)
         layout.addLayout(apply_row)
 
-        layout.addSpacing(6)
+        layout.addSpacing(sp(6))
         layout.addWidget(_hline())
-        layout.addSpacing(6)
+        layout.addSpacing(sp(6))
 
         self.oracle_text_label = QLabel()
         self.oracle_text_label.setWordWrap(True)
@@ -1306,7 +1345,7 @@ class CardDetailDialog(FramelessDialog):
             key=lambda text: metrics.horizontalAdvance(text),
         )
         return (
-            metrics.horizontalAdvance(widest) + 44
+            metrics.horizontalAdvance(widest) + sp(44)
         )  # padding for list margins + scrollbar
 
     def _build_rulings_pane(self):

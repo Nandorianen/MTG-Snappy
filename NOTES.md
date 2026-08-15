@@ -3,7 +3,129 @@
 Organized by topic, newest understanding first within each entry. See
 PROJECT_CONTEXT.md's Roadmap for a status-tagged index of everything here.
 
-## Card Database filtering
+## Scaling infrastructure
+
+**Design**: `scaling.py`'s `scale_manager` (module singleton) holds two
+INDEPENDENT floats, `ui_scale` and `text_scale`, plus one `scale_changed`
+Qt signal fired on either change — same "one shared authority" shape as
+`SideNav.TABS` or `CardTableModel`'s filter state feeding two different
+UIs (see "Recurring patterns" in PROJECT_CONTEXT.md). Every scale-aware
+widget connects to that ONE signal rather than inventing its own
+notification path.
+- `text_scale` drives `QApplication`'s default font POINT SIZE
+  (`ScaleManager._apply_font_scale`) — close to a "free" axis, since Qt's
+  layout system already reflows anything built with layouts +
+  QFontMetrics (most of this app) around a font change with no further
+  code. The one thing that had to be actively REMOVED for this to work:
+  hardcoded `font-size: Npx` in QSS strings (main.py's global QWidget
+  rule, frameless_dialog.py's title, card_popover.py's name label,
+  dialog_common.py's `section_label`) — a literal QSS font-size wins over
+  the app's own default font, which would have silently pinned that
+  widget's text regardless of text_scale. Replaced with either no
+  explicit size (inherits the scaled default) or a relative
+  `setPointSizeF(font.pointSizeF() * k)` bump in code, so "a bit
+  bigger/smaller than body text" stays true at any scale instead of
+  freezing at one absolute size.
+- `ui_scale` drives everything else (icon sizes, fixed widget widths,
+  margins/padding baked into QSS, dialog default sizes, header paint
+  metrics) via `sp(px)` — NOT automatic; every call site that used to
+  write a bare pixel literal needs `sp(that literal)` instead, evaluated
+  AT USE TIME. A module-level `WIDTH = sp(28)` would freeze at whatever
+  scale was active on first import — this is why several QSS strings
+  that used to be static module-level constants (`dialog_common.py`'s
+  `APPLY_BUTTON_STYLE`/`DANGER_BUTTON_STYLE`/tab-list style,
+  `card_database_view.py`'s `TOGGLE_STYLE`, `options_dialog.py`'s swatch
+  style, `card_detail_popup.py`'s Apply-button style, `main.py`'s whole
+  app stylesheet) are now FUNCTIONS, called fresh wherever they're
+  applied, instead of strings referenced directly. Any code still
+  calling one of these as a bare string (rather than `NAME()`) is a bug.
+
+**Ctrl+Wheel** moves both scales together, one `WHEEL_STEP` (0.05) per
+wheel notch — a single combined "zoom," matching the familiar browser/OS
+convention, rather than needing a second modifier to reach one axis from
+the mouse. Caught in `main.py`'s `MainWindow.eventFilter` (an
+app-level filter, extending the one already installed there for the
+1/2/3 tab shortcuts) — checked independent of `watched`, since it has to
+fire regardless of which widget the cursor happens to be over, the same
+reasoning `CardDatabaseView`'s own Alt+N-while-menu-open check already
+uses. The Options dialog's Interface page has two separate sliders
+(70–200%, live, two-way synced with Ctrl+wheel changes via
+`_sync_scale_sliders`) for when a user wants to split the two axes apart
+— see `ScaleManager`'s own module docstring for why two independent
+numbers, not one, is the point.
+
+**RUNTIME-ONLY**: nothing here persists between sessions yet — Options'
+"real settings store" is still TODO (see Roadmap). Every scale change is
+live and immediate, and lost on restart. Deliberate scope cut for this
+round, not an oversight.
+
+**Per-file conversion status** (own tracking, same Done/Partial/TODO
+convention as PROJECT_CONTEXT.md's Roadmap):
+- **Done, and live-rescales an already-open window**: `main.py` (global
+  stylesheet + Ctrl+Wheel), `side_nav.py`, `frameless_dialog.py` (every
+  dialog's title bar), `dialog_common.py` (Options/Data Management's
+  shared tab-list chrome), `collapsible_pane.py` (the Deck/Tag tree
+  splitter's handle + arrow zone), `options_dialog.py`'s own dialog size
+  and Interface-page sliders, `card_database_view.py`'s button row
+  (Inventory/Wishlist/Columns/Clear Filters), `card_table.py`'s header
+  paint metrics (sort arrow, filter dot, focus ring, resize margin) and
+  the checkbox column's width. Row height needs no explicit handling at
+  all — it's already font-metrics-derived by Qt, so text_scale grows it
+  for free; `_apply_table_scale` just forces an immediate
+  `resizeRowsToContents()` instead of waiting for an incidental repaint.
+- **Done at CONSTRUCTION time only, not live for an already-open
+  instance**: `card_detail_popup.py` (`CardDetailDialog`'s size/spacing/
+  legality-column-width, `ImageZoomWidget`'s base size) — deliberate:
+  `StatField`'s dynamic-anchor Type-column alignment took three real
+  attempts to get right (see that entry below) and depends on
+  `FIELD_INNER_MARGIN` being IDENTICAL between the margin actually
+  applied at construction and the margin subtracted in `set_text()`'s
+  anchor formula on every later call. Reapplying `sp()` mid-lifetime
+  without re-deriving both together risks exactly the "two
+  independently-computed numbers drift" failure mode debugging-lesson #3
+  already warns about — not worth risking for a dialog that's recreated
+  fresh on every double-click anyway (`card_table.py` never caches one).
+  `card_popover.py` similarly sizes itself once at construction (it IS
+  cached/reused per table, unlike the detail popup) — a hover preview is
+  low-stakes enough that this is an accepted gap, not a solved one.
+  `tree_pane.py`'s `_make_icon()` bakes a QPixmap at CALL time (correct
+  for new icons after a scale change), but existing tree items' already-
+  baked icons don't retroactively resize.
+- **Partially done**: `options_dialog.py`'s remaining five pages
+  (Language/Online/Interface's other rows/Input/Advanced) and
+  `data_management_dialog.py`'s three pages are lazily built ONCE per
+  dialog lifetime (`VerticalTabDialog`'s whole design, see that class's
+  docstring) and not rebuilt on a scale change — a slider/checkbox row
+  laid out before a scale change keeps its old metrics until the page is
+  torn down and rebuilt (i.e. the app restarts, since these dialogs are
+  cached instances). The FUNCTION-based styles (`APPLY_BUTTON_STYLE()`
+  etc.) are correct at whatever moment a button's `setStyleSheet()` call
+  actually runs, so a freshly-opened dialog is fine; an already-open one
+  showing a page built before a scale change is not.
+- **Not converted yet**: `card_detail_popup.py`'s `StatField` internal
+  spacing (correct at construction — see above — this note is about the
+  live-rescale gap specifically), `tag_apply_dialog.py`,
+  `tag_assignments.py` styling (n/a — no UI), `data_management_dialog.py`
+  page-internal fixed widths (`filename_label.setMinimumWidth`-style
+  calls), a handful of remaining literal-pixel QSS fragments inside
+  per-page builders across `options_dialog.py`/`data_management_dialog.py`
+  that weren't part of this round's pass. None of these are visually
+  broken today (Qt's default sizing still works, just doesn't grow/shrink
+  with ui_scale) — they're a "doesn't yet participate in live rescaling"
+  gap, not a "looks wrong" one. Next scaling pass should sweep these
+  page-builder methods specifically.
+
+**General lesson for future scaling work**: a hardcoded pixel constant
+is only a REAL bug once it's actually READ somewhere without going
+through `sp()`/`scale_manager.sp()` — the constant itself being a bare
+number (`ARROW_ZONE_HEIGHT = 90`) is fine to keep as a named "design-time
+base value" as long as every USE SITE wraps it. Grep for
+`setFixedWidth(`, `setFixedHeight(`, `setFixedSize(`, `resize(`, and
+inline `px` inside triple-quoted QSS strings to find what's still
+unconverted in a given file — same mechanical check this round's pass
+used file-by-file.
+
+
 
 **Two filter shapes, by design, not inconsistency.** Type, Mana Cost's
 color, Edition, and Rarity are genuinely small bounded sets → checklist

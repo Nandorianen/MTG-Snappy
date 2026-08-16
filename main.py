@@ -399,7 +399,12 @@ class MainWindow(QMainWindow):
             delta = event.angleDelta().y()
             if delta != 0:
                 steps = delta / 120
-                scale_manager.adjust_combined(steps)
+                # queue_wheel_delta (not adjust_combined directly) --
+                # coalesces a fast flick's many wheel events into one
+                # throttled update instead of a full app-wide stylesheet
+                # rebuild per notch, which is what made rapid Ctrl+wheel
+                # scaling feel laggy. See scaling.py's own docstring.
+                scale_manager.queue_wheel_delta(steps)
             return True  # consumed -- don't ALSO scroll whatever's under the cursor
 
         if event.type() == QEvent.KeyPress and event.modifiers() == Qt.NoModifier:

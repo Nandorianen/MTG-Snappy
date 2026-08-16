@@ -59,9 +59,28 @@ main.py's MainWindow.eventFilter for where this is actually caught
 (extends the same app-level-eventFilter pattern this codebase already
 uses for Tab interception, digit shortcuts, etc. -- see NOTES.md's
 debugging-lessons #4).
+
+WHEEL EVENTS ARE COALESCED, NOT APPLIED ONE-FOR-ONE (queue_wheel_delta /
+_flush_wheel_steps below): a fast physical scroll can fire a dozen+ wheel
+events within a handful of milliseconds, and EVERY scale_changed emission
+triggers a real cost -- main.py rebuilds and reapplies the entire app-wide
+QSS string (every sp()-driven padding/radius in it recomputed), and every
+scale-aware widget across the whole app re-runs its own _apply_*_scale
+method on top of that. Applying that full pass once per individual wheel
+notch is what made rapid Ctrl+wheel scrolling feel laggy -- not a PySide/
+Qt rendering limitation, just the accumulated cost of re-polishing every
+styled widget in the app many times over in a fraction of a second.
+queue_wheel_delta() accumulates the pending delta and schedules a single
+flush ~WHEEL_FLUSH_INTERVAL_MS later (resetting/reusing the same pending-
+flush timer if one's already running) instead of calling adjust_combined()
+synchronously on every wheel event -- so a fast flick still ends up at the
+same final scale, just via one coalesced update instead of many redundant
+ones. A single slow notch is unaffected in practice (~50ms is well under
+what reads as "instant" to a person) and still fires only one update, same
+as before.
 """
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, Signal, QTimer
 from PySide6.QtWidgets import QApplication
 
 # Clamp range for both scales -- generous enough to be genuinely useful
@@ -73,9 +92,25 @@ MAX_SCALE = 2.0
 
 # One Ctrl+wheel "notch" (one discrete scroll step -- see
 # adjust_combined's use of angleDelta()) moves either scale by this much.
-# The Options sliders move continuously instead, in finer steps -- see
-# options_dialog.py's _build_ui_page.
-WHEEL_STEP = 0.05
+# The Options sliders move in the same 10% increments (see
+# options_dialog.py's slider setSingleStep/setPageStep calls) -- both
+# controls used to disagree (a 5% wheel notch vs. a slider that could be
+# arrow-keyed one bare 1% at a time, Qt's own QSlider default), which read
+# as needlessly fiddly for a setting most people just want in bigger,
+# predictable jumps. 10% was picked as a round, easy-to-reason-about step
+# that still reaches the full MIN_SCALE..MAX_SCALE range in a small number
+# of presses/notches.
+WHEEL_STEP = 0.10
+
+# How long queue_wheel_delta() waits, after the MOST RECENT wheel event,
+# before actually applying the accumulated delta -- see this module's own
+# docstring ("WHEEL EVENTS ARE COALESCED...") for why this exists at all.
+# ~50ms is short enough that a single deliberate notch still feels
+# immediate (well under normal human perception of "instant"), while
+# still being long enough to fold a fast multi-notch flick's several
+# wheel events into one real scale_changed emission instead of one per
+# notch.
+WHEEL_FLUSH_INTERVAL_MS = 50
 
 # The point size every text_scale multiplier is measured FROM. Read once
 # at startup from whatever the platform's own default QFont already
@@ -96,6 +131,13 @@ class ScaleManager(QObject):
         super().__init__()
         self.ui_scale = 1.0
         self.text_scale = 1.0
+        # Wheel-event coalescing state -- see queue_wheel_delta/
+        # _flush_wheel_steps and this module's own docstring. Only ever
+        # touched by those two methods.
+        self._pending_wheel_steps = 0.0
+        self._wheel_flush_timer = QTimer(self)
+        self._wheel_flush_timer.setSingleShot(True)
+        self._wheel_flush_timer.timeout.connect(self._flush_wheel_steps)
 
     # --- UI (non-text) scaling -------------------------------------------
     def sp(self, px):
@@ -163,6 +205,32 @@ class ScaleManager(QObject):
         self.text_scale = text_value
         self._apply_font_scale()
         self.scale_changed.emit()
+
+    def queue_wheel_delta(self, steps):
+        """
+        The Ctrl+wheel entry point (called from main.py's MainWindow.
+        eventFilter instead of adjust_combined() directly) -- accumulates
+        `steps` (can be fractional/negative, same as adjust_combined
+        expects) and schedules a single coalesced flush
+        WHEEL_FLUSH_INTERVAL_MS after the LAST call, rather than applying
+        every wheel event immediately. Restarting the same singleShot
+        timer on every call (instead of letting an already-running one
+        finish on its own schedule) is what makes this "N ms after
+        scrolling STOPS," not "at most once every N ms while scrolling
+        continues" -- the latter would still apply a partial update mid-
+        flick. See this module's own docstring for why coalescing exists.
+        """
+        self._pending_wheel_steps += steps
+        self._wheel_flush_timer.start(WHEEL_FLUSH_INTERVAL_MS)
+
+    def _flush_wheel_steps(self):
+        """Applies whatever wheel delta has accumulated since the last
+        flush, in one shot, via the exact same adjust_combined() logic a
+        direct (non-wheel) caller would use -- coalescing is purely about
+        WHEN this runs, not a different code path for WHAT it does."""
+        steps, self._pending_wheel_steps = self._pending_wheel_steps, 0.0
+        if steps:
+            self.adjust_combined(steps)
 
     def reset(self):
         """Back to 1.0x / 1.0x -- wired to a Reset button in Options

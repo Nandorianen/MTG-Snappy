@@ -26,9 +26,33 @@ TagApplyDialog relies on to show "Apply Tags" in the title bar.
 Bar height/margins/close-button metrics are sp()-scaled and reapplied
 live on scale_manager.scale_changed; the title text rides the app-wide
 scaled default font instead of a hardcoded px size -- see scaling.py.
+
+SCREEN-SAFE AT HIGH SCALE -- TWO PIECES, BOTH LIVE HERE SO EVERY
+FRAMELESS DIALOG GETS THEM FOR FREE:
+1. resize() is overridden to clamp whatever size a subclass asks for
+   (CardDetailDialog's sp(900)x sp(560), OptionsDialog's sp(760)x
+   sp(500), ...) to the CURRENT screen's available geometry (minus a
+   margin) before applying it -- a high ui_scale/text_scale on a small
+   screen can no longer push a dialog's edges (or its close button)
+   off-screen where they'd be unreachable. Every subclass's existing
+   `self.resize(...)` call is intercepted transparently; no subclass
+   needed to change.
+2. self.content_layout (where every subclass builds its real content)
+   now lives inside a QScrollArea rather than being added straight to
+   the dialog -- so content that's still too big for the CLAMPED size
+   from point 1 scrolls (both directions, Qt's default
+   ScrollBarAsNeeded policy) instead of being silently clipped or
+   forcing the window bigger than the screen. The two fixes work
+   together: clamping alone would just crop content with no way to
+   reach the rest of it; scrolling alone wouldn't stop the window
+   itself from growing off-screen. See FramelessDialog.__init__ and
+   .resize() below for the actual implementation.
 """
 
-from PySide6.QtWidgets import QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QToolButton, QApplication
+from PySide6.QtWidgets import (
+    QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QToolButton,
+    QApplication, QScrollArea, QFrame,
+)
 from PySide6.QtCore import Qt, QEvent
 
 from scaling import scale_manager, sp
@@ -123,6 +147,16 @@ class FramelessDialog(QDialog):
     margined) rather than setting their own top-level layout on the dialog.
     """
 
+    # Floor for the screen-clamp in resize() below -- keeps an extreme
+    # low ui_scale combined with a small screen from clamping a dialog
+    # down to something too cramped to actually use.
+    _MIN_CLAMPED_WIDTH = 320
+    _MIN_CLAMPED_HEIGHT = 200
+    # Reserved border around a maximally-clamped dialog so it still shows
+    # a sliver of desktop/taskbar at the screen's edges rather than
+    # touching every edge exactly.
+    _SCREEN_CLAMP_MARGIN = 40
+
     def __init__(self, title, parent=None, show_title=True):
         super().__init__(parent, Qt.Dialog | Qt.FramelessWindowHint)
 
@@ -137,11 +171,47 @@ class FramelessDialog(QDialog):
         outer.setSpacing(0)
         outer.addWidget(_TitleBar(title, self.close, show_title=show_title))
 
-        self.content_layout = QVBoxLayout()
+        # Real content lives on a plain QWidget, built via self.content_
+        # layout exactly as every subclass already expects -- the
+        # QScrollArea wrapping below is invisible to subclasses, which
+        # still just add widgets/layouts to self.content_layout.
+        self._content_widget = QWidget()
+        self.content_layout = QVBoxLayout(self._content_widget)
         self.content_layout.setContentsMargins(12, 8, 12, 12)
-        outer.addLayout(self.content_layout)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)  # content grows to fill a larger dialog; only scrolls once it can't shrink further
+        scroll.setFrameShape(QFrame.NoFrame)  # no extra bezel -- this app draws its own borders via QSS elsewhere
+        scroll.setWidget(self._content_widget)
+        outer.addWidget(scroll, stretch=1)
 
         QApplication.instance().installEventFilter(self)
+
+    def resize(self, width, height=None):
+        """
+        Clamps the requested size to the CURRENT screen's available
+        geometry (minus _SCREEN_CLAMP_MARGIN, floored at _MIN_CLAMPED_*)
+        before applying it -- see this class's own docstring ("SCREEN-SAFE
+        AT HIGH SCALE") for why. Overriding resize() itself (rather than
+        adding a separate clamp-and-resize helper) is what makes every
+        existing subclass call site -- CardDetailDialog's `self.resize(
+        sp(900), sp(560))`, OptionsDialog's `self.resize(sp(760),
+        sp(500))`, etc. -- get this for free with no changes needed at
+        those call sites.
+
+        Accepts either resize(w, h) or resize(QSize), matching both
+        forms QWidget.resize() itself supports and both forms already in
+        use across this codebase.
+        """
+        if height is None:
+            size = width
+            width, height = size.width(), size.height()
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is not None:
+            avail = screen.availableGeometry()
+            width = max(self._MIN_CLAMPED_WIDTH, min(width, avail.width() - self._SCREEN_CLAMP_MARGIN))
+            height = max(self._MIN_CLAMPED_HEIGHT, min(height, avail.height() - self._SCREEN_CLAMP_MARGIN))
+        super().resize(width, height)
 
     def closeEvent(self, event):
         QApplication.instance().removeEventFilter(self)

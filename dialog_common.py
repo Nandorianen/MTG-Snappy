@@ -181,6 +181,14 @@ class VerticalTabDialog(FramelessDialog):
         self.tab_list.setStyleSheet(_tab_list_style())
         self.tab_list.setSelectionMode(QAbstractItemView.SingleSelection)
         self.tab_list.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        # Unlike SideNav's QPushButtons (which need a hand-rolled "\n"
+        # wrap -- see that module's own _wrap_to_pixel_width),
+        # QListWidget supports word wrap NATIVELY -- Qt already knows how
+        # to wrap an item's text and grow that item's row height to fit,
+        # so a long tab label at a high text_scale (e.g. "Card Images" at
+        # 180%) wraps onto a second line instead of being clipped, with
+        # no manual re-wrap-on-scale-change logic needed here at all.
+        self.tab_list.setWordWrap(True)
         for _key, label in tab_specs:
             self.tab_list.addItem(QListWidgetItem(label))
 

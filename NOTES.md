@@ -115,6 +115,99 @@ convention as PROJECT_CONTEXT.md's Roadmap):
   gap, not a "looks wrong" one. Next scaling pass should sweep these
   page-builder methods specifically.
 
+**Scaling polish round (post-initial-implementation feedback)**: four
+follow-up fixes, all against the scaling infrastructure above rather than
+new axes of scaling:
+
+1. **Step size (WHEEL_STEP, slider singleStep/pageStep) -> 10%.**
+   Originally 5% on the wheel and Qt's own un-set QSlider default (1%,
+   arrow-key/click-track only) on the sliders -- two different step sizes
+   for what's conceptually one setting, and both finer than useful for
+   hand-tuning. Now both scaling.WHEEL_STEP and both Options sliders'
+   singleStep/pageStep are 10, so every way of adjusting scale moves in
+   the same-sized, predictable jump.
+
+2. **Ctrl+wheel felt laggy -- root cause and fix.** NOT a PySide/Qt
+   rendering ceiling: every single scale_changed emission triggers a real,
+   nontrivial cost (main.py rebuilds and reapplies the ENTIRE app-wide QSS
+   string, and every scale-aware widget across the app re-runs its own
+   _apply_*_scale on top of that -- a full re-polish pass, not a cheap
+   no-op). Applying that pass once per individual wheel EVENT (a fast
+   physical flick can fire a dozen-plus in well under a second) is what
+   actually felt slow. Fix: scale_manager.queue_wheel_delta() /
+   _flush_wheel_steps() (scaling.py) accumulate the pending delta and
+   apply it ONCE, ~WHEEL_FLUSH_INTERVAL_MS (50ms) after the most recent
+   wheel event, via a restarted singleShot QTimer -- same final scale
+   after a flick, far fewer full-app repolish passes along the way. main.py's
+   wheel handler calls queue_wheel_delta() instead of adjust_combined()
+   directly now; adjust_combined() itself is unchanged and still the
+   thing that actually applies a delta (queue_wheel_delta just defers and
+   batches calls into it). A genuinely CHEAPER per-change cost (e.g.
+   moving off QSS entirely toward QPalette-driven theming, already a
+   parked TODO -- see "Theming" below) would help further but is a much
+   bigger, separately-tracked project; coalescing was the fix available
+   within the existing QSS-based approach.
+
+3. **Dialogs could grow off-screen at a high scale -- fixed at the shared
+   base, not per-dialog.** Every popup in this app (card detail, tag-apply,
+   Options, Data Management) is a FramelessDialog. That class's resize()
+   is now overridden to clamp whatever size a subclass asks for to the
+   CURRENT screen's availableGeometry (minus a margin, floored at a
+   minimum usable size) -- transparent to every subclass's existing
+   `self.resize(sp(W), sp(H))` call, no call sites needed to change.
+   self.content_layout now lives inside a QScrollArea (both scrollbars,
+   Qt's default ScrollBarAsNeeded) instead of being added straight to the
+   dialog, so content that's still too big for the clamped size scrolls
+   instead of being clipped or forcing the window past the screen's own
+   edges. The two pieces are complementary, not redundant: clamping alone
+   would crop content with no way to reach the rest of it; scrolling
+   alone wouldn't stop the WINDOW itself from overflowing the screen.
+   Caught along the way: DataManagementDialog's own resize(880, 620) was
+   never routed through sp() at all (a pre-existing gap, unrelated to this
+   round's actual bug) -- fixed to sp(880)/sp(620) with a matching
+   scale_changed connection, same pattern OptionsDialog already used.
+   KNOWN MINOR OVERLAP: Data Management's own per-tab pages already wrap
+   their content in their own QScrollArea (see data_management_dialog.py)
+   -- nesting that inside FramelessDialog's new outer scroll area can in
+   principle produce a scrollbar-inside-a-scrollbar in an extreme case.
+   Accepted rather than special-cased: the OUTER scroll only actually
+   engages once the whole dialog (tab list + page area together) can't
+   fit the clamped window, which the inner per-page scroll already
+   protects against for the common "one page's content is too tall" case.
+   Revisit only if the nested-scrollbar case is ever actually hit in
+   practice.
+
+4. **Text clipping at a high text_scale -- "Tag Database" on the side
+   nav was the reported example.** Two different fixes for two different
+   Qt widgets, since they have two different native capabilities:
+   - QListWidget (Options'/Data Management's own tab list,
+     dialog_common.py) supports word-wrap NATIVELY --
+     `tab_list.setWordWrap(True)` was simply never turned on. One line,
+     no manual wrap logic needed; Qt handles re-wrapping and row-height
+     growth itself.
+   - QPushButton (SideNav's own tab buttons) has NO native word-wrap
+     property at all -- same gap card_detail_popup.py's StatField already
+     hit for QToolButton's Condition/Language fields, and solved there
+     with a manual "\n"-insertion helper (_wrap_to_pixel_width). SideNav
+     now has its own copy of that same helper (duplicated rather than
+     imported -- see side_nav.py's own comment for why: it's a small,
+     pure, dependency-free function, and reaching into card_detail_
+     popup.py's private helper would be a stranger coupling than
+     repeating six lines), re-run against each button's live font metrics
+     and the nav's current width budget both at construction and on every
+     scale_changed.
+   TRACKED GAP, NOT FIXED THIS ROUND: every OTHER QPushButton row that
+   could plausibly overflow at an extreme text_scale -- CardDatabaseView's
+   Inventory/Wishlist/Columns/Clear Filters meta-button row in particular
+   -- still has no wrap handling and will clip exactly like SideNav used
+   to. Not fixed here since it wasn't the reported symptom and this app's
+   existing convention (see "Per-file conversion status" above) is to fix
+   the reported case, document the remaining ones, and sweep them in a
+   dedicated pass rather than guessing at every theoretical overflow site
+   in one round. If a report comes in about a specific clipped button
+   elsewhere, side_nav.py's _wrap_to_pixel_width /
+   _refresh_button_labels shape is the template to reuse.
+
 **General lesson for future scaling work**: a hardcoded pixel constant
 is only a REAL bug once it's actually READ somewhere without going
 through `sp()`/`scale_manager.sp()` — the constant itself being a bare

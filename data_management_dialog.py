@@ -66,6 +66,7 @@ from PySide6.QtCore import Qt, QTimer, QThreadPool, QRunnable, QObject, Signal
 
 from dialog_common import VerticalTabDialog, APPLY_BUTTON_STYLE, section_label
 from mock_data import LANGUAGES
+from scaling import scale_manager, sp
 
 DATA_TABS = [
     ("metadata", "Metadata"),
@@ -383,7 +384,20 @@ class DataFileRow(QWidget):
 class DataManagementDialog(VerticalTabDialog):
     def __init__(self, parent=None):
         super().__init__("Data Management", DATA_TABS, parent)
-        self.resize(880, 620)
+        # Previously a bare, un-scaled resize(880, 620) -- unlike
+        # OptionsDialog (the other VerticalTabDialog), this never routed
+        # its own size through sp() at all, so it neither grew with
+        # ui_scale nor got live-rescaled on a later change. Fixed here as
+        # part of the same scaling-polish pass that added FramelessDialog's
+        # screen-clamping resize() -- this dialog gets that clamp "for
+        # free" already; sp()-scaling it too is what makes it actually
+        # grow with ui_scale in the first place, consistent with every
+        # other sized dialog in the app.
+        self.resize(sp(880), sp(620))
+        scale_manager.scale_changed.connect(self._apply_dialog_scale)
+
+    def _apply_dialog_scale(self):
+        self.resize(sp(880), sp(620))
 
     def page_factories(self):
         return [

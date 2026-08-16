@@ -79,6 +79,23 @@ list with design notes for each: `PROJECT_CONTEXT.md`'s Roadmap and
 
 ## Changelog (newest first)
 
+**Scaling polish: bigger steps, smoother wheel-zoom, screen-safe dialogs,
+wrapping labels.** Ctrl+wheel and both Options sliders now move in 10%
+increments (previously an inconsistent 5% on the wheel vs. a fiddly
+default 1% on the sliders' arrow-keys/click-track). Ctrl+wheel scale
+changes are now coalesced (~50ms after scrolling stops) instead of
+rebuilding the whole app-wide stylesheet on every individual wheel notch
+-- that per-notch full-app QSS rebuild, not a PySide rendering limit, was
+what made a fast scroll feel laggy; see NOTES.md's "Scaling infrastructure"
+entry. Every frameless dialog (card detail, tag-apply, Options, Data
+Management) now clamps its size to the current screen and scrolls (both
+directions) instead of growing off-screen at a high scale; Data
+Management's own dialog size is now sp()-scaled too (previously a bare,
+non-scaling 880x620). The side nav's own tab labels ("Tag Database", etc.)
+now wrap instead of clipping at a high text scale; Options'/Data
+Management's tab list already gets the same for free via Qt's native
+QListWidget word-wrap, now turned on.
+
 **Type filter search box, Price Source keyboard access, Clear Filter
 cleanup.** Type's Enter now applies a typed expression against the card's
 full raw type line (finds subtypes/substrings the word checklist can't),

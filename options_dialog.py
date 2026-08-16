@@ -327,6 +327,15 @@ class OptionsDialog(VerticalTabDialog):
         self._ui_scale_slider.setValue(round(scale_manager.ui_scale * 100))
         self._ui_scale_slider.setTickPosition(QSlider.TicksBelow)
         self._ui_scale_slider.setTickInterval(10)
+        # Qt's own QSlider default singleStep is 1 -- i.e. arrow-keying a
+        # focused slider (or clicking its groove) would move it a bare 1%
+        # at a time, far finer than this setting is ever usefully tuned
+        # by hand, and inconsistent with Ctrl+wheel's own 10% notch
+        # (scaling.WHEEL_STEP). Matching both to 10% here is what makes
+        # every way of adjusting this setting move in the same-sized,
+        # predictable jumps.
+        self._ui_scale_slider.setSingleStep(10)
+        self._ui_scale_slider.setPageStep(10)
         self._ui_scale_value_label = QLabel(f"{round(scale_manager.ui_scale * 100)}%")
         self._ui_scale_slider.valueChanged.connect(self._on_ui_scale_slider_changed)
         ui_scale_row = QHBoxLayout()
@@ -342,6 +351,9 @@ class OptionsDialog(VerticalTabDialog):
         self._text_scale_slider.setValue(round(scale_manager.text_scale * 100))
         self._text_scale_slider.setTickPosition(QSlider.TicksBelow)
         self._text_scale_slider.setTickInterval(10)
+        # Same reasoning as the Interface-scale slider above.
+        self._text_scale_slider.setSingleStep(10)
+        self._text_scale_slider.setPageStep(10)
         self._text_scale_value_label = QLabel(f"{round(scale_manager.text_scale * 100)}%")
         self._text_scale_slider.valueChanged.connect(self._on_text_scale_slider_changed)
         text_scale_row = QHBoxLayout()

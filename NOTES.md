@@ -115,7 +115,7 @@ convention as PROJECT_CONTEXT.md's Roadmap):
   gap, not a "looks wrong" one. Next scaling pass should sweep these
   page-builder methods specifically.
 
-**Scaling polish round (post-initial-implementation feedback)**: four
+**Scaling polish round 1 (post-initial-implementation feedback)**: four
 follow-up fixes, all against the scaling infrastructure above rather than
 new axes of scaling:
 
@@ -207,6 +207,92 @@ new axes of scaling:
    in one round. If a report comes in about a specific clipped button
    elsewhere, side_nav.py's _wrap_to_pixel_width /
    _refresh_button_labels shape is the template to reuse.
+
+**Scaling polish round 2 (screen-fit growth, wheel-drift fix, slider
+debounce)** -- follow-up feedback after round 1 shipped:
+
+1. **Dialogs showed scrollbars far from any screen edge.** Round 1's
+   screen-clamp (FramelessDialog.resize()) was correct but not the
+   actual cause here -- the dialogs weren't anywhere NEAR the clamp.
+   The real cause: a subclass's design-time `self.resize(sp(W), sp(H))`
+   is a fixed FORMULA tuned around a "normal" text_scale; at a
+   meaningfully higher text_scale the real content (taller wrapped
+   labels, bigger fonts) can outgrow that formula's guess well before it
+   outgrows the SCREEN, and round 1's new QScrollArea faithfully started
+   showing scrollbars for that gap -- technically correct, but
+   unnecessary when the desktop plainly had room to just make the window
+   bigger. Fix: FramelessDialog._grow_to_fit_content() (new) measures
+   self._content_widget.sizeHint() -- content_layout's own, real,
+   recursively-computed preferred size, not the formula's guess -- and
+   grows the window to match (still subject to resize()'s existing
+   screen-clamp) if bigger than what's already set. Runs synchronously
+   in showEvent (before any subclass's own deferred singleShot(0) post-
+   show work -- see the method's own docstring for why synchronous-and-
+   in-showEvent specifically avoids a race with e.g. CardDetailDialog's
+   column-locking), and again, debounced via scale_changed, whenever the
+   dialog is already open and scale changes further (e.g. dragging
+   Options' own sliders while Options itself is the dialog being sized).
+   The scroll area from round 1 is now the genuine LAST-resort fallback
+   (screen truly too small) rather than the first thing a text_scale
+   change hit.
+
+2. **Ctrl+wheel scale drifted off the 10% grid on a laptop trackpad
+   gesture (103%, 129%, 147%, ...).** Round 1's coalescing was real and
+   necessary but didn't touch this bug -- it batched EVENTS, but each
+   event's own delta/120 fraction was still computed and applied
+   independently once the batch flushed. A physical detented mouse wheel
+   reports angleDelta() in clean multiples of 120; a trackpad's
+   synthesized "smooth scroll" gesture mostly doesn't, so summing
+   fractional per-event steps landed off WHEEL_STEP's clean 10%
+   increments. Fixed by accumulating the RAW angleDelta().y() units
+   themselves (queue_wheel_delta, scaling.py) and only ever converting a
+   WHOLE multiple of WHEEL_UNITS_PER_STEP (120) into an actual scale
+   step on each flush -- any leftover remainder stays queued toward the
+   NEXT flush rather than being applied fractionally or discarded, so a
+   long trackpad gesture still eventually lands exactly on the grid no
+   matter how oddly its individual events happened to be sliced.
+   Verified with a standalone simulation (400 arbitrary, non-120-aligned
+   deltas) landing exactly on a clean multiple of 10%.
+
+3. **Still laggy -- root cause was the OPTIONS SLIDERS, not (only) the
+   wheel.** Round 1 only wired coalescing into the Ctrl+wheel path;
+   dragging an Options slider called scale_manager.set_ui_scale()/
+   set_text_scale() DIRECTLY from _on_*_scale_slider_changed, and
+   QSlider fires valueChanged continuously WHILE being dragged (not just
+   on release) -- so a single drag across the slider's range was
+   triggering the full expensive rescale pass (rebuild the whole app QSS
+   string, rerun every scale-aware widget's own _apply_*_scale) once per
+   pixel of mouse movement, which is what actually produced the
+   multi-second freeze reported. NOT a PySide/Qt rendering ceiling --
+   the underlying QSS-repolish cost is real and inherent to this app's
+   current theming approach (a future move to QPalette-driven theming,
+   already a parked TODO -- see "Theming" below -- would make each
+   individual change cheaper; that's a separately-tracked, much bigger
+   project), but nothing was stopping that cost from running dozens of
+   times across the span of one drag gesture. Fixed by giving the
+   sliders their own debounced entry points
+   (scale_manager.queue_ui_scale/queue_text_scale, sharing the exact
+   same flush timer and SCALE_FLUSH_INTERVAL_MS the wheel path already
+   used) instead of calling the immediate setters directly -- the
+   percent-value LABEL still updates on every tick (cheap, just text, so
+   the number stays live while dragging), but the actual app-wide
+   rescale now only fires once dragging genuinely pauses, not
+   continuously through the gesture. This is a deliberate DEBOUNCE (wait
+   for a pause), not a rate-limited THROTTLE (fire at most every N ms
+   even during continuous motion) -- during a smooth, uninterrupted drag
+   the app now does ZERO expensive work until the user stops, which is
+   the actual fix; a throttle would still have done many redundant
+   passes across one long drag.
+
+**General lesson from round 2**: "coalesce rapid signals" isn't one fix
+reusable by inference across an app -- it has to be wired into EVERY call
+site that can fire rapidly, not just the first one identified. Round 1
+fixed the wheel path and read as "scaling is smoother now," which was
+true but incomplete; the sliders were a second, independent rapid-fire
+source of the exact same underlying cost that hadn't been touched yet.
+Worth checking for sibling call sites (anything else calling
+set_ui_scale/set_text_scale/adjust_combined directly) before considering
+a "make X respond to rapid input" fix actually done.
 
 **General lesson for future scaling work**: a hardcoded pixel constant
 is only a REAL bug once it's actually READ somewhere without going

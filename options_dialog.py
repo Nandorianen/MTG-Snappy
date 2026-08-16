@@ -149,12 +149,21 @@ class OptionsDialog(VerticalTabDialog):
 
     # --- Interface/text scale sliders (Interface page) --------------------
     def _on_ui_scale_slider_changed(self, value):
+        # The percent LABEL updates immediately, directly, on every single
+        # slider tick -- cheap (just text), so it stays perfectly live
+        # while dragging. The actual expensive app-wide rescale is
+        # deferred via queue_ui_scale (scaling.py) instead of calling
+        # set_ui_scale() here directly -- QSlider fires valueChanged
+        # continuously during a drag, and applying the full rescale pass
+        # on every one of those ticks is what used to make dragging this
+        # slider feel like it froze the app for several seconds. See
+        # scaling.py's own docstring ("RAPID INPUT IS COALESCED...").
         self._ui_scale_value_label.setText(f"{value}%")
-        scale_manager.set_ui_scale(value / 100.0)
+        scale_manager.queue_ui_scale(value / 100.0)
 
     def _on_text_scale_slider_changed(self, value):
         self._text_scale_value_label.setText(f"{value}%")
-        scale_manager.set_text_scale(value / 100.0)
+        scale_manager.queue_text_scale(value / 100.0)
 
     def _sync_scale_sliders(self):
         """

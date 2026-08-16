@@ -79,6 +79,22 @@ list with design notes for each: `PROJECT_CONTEXT.md`'s Roadmap and
 
 ## Changelog (newest first)
 
+**Scaling polish, round 2 (screen-fit, wheel-drift, slider lag).**
+Options/Data Management/card detail no longer show a scrollbar just
+because their design-time size undershoots real content at a higher
+text scale -- dialogs now grow to fit their own content first, only
+falling back to the screen clamp + scrollbars introduced last round once
+the screen genuinely doesn't have room. Fixed a real drift bug where a
+laptop trackpad's scroll gesture (rather than a physical detented mouse
+wheel) could leave scale sitting at an odd value like 103%/129%/147%
+instead of a clean 10% multiple -- wheel input is now accumulated in raw
+units and only ever converted to whole steps. Dragging an Options slider
+no longer re-runs the full app-wide rescale on every pixel of mouse
+movement (the actual cause of the multi-second "freeze" while dragging,
+not a PySide rendering limit) -- the percent label still tracks the
+slider live; the expensive rescale itself now applies once dragging
+actually pauses.
+
 **Scaling polish: bigger steps, smoother wheel-zoom, screen-safe dialogs,
 wrapping labels.** Ctrl+wheel and both Options sliders now move in 10%
 increments (previously an inconsistent 5% on the wheel vs. a fiddly

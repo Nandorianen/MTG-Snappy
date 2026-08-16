@@ -391,20 +391,17 @@ class MainWindow(QMainWindow):
         # scaling.py's module docstring for why this moves BOTH scales
         # together rather than just one.
         if event.type() == QEvent.Wheel and event.modifiers() & Qt.ControlModifier:
-            # angleDelta().y() is in eighths of a degree; Qt's own
-            # convention is 120 units per one physical "notch" on a
-            # standard detented wheel -- dividing by 120 is what turns a
-            # possibly-multi-notch scroll (a fast flick) into a whole
-            # number of steps instead of over- or under-reacting to it.
+            # Pass the RAW angleDelta().y() straight through -- scaling.py's
+            # queue_wheel_delta accumulates raw units itself and only ever
+            # converts a WHOLE multiple of 120 into an actual step (see its
+            # own docstring for why: dividing each individual event by 120
+            # here and applying the fraction directly is what used to make
+            # a laptop trackpad's scroll gesture drift off the clean 10%
+            # grid, since a trackpad's synthesized deltas rarely land on a
+            # clean multiple of 120 the way a real detented wheel's do).
             delta = event.angleDelta().y()
             if delta != 0:
-                steps = delta / 120
-                # queue_wheel_delta (not adjust_combined directly) --
-                # coalesces a fast flick's many wheel events into one
-                # throttled update instead of a full app-wide stylesheet
-                # rebuild per notch, which is what made rapid Ctrl+wheel
-                # scaling feel laggy. See scaling.py's own docstring.
-                scale_manager.queue_wheel_delta(steps)
+                scale_manager.queue_wheel_delta(delta)
             return True  # consumed -- don't ALSO scroll whatever's under the cursor
 
         if event.type() == QEvent.KeyPress and event.modifiers() == Qt.NoModifier:

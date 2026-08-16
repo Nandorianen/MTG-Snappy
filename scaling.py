@@ -60,24 +60,42 @@ main.py's MainWindow.eventFilter for where this is actually caught
 uses for Tab interception, digit shortcuts, etc. -- see NOTES.md's
 debugging-lessons #4).
 
-WHEEL EVENTS ARE COALESCED, NOT APPLIED ONE-FOR-ONE (queue_wheel_delta /
-_flush_wheel_steps below): a fast physical scroll can fire a dozen+ wheel
-events within a handful of milliseconds, and EVERY scale_changed emission
-triggers a real cost -- main.py rebuilds and reapplies the entire app-wide
-QSS string (every sp()-driven padding/radius in it recomputed), and every
-scale-aware widget across the whole app re-runs its own _apply_*_scale
-method on top of that. Applying that full pass once per individual wheel
-notch is what made rapid Ctrl+wheel scrolling feel laggy -- not a PySide/
-Qt rendering limitation, just the accumulated cost of re-polishing every
-styled widget in the app many times over in a fraction of a second.
-queue_wheel_delta() accumulates the pending delta and schedules a single
-flush ~WHEEL_FLUSH_INTERVAL_MS later (resetting/reusing the same pending-
-flush timer if one's already running) instead of calling adjust_combined()
-synchronously on every wheel event -- so a fast flick still ends up at the
-same final scale, just via one coalesced update instead of many redundant
-ones. A single slow notch is unaffected in practice (~50ms is well under
-what reads as "instant" to a person) and still fires only one update, same
-as before.
+RAPID INPUT IS COALESCED, NOT APPLIED ONE-FOR-ONE -- TWO SEPARATE INPUT
+SOURCES, ONE SHARED FIX: both a fast Ctrl+wheel scroll AND dragging an
+Options slider can fire many events in a fraction of a second (a laptop
+trackpad's scroll gesture synthesizes a stream of small wheel events to
+simulate smooth scrolling; QSlider fires valueChanged continuously while
+being dragged, not just on release). Reacting to EVERY one of those
+events -- calling set_ui_scale()/set_text_scale()/adjust_combined()
+directly, as the first version of this file did -- applies the full,
+genuinely expensive scale-change pass (main.py rebuilds and reapplies
+the ENTIRE app-wide QSS string, then every scale-aware widget across the
+app re-runs its own _apply_*_scale on top of that) once per event, which
+is what made both a fast wheel-scroll and a slider drag feel like the
+app had frozen -- not a PySide/Qt rendering limit, just the accumulated
+cost of re-polishing every styled widget in the app many times over in a
+handful of milliseconds. queue_wheel_delta()/queue_ui_scale()/
+queue_text_scale() below record the latest requested change and share
+ONE debounce timer (_flush_timer, SCALE_FLUSH_INTERVAL_MS) that applies
+everything pending in a single pass once input actually PAUSES, rather
+than reacting to every individual event -- so a slider drag applies
+nothing expensive at all while the mouse is still moving (only the cheap
+percent-label text updates live, see options_dialog.py), and a fast
+wheel flick still lands on the same final value via one coalesced update
+instead of many redundant ones.
+
+WHY A LAPTOP TRACKPAD GESTURE USED TO DRIFT OFF THE 10% GRID (103%, 129%,
+147%, ...): the wheel handler used to divide each individual event's raw
+angleDelta().y() by 120 (Qt's "one notch = 120 units" convention for a
+real detented mouse wheel) and apply that fraction directly. A physical
+wheel's clicks land on clean 120-unit multiples; a trackpad's synthesized
+scroll events mostly don't, so summing fractional per-event steps drifted
+off WHEEL_STEP's clean 10% increments. Fixed by accumulating the RAW
+angle units across events (queue_wheel_delta) and only ever converting a
+WHOLE multiple of 120 into an actual step (see _flush_pending below) --
+any leftover remainder stays queued toward the next flush instead of
+being applied fractionally, so the result is always an exact multiple of
+WHEEL_STEP regardless of how oddly the input events happened to be sliced.
 """
 
 from PySide6.QtCore import QObject, Signal, QTimer
@@ -90,27 +108,30 @@ from PySide6.QtWidgets import QApplication
 MIN_SCALE = 0.7
 MAX_SCALE = 2.0
 
-# One Ctrl+wheel "notch" (one discrete scroll step -- see
-# adjust_combined's use of angleDelta()) moves either scale by this much.
-# The Options sliders move in the same 10% increments (see
-# options_dialog.py's slider setSingleStep/setPageStep calls) -- both
-# controls used to disagree (a 5% wheel notch vs. a slider that could be
-# arrow-keyed one bare 1% at a time, Qt's own QSlider default), which read
-# as needlessly fiddly for a setting most people just want in bigger,
-# predictable jumps. 10% was picked as a round, easy-to-reason-about step
-# that still reaches the full MIN_SCALE..MAX_SCALE range in a small number
-# of presses/notches.
+# One Ctrl+wheel "notch" (one discrete scroll step) or one Options-slider
+# increment moves either scale by this much -- both controls deliberately
+# share the same 10% grid (see options_dialog.py's slider setSingleStep/
+# setPageStep calls) rather than two different step sizes for what's
+# conceptually one setting.
 WHEEL_STEP = 0.10
 
-# How long queue_wheel_delta() waits, after the MOST RECENT wheel event,
-# before actually applying the accumulated delta -- see this module's own
-# docstring ("WHEEL EVENTS ARE COALESCED...") for why this exists at all.
-# ~50ms is short enough that a single deliberate notch still feels
-# immediate (well under normal human perception of "instant"), while
-# still being long enough to fold a fast multi-notch flick's several
-# wheel events into one real scale_changed emission instead of one per
-# notch.
-WHEEL_FLUSH_INTERVAL_MS = 50
+# Qt's own convention: one physical "notch" on a standard detented mouse
+# wheel reports as 120 units of QWheelEvent.angleDelta() (eighths of a
+# degree). Used to convert ACCUMULATED raw wheel units into whole
+# WHEEL_STEP increments -- see queue_wheel_delta and this module's own
+# docstring for why raw units are accumulated rather than each event's
+# delta being divided and applied individually.
+WHEEL_UNITS_PER_STEP = 120
+
+# How long the shared debounce timer waits, after the MOST RECENT queued
+# change (a wheel event or a slider tick), before actually applying
+# whatever's pending -- see this module's own docstring ("RAPID INPUT IS
+# COALESCED..."). ~50ms is short enough that a single deliberate notch or
+# a brief pause mid-drag still feels immediate (well under normal human
+# perception of "instant"), while being long enough that a fast wheel
+# flick or a continuous slider drag applies nothing expensive until input
+# actually settles, rather than once per individual event.
+SCALE_FLUSH_INTERVAL_MS = 50
 
 # The point size every text_scale multiplier is measured FROM. Read once
 # at startup from whatever the platform's own default QFont already
@@ -131,13 +152,23 @@ class ScaleManager(QObject):
         super().__init__()
         self.ui_scale = 1.0
         self.text_scale = 1.0
-        # Wheel-event coalescing state -- see queue_wheel_delta/
-        # _flush_wheel_steps and this module's own docstring. Only ever
-        # touched by those two methods.
-        self._pending_wheel_steps = 0.0
-        self._wheel_flush_timer = QTimer(self)
-        self._wheel_flush_timer.setSingleShot(True)
-        self._wheel_flush_timer.timeout.connect(self._flush_wheel_steps)
+        # Coalescing state, shared by all three queue_*() entry points
+        # below (wheel + both Options sliders) -- see this module's own
+        # docstring ("RAPID INPUT IS COALESCED..."). _pending_wheel_units
+        # accumulates RAW angleDelta() units (not pre-divided into
+        # steps -- see queue_wheel_delta); _pending_ui_scale/_pending_
+        # text_scale hold an ABSOLUTE target value (or None if that axis
+        # has nothing pending) since a slider reports "go to this exact
+        # position," not a relative delta. One shared timer is enough for
+        # all three -- whichever axis actually changed gets exactly one
+        # scale_changed emission per flush regardless of which queue_*()
+        # call(s) triggered it.
+        self._pending_wheel_units = 0.0
+        self._pending_ui_scale = None
+        self._pending_text_scale = None
+        self._flush_timer = QTimer(self)
+        self._flush_timer.setSingleShot(True)
+        self._flush_timer.timeout.connect(self._flush_pending)
 
     # --- UI (non-text) scaling -------------------------------------------
     def sp(self, px):
@@ -206,35 +237,87 @@ class ScaleManager(QObject):
         self._apply_font_scale()
         self.scale_changed.emit()
 
-    def queue_wheel_delta(self, steps):
+    def queue_wheel_delta(self, angle_delta_y):
         """
         The Ctrl+wheel entry point (called from main.py's MainWindow.
-        eventFilter instead of adjust_combined() directly) -- accumulates
-        `steps` (can be fractional/negative, same as adjust_combined
-        expects) and schedules a single coalesced flush
-        WHEEL_FLUSH_INTERVAL_MS after the LAST call, rather than applying
-        every wheel event immediately. Restarting the same singleShot
-        timer on every call (instead of letting an already-running one
-        finish on its own schedule) is what makes this "N ms after
-        scrolling STOPS," not "at most once every N ms while scrolling
-        continues" -- the latter would still apply a partial update mid-
-        flick. See this module's own docstring for why coalescing exists.
+        eventFilter) -- takes the RAW QWheelEvent.angleDelta().y() value,
+        NOT a pre-divided step count. Accumulates raw units across events
+        and defers converting them into an actual step until _flush_
+        pending runs -- see this module's own docstring for why applying
+        each event's own delta/120 fraction directly (the previous
+        approach) is what caused a laptop trackpad's scroll gesture to
+        drift off the clean 10% grid.
         """
-        self._pending_wheel_steps += steps
-        self._wheel_flush_timer.start(WHEEL_FLUSH_INTERVAL_MS)
+        self._pending_wheel_units += angle_delta_y
+        self._flush_timer.start(SCALE_FLUSH_INTERVAL_MS)
 
-    def _flush_wheel_steps(self):
-        """Applies whatever wheel delta has accumulated since the last
-        flush, in one shot, via the exact same adjust_combined() logic a
-        direct (non-wheel) caller would use -- coalescing is purely about
-        WHEN this runs, not a different code path for WHAT it does."""
-        steps, self._pending_wheel_steps = self._pending_wheel_steps, 0.0
-        if steps:
-            self.adjust_combined(steps)
+    def queue_ui_scale(self, value):
+        """
+        Debounced counterpart to set_ui_scale() -- used by Options' own
+        Interface-scale slider (options_dialog.py's _on_ui_scale_slider_
+        changed) instead of calling set_ui_scale() directly on every
+        single valueChanged tick. QSlider fires valueChanged CONTINUOUSLY
+        while being dragged, not just on release -- calling set_ui_scale()
+        straight from that handler applied the full expensive scale-
+        change pass once per pixel of mouse movement, which is what made
+        dragging the slider feel like it froze the app. This just records
+        the latest requested absolute value; _flush_pending applies
+        whatever's pending once dragging actually pauses. The slider's own
+        percent-value LABEL still updates immediately and directly (see
+        options_dialog.py) -- only the expensive app-wide rescale is
+        deferred, so the number shown still tracks the slider live even
+        though the interface itself catches up a beat later.
+        """
+        self._pending_ui_scale = value
+        self._flush_timer.start(SCALE_FLUSH_INTERVAL_MS)
+
+    def queue_text_scale(self, value):
+        """Debounced counterpart to set_text_scale() -- see
+        queue_ui_scale's docstring; same reasoning for the Text-scale
+        slider."""
+        self._pending_text_scale = value
+        self._flush_timer.start(SCALE_FLUSH_INTERVAL_MS)
+
+    def _flush_pending(self):
+        """
+        Applies everything accumulated since the last flush, in one pass,
+        via the SAME public setters a direct (non-debounced) caller would
+        use -- coalescing only changes WHEN these run, not what they do.
+        Wheel units are converted to whole steps first (see
+        WHEEL_UNITS_PER_STEP); any remainder that hasn't yet crossed a
+        full step is left in _pending_wheel_units for the NEXT flush to
+        keep accumulating, rather than being discarded -- this is what
+        keeps a trackpad's many small deltas eventually landing on a
+        clean step instead of losing the "in-between" scroll motion each
+        time nothing crossed the threshold yet. Wheel and slider input are
+        never realistically pending at the same moment in practice (they
+        come from two different physical actions a person doesn't do
+        simultaneously), so no ordering guarantee is needed between them.
+        """
+        whole_steps = int(self._pending_wheel_units / WHEEL_UNITS_PER_STEP)
+        self._pending_wheel_units -= whole_steps * WHEEL_UNITS_PER_STEP
+        if whole_steps:
+            self.adjust_combined(whole_steps)
+
+        if self._pending_ui_scale is not None:
+            value, self._pending_ui_scale = self._pending_ui_scale, None
+            self.set_ui_scale(value)
+
+        if self._pending_text_scale is not None:
+            value, self._pending_text_scale = self._pending_text_scale, None
+            self.set_text_scale(value)
 
     def reset(self):
         """Back to 1.0x / 1.0x -- wired to a Reset button in Options
-        alongside the two sliders."""
+        alongside the two sliders. Also discards anything still pending
+        from queue_wheel_delta/queue_ui_scale/queue_text_scale and stops
+        the shared flush timer -- without this, a Reset click landing
+        mid-drag or mid-flick could be silently overridden a moment later
+        by a stale flush still in flight."""
+        self._flush_timer.stop()
+        self._pending_wheel_units = 0.0
+        self._pending_ui_scale = None
+        self._pending_text_scale = None
         if self.ui_scale == 1.0 and self.text_scale == 1.0:
             return
         self.ui_scale = 1.0

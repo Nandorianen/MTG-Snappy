@@ -27,7 +27,7 @@ Bar height/margins/close-button metrics are sp()-scaled and reapplied
 live on scale_manager.scale_changed; the title text rides the app-wide
 scaled default font instead of a hardcoded px size -- see scaling.py.
 
-SCREEN-SAFE AT HIGH SCALE -- TWO PIECES, BOTH LIVE HERE SO EVERY
+SCREEN-SAFE AT HIGH SCALE -- THREE PIECES, ALL LIVE HERE SO EVERY
 FRAMELESS DIALOG GETS THEM FOR FREE:
 1. resize() is overridden to clamp whatever size a subclass asks for
    (CardDetailDialog's sp(900)x sp(560), OptionsDialog's sp(760)x
@@ -42,18 +42,33 @@ FRAMELESS DIALOG GETS THEM FOR FREE:
    the dialog -- so content that's still too big for the CLAMPED size
    from point 1 scrolls (both directions, Qt's default
    ScrollBarAsNeeded policy) instead of being silently clipped or
-   forcing the window bigger than the screen. The two fixes work
-   together: clamping alone would just crop content with no way to
-   reach the rest of it; scrolling alone wouldn't stop the window
-   itself from growing off-screen. See FramelessDialog.__init__ and
-   .resize() below for the actual implementation.
+   forcing the window bigger than the screen.
+3. _grow_to_fit_content() grows the window to match what its OWN content
+   actually needs (up to the same screen clamp from point 1) instead of
+   staying pinned at a subclass's design-time sp(W)/sp(H) guess -- that
+   guess was tuned around a "normal" text_scale, so at a HIGHER text
+   scale the real content can outgrow it well before the screen does,
+   which used to show scrollbars for space that was genuinely free on
+   the desktop. Run once synchronously on showEvent (before any
+   subclass's own deferred singleShot(0) post-show work, e.g.
+   CardDetailDialog's column-locking -- see _grow_to_fit_content's own
+   docstring for why synchronous-at-showEvent specifically), and again,
+   debounced, on every scale_changed while the dialog is already open
+   (e.g. a user resizing an already-open Options dialog via its own
+   sliders).
+   Point 2 is what makes point 3 not load-bearing: even if a screen were
+   somehow too small for the growth this computes, resize()'s own clamp
+   (point 1) still applies, and the scroll area (point 2) is still there
+   as the real fallback. Growing to fit content is a NICETY on top of
+   that -- avoiding a scrollbar when the desktop plainly has room -- not
+   a second, independent safety mechanism.
 """
 
 from PySide6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QToolButton,
     QApplication, QScrollArea, QFrame,
 )
-from PySide6.QtCore import Qt, QEvent
+from PySide6.QtCore import Qt, QEvent, QTimer
 
 from scaling import scale_manager, sp
 
@@ -157,6 +172,16 @@ class FramelessDialog(QDialog):
     # touching every edge exactly.
     _SCREEN_CLAMP_MARGIN = 40
 
+    # Small safety margin added on top of the MEASURED content size in
+    # _grow_to_fit_content -- QWidget.sizeHint() and the real pixel size a
+    # QScrollArea ultimately settles on aren't always identical to the
+    # last pixel (scrollbar reservation, layout rounding), and landing
+    # a few pixels short would defeat the whole point by still showing a
+    # scrollbar for a sliver of overflow. Erring slightly larger costs
+    # nothing visible; landing exactly on the boundary risks the bug this
+    # exists to fix.
+    _GROW_BUFFER = 24
+
     def __init__(self, title, parent=None, show_title=True):
         super().__init__(parent, Qt.Dialog | Qt.FramelessWindowHint)
 
@@ -169,7 +194,8 @@ class FramelessDialog(QDialog):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
-        outer.addWidget(_TitleBar(title, self.close, show_title=show_title))
+        self._title_bar = _TitleBar(title, self.close, show_title=show_title)
+        outer.addWidget(self._title_bar)
 
         # Real content lives on a plain QWidget, built via self.content_
         # layout exactly as every subclass already expects -- the
@@ -186,6 +212,73 @@ class FramelessDialog(QDialog):
         outer.addWidget(scroll, stretch=1)
 
         QApplication.instance().installEventFilter(self)
+
+        # Grows to fit content once it's already open and a scale change
+        # happens (e.g. dragging Options' own sliders while Options is
+        # the window being resized) -- debounced via a plain singleShot
+        # rather than reacting synchronously, so it runs AFTER whatever
+        # else is connected to scale_changed (a subclass's own formula-
+        # driven _apply_dialog_scale, if it has one) has already set its
+        # preferred size for the new scale; this only tops that up
+        # further if the actual content still needs more room. A no-op,
+        # cheap check while the dialog is hidden (isVisible() False) --
+        # a freshly (re)opened dialog gets sized correctly from scratch
+        # via showEvent below instead.
+        scale_manager.scale_changed.connect(self._queue_grow_to_fit_content)
+
+    def showEvent(self, event):
+        """
+        Grows the window to fit its own content, synchronously, before
+        anything else runs off this show -- see the class docstring's
+        "SCREEN-SAFE AT HIGH SCALE" point 3. Deliberately synchronous
+        (not deferred via QTimer.singleShot the way the scale_changed
+        path above is): QWidget.sizeHint() is a pure, recursive
+        computation over the layout tree's own preferred sizes -- unlike
+        reading a widget's real .width()/.height() after an actual layout
+        pass (see e.g. StatField.set_text()'s own "self.width() may be
+        stale" comment in card_detail_popup.py, a case where THAT
+        distinction matters), sizeHint() doesn't need Qt to have actually
+        rendered anything yet, so it's safe to read right here. Running
+        it synchronously (not queued) also matters for ordering: some
+        subclasses queue their OWN post-show work via singleShot(0) during
+        __init__ (CardDetailDialog's _settle_after_first_layout, which
+        measures/locks pixel widths off the dialog's CURRENT size) -- a
+        synchronous resize during showEvent is guaranteed to complete
+        before any singleShot(0) queued earlier in __init__ gets its turn
+        on the event loop, so those subclasses never race this.
+        """
+        super().showEvent(event)
+        self._grow_to_fit_content()
+
+    def _queue_grow_to_fit_content(self):
+        if self.isVisible():
+            QTimer.singleShot(0, self._grow_to_fit_content)
+
+    def _grow_to_fit_content(self):
+        """
+        If what's actually built into content_layout needs more room than
+        the window currently has (typically: a subclass's design-time
+        sp(W)/sp(H) guess, tuned around a "normal" text_scale, no longer
+        covering the real content at a HIGHER text_scale), grows the
+        window to fit -- rather than leaving the QScrollArea wrapping
+        content_layout to show scrollbars for room that's genuinely free
+        on the desktop. Grows ONLY (never shrinks below whatever size is
+        already set -- a subclass's own design-time size is a floor, not
+        just a starting suggestion) and is itself still subject to
+        resize()'s own screen-clamp, so this still falls back to real
+        scrolling once even the SCREEN doesn't have room for it.
+        """
+        content_hint = self._content_widget.sizeHint()
+        # _title_bar.height() (not .sizeHint()) -- setFixedHeight() locks
+        # the bar's REAL height immediately at construction; its
+        # sizeHint() is a separate, layout-derived value that isn't
+        # guaranteed to match that fixed height exactly, so reading the
+        # actual enforced height is the reliable number here.
+        title_height = self._title_bar.height()
+        target_width = max(self.width(), content_hint.width() + self._GROW_BUFFER)
+        target_height = max(self.height(), content_hint.height() + title_height + self._GROW_BUFFER)
+        if target_width > self.width() or target_height > self.height():
+            self.resize(target_width, target_height)
 
     def resize(self, width, height=None):
         """

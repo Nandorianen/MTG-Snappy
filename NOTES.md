@@ -699,3 +699,21 @@ hit, so whichever happens first is a no-op for the other.
    keypress in an application-level eventFilter instead, which still
    receives events during the grab (same mechanism `_MenuSearchBox` and
    `ImageZoomWidget`'s own outside-click filters already rely on).
+8. **An application-level `eventFilter` (`QApplication.installEventFilter`)
+   receives QWindow events too, not just QWidget ones.** `watched` can be
+   a bare `QWindow` (native window-manager plumbing underneath a
+   top-level widget), which fails `isinstance(watched, QWidget)` and
+   crashes any branch that calls a QWidget-only method on it
+   (`isAncestorOf()`, `.window()`, etc.) with a `TypeError`. Every
+   app-level filter in this codebase (`collapsible_pane.py`,
+   `card_database_view.py`, `card_table.py`'s `CardTableHeader`/
+   `_MenuSearchBox`, `frameless_dialog.py`, `main.py`) touches `watched`
+   as a widget — `frameless_dialog.py` already guarded this correctly
+   from the start (`isinstance(watched, QWidget)` before calling
+   `.window()`); `collapsible_pane.py`'s Tab/collapse filter didn't, and
+   intermittently crashed with "Error calling Python override of
+   QSplitter::eventFilter()" the moment a QWindow event reached it (real
+   log output, not hypothetical — this is what surfaced the gap). Fixed
+   there by hoisting the same `isinstance` guard above every branch.
+   Worth checking any NEW app-level filter added to this codebase against
+   this same gap before it ships.

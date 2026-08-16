@@ -33,9 +33,20 @@ By checking here whether the event's target is this splitter or one of its
 descendants, we can intercept and consume Key_Tab before Qt's internal
 focus-traversal logic ever sees it -- regardless of which specific child
 widget currently holds focus.
+
+GOTCHA THIS FILE ONCE HIT: an application-level filter receives QWindow
+events too, not just QWidget ones -- `watched` isn't guaranteed to be a
+QWidget at all. eventFilter() below guards with `isinstance(watched,
+QWidget)` before calling isAncestorOf() on it; without that guard, a
+QWindow event reaching this filter raises a TypeError (isAncestorOf()
+requires a real QWidget argument), which showed up in practice as
+intermittent "Error calling Python override of QSplitter::eventFilter()"
+log spam. See NOTES.md's debugging-lessons entry #8 for the full story --
+frameless_dialog.py's own eventFilter already guarded against this same
+gap from the start; this file didn't, and was the one that surfaced it.
 """
 
-from PySide6.QtWidgets import QSplitter, QSplitterHandle, QApplication
+from PySide6.QtWidgets import QSplitter, QSplitterHandle, QApplication, QWidget
 from PySide6.QtCore import Qt, QEvent, QRect
 from PySide6.QtGui import QPainter, QColor
 
@@ -151,6 +162,29 @@ class CollapsibleSplitter(QSplitter):
         self.setSizes([self._expanded_width, max(total - self._expanded_width, 100)])
 
     def eventFilter(self, watched, event):
+        """
+        NOTE -- `isinstance(watched, QWidget)` guards BOTH branches below.
+        This is an APPLICATION-level filter (installed on QApplication,
+        not on a specific widget -- see __init__), so `watched` is not
+        guaranteed to be a QWidget at all: Qt also routes lower-level
+        QWindow events (native window-manager plumbing -- focus/expose/
+        etc. on the underlying platform window a QWidget's top-level is
+        backed by) through the same app-level filter. `isAncestorOf()`
+        requires a genuine QWidget argument and raises TypeError if handed
+        a QWindow -- without this guard, a QWindow event reaching either
+        branch below crashes the filter (seen in practice: intermittent
+        "Error calling Python override of QSplitter::eventFilter()" spam
+        in the log). `watched is self` on the Tab branch doesn't need the
+        guard on its own (identity comparison is always safe), but
+        `self.isAncestorOf(watched)` right next to it does -- so the
+        isinstance check is hoisted above both conditions rather than
+        threaded into each one separately, which also matches the same
+        defensive shape frameless_dialog.py's own eventFilter already
+        uses for an identical reason.
+        """
+        if not isinstance(watched, QWidget):
+            return super().eventFilter(watched, event)
+
         if event.type() == QEvent.KeyPress and event.key() == Qt.Key_Tab:
             if watched is self or self.isAncestorOf(watched):
                 self.toggle()

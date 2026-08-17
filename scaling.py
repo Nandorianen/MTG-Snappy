@@ -50,6 +50,34 @@ still TODO (PROJECT_CONTEXT.md's Roadmap). Every scale change here takes
 effect immediately and is lost on restart; that's an explicit, deliberate
 scope cut for this round, not an oversight.
 
+WHY BOTH SCALES START AT A FLAT 1.0/1.0, NOT AN OS-DETECTED VALUE (a real
+attempt, retracted -- see NOTES.md's "Scaling infrastructure" entry for
+the full story): Qt6 (which PySide6 wraps) performs MANDATORY automatic
+high-DPI scaling -- every widget's geometry is expressed in
+device-independent pixels, and Qt itself multiplies that by the OS's own
+display-scale setting (via QScreen.devicePixelRatio()) at render time,
+completely transparently, before any of this app's own code ever runs.
+That's why the app already looks correctly sized on e.g. a 125%-scaled
+Windows display with ZERO code here -- Qt already did it. A first attempt
+at this feature tried seeding ui_scale/text_scale from
+QScreen.logicalDotsPerInch(), on the theory that it would reflect the
+OS's chosen scale the way it did in the pre-Qt6 world -- verified,
+on a real Windows 10 + 125%-scale + PySide6 machine, to read back
+essentially the 96 DPI baseline instead (Qt6's mandatory scaling has
+already "spent" the real scale factor on devicePixelRatio(), leaving
+logicalDotsPerInch() normalized). Reading devicePixelRatio() directly
+instead would fix THAT symptom but introduce a worse one: Qt has already
+applied it once, automatically; multiplying our OWN ui_scale/text_scale
+by it too would double-scale everything. There is no signal this module
+can read that reflects "what the OS wants" without either being already
+neutralized (what happened here) or already applied (which would
+compound) -- under Qt6's scaling model, "match the OS's own display
+scale" is not this module's job at all; ui_scale/text_scale exist purely
+as a SEPARATE, user-controlled zoom LAYERED ON TOP of whatever Qt/the OS
+already established (the same relationship a browser's own Ctrl+/Ctrl-
+zoom has to the OS's display scale), so 1.0/1.0 -- "no additional zoom"
+-- is the only starting value that's actually correct here.
+
 CTRL+WHEEL: ui_scale and text_scale move TOGETHER, one notch per wheel
 click (adjust_combined) -- a single combined "zoom," matching the
 familiar browser/OS Ctrl+wheel convention, rather than needing a second
@@ -335,6 +363,14 @@ def init_from_app(app):
     then applies the manager's current scale on top of it, so app.font()
     is correct from the very first frame rather than needing a later
     scale change to first take effect.
+
+    Deliberately does NOT try to seed ui_scale/text_scale from any OS
+    display-scale reading -- see this module's own docstring ("WHY BOTH
+    SCALES START AT A FLAT 1.0/1.0...") for a real attempt at that and
+    why it was retracted: Qt6's own mandatory automatic high-DPI scaling
+    already matches the OS's chosen display scale before this app's code
+    ever runs, so there is nothing left here for OUR axes to detect and
+    apply without risking double-scaling.
     """
     global _base_point_size
     _base_point_size = app.font().pointSizeF() or 9.0

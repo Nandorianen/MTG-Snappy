@@ -183,7 +183,20 @@ specifics on any TODO or Partial item.
   page widgets don't yet live-rescale an already-open window — see
   NOTES.md's "Scaling infrastructure" entry for the exact list)
 - DPI-awareness beyond ui_scale/text_scale (querying the OS's own
-  display-scale setting as a starting default) — **TODO**
+  display-scale setting as a starting default) — **N/A, resolved by
+  investigation rather than by building it**: Qt6 (PySide6) performs
+  mandatory automatic high-DPI scaling that already matches the OS's own
+  display-scale setting before this app's code ever runs, so there is no
+  separate OS-scale reading for `ui_scale`/`text_scale` to seed from
+  without risking double-scaling on top of what Qt already applied. A
+  real attempt (reading `QScreen.logicalDotsPerInch()`) was built,
+  verified against a real Windows 10 + 125%-scale machine, found to read
+  back the normalized baseline instead of the real OS setting, and
+  retracted — see `scaling.py`'s module docstring and NOTES.md's
+  "Scaling infrastructure" entry for the full reasoning. `ui_scale`/
+  `text_scale` correctly start at a flat 1.0/1.0 (no additional zoom) —
+  they're a user-controlled zoom layered on top of Qt's own OS-scale
+  handling, not a mechanism for replicating it.
 
 ### App-wide
 - Lazy tab/dialog construction + background preload — **Done**

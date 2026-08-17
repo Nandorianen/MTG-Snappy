@@ -294,6 +294,54 @@ Worth checking for sibling call sites (anything else calling
 set_ui_scale/set_text_scale/adjust_combined directly) before considering
 a "make X respond to rapid input" fix actually done.
 
+**OS-scale default -- attempted, then RETRACTED after real-device
+testing.** First pass at the Roadmap's "DPI-awareness ... querying the
+OS's own display-scale setting as a starting default" item: seeded both
+`ui_scale` and `text_scale` from `QScreen.logicalDotsPerInch()` vs. a 96
+DPI baseline instead of always starting flat at 1.0/1.0, on the theory
+that a non-96 logical DPI reflects the OS's own scale preference
+(Windows/GNOME/KDE scale sliders, X11's `Xft.dpi` all ultimately feed
+that number). Reported as a no-op by the person building this app:
+real machine, Windows 10, OS-wide 125% text scaling, 1920x1080 laptop
+panel -- Options still showed 100%/100% and nothing looked different.
+
+**Root cause, found by checking the REAL platform behavior rather than
+re-deriving the theory again** (same shape as debugging-lesson #2 below,
+applied to a platform-API assumption instead of layout math): PySide6
+wraps Qt6, and Qt6 performs MANDATORY automatic high-DPI scaling --
+every widget's geometry is expressed in device-independent pixels, and
+Qt itself multiplies that by the OS's own scale factor
+(`QScreen.devicePixelRatio()`) at render time, completely transparently,
+BEFORE any of this app's own code runs. That's the actual reason the app
+already looked correctly sized at 125% even before this feature existed.
+Under that model, `logicalDotsPerInch()` -- the signal this attempt
+read -- gets normalized back toward the 96 DPI baseline, because Qt has
+already "spent" the real scale factor on `devicePixelRatio()` instead of
+leaving it in logical DPI the way pre-Qt6 apps could rely on. Reading
+`devicePixelRatio()` directly instead would fix that particular symptom
+but introduce a worse one: Qt has already applied it once, automatically
+-- multiplying this app's OWN `ui_scale`/`text_scale` by it too would
+double-scale on any platform where the signal DOES come through
+correctly (worse the higher the OS scale climbs).
+
+**Conclusion: there is no signal this module can read that reflects
+"what the OS wants" without either being already neutralized (what
+happened here) or already applied (which would compound).** Under Qt6's
+mandatory scaling model, "match the OS's own display scale" was never
+this module's job to begin with -- Qt already does it, for free, before
+this code runs. `ui_scale`/`text_scale` exist purely as a SEPARATE,
+user-controlled zoom layered ON TOP of whatever Qt/the OS already
+established (the same relationship a browser's own Ctrl+/Ctrl- zoom has
+to the OS's own display scale setting) -- so starting both at a flat
+1.0/1.0 ("no additional zoom") is the only value that's actually
+correct, not a fallback pending a better heuristic. Feature fully
+reverted (`_detect_os_scale` removed, `init_from_app` back to just
+establishing the text-scale baseline); the reasoning above now lives in
+`scaling.py`'s own module docstring so the same broken approach isn't
+re-attempted later. PROJECT_CONTEXT.md's Roadmap item is marked N/A
+(resolved by investigation, not by building something) rather than
+TODO/Partial.
+
 **General lesson for future scaling work**: a hardcoded pixel constant
 is only a REAL bug once it's actually READ somewhere without going
 through `sp()`/`scale_manager.sp()` — the constant itself being a bare
@@ -699,7 +747,21 @@ hit, so whichever happens first is a no-op for the other.
    keypress in an application-level eventFilter instead, which still
    receives events during the grab (same mechanism `_MenuSearchBox` and
    `ImageZoomWidget`'s own outside-click filters already rely on).
-8. **An application-level `eventFilter` (`QApplication.installEventFilter`)
+8. **A platform-API assumption needs checking against the REAL platform,
+   not just the API's historical/expected behavior.** The OS-scale-default
+   attempt above (`scaling.py`'s retracted `_detect_os_scale`) was
+   internally consistent and matched how `logicalDotsPerInch()` behaved
+   in the pre-Qt6 world -- and was still wrong in practice, because Qt6's
+   mandatory automatic high-DPI scaling changed what that API actually
+   reports. Same family as lesson #2 (math that checks out on paper can
+   still be wrong), but the unverified assumption here was about a
+   FRAMEWORK'S behavior on a specific real OS/version combination, not
+   this app's own layout math -- something no amount of re-reading the
+   code would have caught, only running it on the actual target platform
+   did. Worth remembering for any future scaling/DPI/platform-integration
+   work: verify against a real device in the relevant OS + Qt version
+   combination before trusting a documented-but-unverified API contract.
+9. **An application-level `eventFilter` (`QApplication.installEventFilter`)
    receives QWindow events too, not just QWidget ones.** `watched` can be
    a bare `QWindow` (native window-manager plumbing underneath a
    top-level widget), which fails `isinstance(watched, QWidget)` and

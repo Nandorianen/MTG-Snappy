@@ -74,10 +74,27 @@ self._open_menu / _show_columns_menu / _on_columns_menu_closed for the
 open/closed tracking this relies on, and card_table.py's _StayOpenMenu
 for the matching fix to Up/Down's own native cycling inside the menu
 itself (Up at the top now collapses instead of wrapping to the bottom).
+
+MOUSE-CLICK TOGGLE HAD THE SAME PROBLEM, FOR A DIFFERENT REASON, FIXED
+THE SAME WAY: clicking the Columns button again while its own menu is
+open is, from Qt's point of view, a click OUTSIDE the popup -- QMenu
+closes itself for that reason alone. But that same press+release still
+goes on to complete a normal button CLICK once the popup is gone, which
+re-invokes _show_columns_menu() and reopens exactly what the click just
+closed -- visible as the menu collapsing and immediately re-expanding on
+every attempted mouse toggle-close (a real, reported bug: Alt+3 toggled
+correctly; a mouse click didn't). Fixed the same way as Alt+N above --
+intercepted in the SAME application-level eventFilter, BEFORE the press
+can complete a click -- but matched by POSITION (the press's global
+point against self._open_menu_button's own on-screen rect) rather than
+by comparing `watched` against the button directly: while a QMenu holds
+the mouse grab, Qt reports `watched` as the MENU for any event routed
+through that grab, never the widget visually underneath it -- the exact
+same reason the Alt+N branch below can't key off `watched` either.
 """
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QApplication
-from PySide6.QtCore import Qt, QEvent
+from PySide6.QtCore import Qt, QEvent, QRect
 from PySide6.QtGui import QKeySequence, QShortcut
 
 from card_table import CardTableView, COL_QTY, COL_CROSS_QTY
@@ -233,13 +250,18 @@ class CardDatabaseView(QWidget):
     def _show_columns_menu(self):
         """
         Opens the Columns visibility-checklist menu -- or, if it's ALREADY
-        open, closes it instead. A second activation (another click on the
-        button, or the same Alt+3 that opened it -- see eventFilter's
-        Alt+N branch, needed since a live QMenu's keyboard grab stops that
-        QShortcut from firing a second time on its own) should dismiss it,
+        open, closes it instead (the `if self._open_menu is not None`
+        branch below). A second activation -- another click on the
+        button, or the same Alt+3 that opened it -- should dismiss it,
         the same "press again to put it away" convention any native popup
-        button gets for free -- this is the fix for that previously
-        missing toggle behavior. self._open_menu is the single source of
+        button gets for free. In practice neither activation path relies
+        on THIS method being reached naturally a second time to do that:
+        both a repeat click and a repeat Alt+3 are intercepted earlier, in
+        eventFilter, before the click/keypress that would otherwise
+        reopen the menu ever completes -- see that method's own comments
+        on the mouse-click and Alt+N branches for why each needs its own
+        interception rather than trusting this method's close branch to
+        fire on its own. self._open_menu is still the single source of
         truth both this method and eventFilter read/act on.
         """
         if self._open_menu is not None:
@@ -383,6 +405,32 @@ class CardDatabaseView(QWidget):
         return Qt.Key_1 + self._meta_buttons.index(button)
 
     def eventFilter(self, watched, event):
+        # Mouse click landing on the open menu's OWNING BUTTON (currently
+        # only ever Columns) -- closed HERE, at PRESS time, rather than
+        # letting the click complete normally. See module docstring's
+        # "MOUSE-CLICK TOGGLE" section for the bug this fixes: without
+        # this, the same press both closes the menu (QMenu's own "click
+        # outside itself" rule) AND still goes on to finish a normal
+        # click on the button once the menu's gone -- reopening what the
+        # click just closed. Checked independent of `watched`, and BEFORE
+        # the KeyPress-only early return just below, for the same reason
+        # the Alt+N branch further down is: while a QMenu holds the mouse
+        # grab, Qt reports `watched` as the MENU for any event routed
+        # through that grab, never the widget visually underneath it --
+        # comparing `watched` against self.columns_button would never
+        # match here. Matching by POSITION (the press's global point
+        # against the button's own on-screen rect, via
+        # self._open_menu_button -- generic over any future menu-owning
+        # metabutton, not hardcoded to Columns) is what actually works.
+        if event.type() == QEvent.MouseButtonPress and self._open_menu is not None:
+            button = self._open_menu_button
+            if button is not None:
+                global_pos = event.globalPosition().toPoint()
+                button_rect = QRect(button.mapToGlobal(button.rect().topLeft()), button.size())
+                if button_rect.contains(global_pos):
+                    self._metabutton_menu_openers[button]()
+                    return True
+
         if event.type() != QEvent.KeyPress:
             return super().eventFilter(watched, event)
 

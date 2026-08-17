@@ -2254,8 +2254,10 @@ class CardTableHeader(QHeaderView):
 class CardTableView(QTableView):
     """
     The table widget itself. Configures selection to behave like a
-    spreadsheet, adds Ctrl+C clipboard export, drives the hover popover, and
-    keeps the group-header full-width row spans in sync with the model.
+    spreadsheet, adds Ctrl+C clipboard export, drives the hover popover,
+    sizes every column to fit its starting content by default (see
+    _auto_size_columns -- a one-time, construction-only pass), and keeps
+    the group-header full-width row spans in sync with the model.
     """
 
     def __init__(self, cards, qty_label="Qty", cross_qty_label="Cross"):
@@ -2382,6 +2384,14 @@ class CardTableView(QTableView):
         # change.
         self._select_default_cell_if_unselected()
 
+        # Default column widths: fit-to-content at construction, once --
+        # see _auto_size_columns's own docstring for why this replicates
+        # a double-click-border resize for every column automatically
+        # rather than needing that gesture by hand, and why it's a
+        # one-time pass rather than something re-run on every filter/
+        # sort/group change.
+        self._auto_size_columns()
+
         # Live rescaling: the checkbox column's fixed width and every
         # header paint metric (sort arrow, filter dot, focus ring -- all
         # already routed through sp() at PAINT time above) need an
@@ -2400,6 +2410,58 @@ class CardTableView(QTableView):
         self.resizeRowsToContents()
         self.header.update()
         self.viewport().update()
+
+    def _auto_size_columns(self):
+        """
+        Default column widths: each column starts sized to fit its own
+        current content (header label + cell values) -- the same result
+        a user gets by double-clicking a header's own resize border. That
+        gesture already works here for free: CardTableHeader only
+        overrides mousePressEvent/mouseMoveEvent/mouseReleaseEvent for
+        its own manual DRAG-resize, never mouseDoubleClickEvent, so a
+        double-click still falls through untouched to QHeaderView's own
+        built-in resize-to-contents. This just runs that identical
+        computation automatically, once, for every column, so a freshly
+        opened table doesn't start at Qt's bare default section width
+        and require that gesture per column by hand.
+
+        Called ONCE, from __init__, right after the model's real starting
+        data is already loaded -- deliberately NOT re-run on every sort/
+        filter/group-by change (CardTableModel._commit_reorder), which
+        would fight a user's own later manual resize the moment they
+        touch an unrelated filter.
+
+        resizeColumnsToContents() itself only measures a column's actual
+        TEXT (cell values + header label) -- it has no idea
+        CardTableHeader ALSO paints a right-aligned sort arrow
+        (SORT_ARROW_ZONE_WIDTH wide) and a small filter-active dot on top
+        of that text (see CardTableHeader.paintSection). Without extra
+        room, a column sized to just barely fit its own label can have
+        that label visually collide with its own sort arrow the moment
+        it becomes the active sort column -- so a fixed padding covering
+        that zone (plus a small margin) is added on top of Qt's own
+        measurement for every column.
+
+        The checkbox column is excluded from the padding pass and
+        re-fixed to its own known-good sp(28) afterward:
+        resizeColumnsToContents() would otherwise size it to its blank
+        ("") header label, narrower than a real checkbox needs.
+
+        PERFORMANCE NOTE: resizeColumnsToContents() scans every row's
+        current data once per column -- fine at this app's present
+        (mock-data, low row count) scale, and only ever called once per
+        table. Worth revisiting (e.g. sampling rows instead of a full
+        scan) if a real imported collection ever makes this a felt
+        startup cost -- see NOTES.md's "Startup / preload performance"
+        entry for the app's general approach to that class of problem.
+        """
+        self.resizeColumnsToContents()
+        padding = sp(SORT_ARROW_ZONE_WIDTH + 6)
+        for col in range(self.card_model.columnCount()):
+            if col == COL_SELECTED:
+                continue
+            self.setColumnWidth(col, self.columnWidth(col) + padding)
+        self.setColumnWidth(COL_SELECTED, sp(28))
 
     def clear_all_filters(self):
         """

@@ -482,6 +482,41 @@ extends. `Ctrl+Home/End` go through the selection model directly with an
 explicit `ClearAndSelect` rather than the unreliable `setCurrentIndex()`
 convenience, which doesn't reliably clear a prior selection.
 
+**Columns-button mouse click reopened the menu it just closed.** A real,
+reported bug: Alt+3 correctly toggled the Columns menu open/closed, but
+clicking the button had no effect other than the menu flashing closed
+then immediately reopening. Root cause: Qt treats a click on the button
+*while its own popup menu is open* as a click OUTSIDE that popup — QMenu
+closes itself for that reason alone — but the same press+release still
+goes on to complete a normal button `clicked()` once the popup's gone,
+which re-invokes `_show_columns_menu()` and reopens exactly what the
+click just closed. Alt+N didn't have this problem because it's
+intercepted earlier, in `CardDatabaseView.eventFilter`, before the
+keypress can complete — the mouse path needed the identical treatment,
+but couldn't reuse the Alt+N branch's `watched`-identity check: while a
+QMenu holds the mouse grab, Qt reports `watched` as the MENU for any
+event routed through that grab, never the widget visually underneath it
+(this is *also* why the Alt+N branch itself can't key off `watched`).
+Fixed by matching on POSITION instead — the press's global point against
+`self._open_menu_button`'s own on-screen rect — intercepted and consumed
+in the same app-level `eventFilter`, before the press can ever complete
+a click. Generic over `self._open_menu_button` (not hardcoded to
+Columns), so any future menu-owning metabutton gets the same fix free.
+
+**Default column widths now auto-fit content at construction**
+(`CardTableView._auto_size_columns`, called once from `__init__`) — the
+same result as double-clicking every header's own resize border by hand
+(a gesture that already worked for free: `CardTableHeader` only overrides
+mouse-press/move/release for its own manual drag-resize, never
+`mouseDoubleClickEvent`, so double-click still reaches Qt's native
+resize-to-contents untouched). `resizeColumnsToContents()` only measures
+actual text, not `CardTableHeader`'s own painted extras (sort arrow,
+filter dot) — a fixed padding covering that zone is added on top for
+every column except the checkbox column, which is re-fixed to its own
+`sp(28)` afterward rather than left sized to its blank header label. A
+one-time pass at construction only — never re-run on sort/filter/group
+changes, so it never fights a user's own later manual resize.
+
 ## StatField clickable-variant centering (card detail popup)
 
 **Current design, two parts, both visible in `StatField.__init__`**: (1)

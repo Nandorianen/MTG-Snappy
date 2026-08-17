@@ -79,6 +79,16 @@ list with design notes for each: `PROJECT_CONTEXT.md`'s Roadmap and
 
 ## Changelog (newest first)
 
+**Card Database polish: column auto-width, Columns-button click fix.**
+Every column now starts sized to fit its own content (same result as
+double-clicking a header's resize border, just automatic for the whole
+table at once) instead of Qt's bare default width. Fixed a real bug
+where clicking the Columns button while its own menu was open closed the
+menu and immediately reopened it in the same click — Alt+3 already
+toggled correctly; the mouse path needed the identical app-level
+interception, matched by click position instead of widget identity (see
+NOTES.md for why identity doesn't work here).
+
 **Scaling polish, round 2 (screen-fit, wheel-drift, slider lag).**
 Options/Data Management/card detail no longer show a scrollbar just
 because their design-time size undershoots real content at a higher
